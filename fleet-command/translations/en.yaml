@@ -1,0 +1,138 @@
+configuration:
+  runs_dir:
+    name: Runs Directory
+    description: >-
+      Folder inside the add-on container where Fleet Command reads run ledgers.
+      The default /data/runs persists across add-on restarts.
+  worker_1_enabled:
+    name: Worker 1 Enabled
+    description: Enable this AI worker endpoint.
+  worker_1_name:
+    name: Worker 1 Name
+    description: Friendly name shown in Fleet Command sensors.
+  worker_1_role:
+    name: Worker 1 Role
+    description: Planner, coder, reviewer, tester, doc writer, or any role label you want.
+  worker_1_provider:
+    name: Worker 1 Provider
+    description: API shape used by this worker.
+  worker_1_base_url:
+    name: Worker 1 Base URL
+    description: Base URL for the worker, for example http://192.168.1.50:11434 for Ollama.
+  worker_1_api_path:
+    name: Worker 1 API Path
+    description: HTTP path to send generation requests to, for example /api/generate.
+  worker_1_model:
+    name: Worker 1 Model
+    description: Model name to request from this worker.
+  worker_1_request_format:
+    name: Worker 1 Request Format
+    description: JSON request body shape used when Fleet Command sends a prompt.
+  worker_1_auth_type:
+    name: Worker 1 Auth Type
+    description: How Fleet Command should attach the API key.
+  worker_1_auth_header:
+    name: Worker 1 Auth Header
+    description: Header name used when Auth Type is custom_header.
+  worker_1_api_key:
+    name: Worker 1 API Key
+    description: Secret token for hosted APIs. Leave blank for local Ollama.
+  worker_2_enabled:
+    name: Worker 2 Enabled
+    description: Enable this AI worker endpoint.
+  worker_2_name:
+    name: Worker 2 Name
+    description: Friendly name shown in Fleet Command sensors.
+  worker_2_role:
+    name: Worker 2 Role
+    description: Planner, coder, reviewer, tester, doc writer, or any role label you want.
+  worker_2_provider:
+    name: Worker 2 Provider
+    description: API shape used by this worker.
+  worker_2_base_url:
+    name: Worker 2 Base URL
+    description: Base URL for the worker API.
+  worker_2_api_path:
+    name: Worker 2 API Path
+    description: HTTP path to send generation requests to.
+  worker_2_model:
+    name: Worker 2 Model
+    description: Model name to request from this worker.
+  worker_2_request_format:
+    name: Worker 2 Request Format
+    description: JSON request body shape used when Fleet Command sends a prompt.
+  worker_2_auth_type:
+    name: Worker 2 Auth Type
+    description: How Fleet Command should attach the API key.
+  worker_2_auth_header:
+    name: Worker 2 Auth Header
+    description: Header name used when Auth Type is custom_header.
+  worker_2_api_key:
+    name: Worker 2 API Key
+    description: Secret token for hosted APIs. This is not exposed in sensors.
+  worker_3_enabled:
+    name: Worker 3 Enabled
+    description: Enable this AI worker endpoint.
+  worker_3_name:
+    name: Worker 3 Name
+    description: Friendly name shown in Fleet Command sensors.
+  worker_3_role:
+    name: Worker 3 Role
+    description: Planner, coder, reviewer, tester, doc writer, or any role label you want.
+  worker_3_provider:
+    name: Worker 3 Provider
+    description: API shape used by this worker.
+  worker_3_base_url:
+    name: Worker 3 Base URL
+    description: Base URL for the worker API.
+  worker_3_api_path:
+    name: Worker 3 API Path
+    description: HTTP path to send generation requests to.
+  worker_3_model:
+    name: Worker 3 Model
+    description: Model name to request from this worker.
+  worker_3_request_format:
+    name: Worker 3 Request Format
+    description: JSON request body shape used when Fleet Command sends a prompt.
+  worker_3_auth_type:
+    name: Worker 3 Auth Type
+    description: How Fleet Command should attach the API key.
+  worker_3_auth_header:
+    name: Worker 3 Auth Header
+    description: Header name used when Auth Type is custom_header.
+  worker_3_api_key:
+    name: Worker 3 API Key
+    description: Secret token for hosted APIs. This is not exposed in sensors.
+  worker_4_enabled:
+    name: Worker 4 Enabled
+    description: Enable this AI worker endpoint.
+  worker_4_name:
+    name: Worker 4 Name
+    description: Friendly name shown in Fleet Command sensors.
+  worker_4_role:
+    name: Worker 4 Role
+    description: Planner, coder, reviewer, tester, doc writer, or any role label you want.
+  worker_4_provider:
+    name: Worker 4 Provider
+    description: API shape used by this worker.
+  worker_4_base_url:
+    name: Worker 4 Base URL
+    description: Base URL for the worker API.
+  worker_4_api_path:
+    name: Worker 4 API Path
+    description: HTTP path to send generation requests to.
+  worker_4_model:
+    name: Worker 4 Model
+    description: Model name to request from this worker.
+  worker_4_request_format:
+    name: Worker 4 Request Format
+    description: JSON request body shape used when Fleet Command sends a prompt.
+  worker_4_auth_type:
+    name: Worker 4 Auth Type
+    description: How Fleet Command should attach the API key.
+  worker_4_auth_header:
+    name: Worker 4 Auth Header
+    description: Header name used when Auth Type is custom_header.
+  worker_4_api_key:
+    name: Worker 4 API Key
+    description: Secret token for hosted APIs. This is not exposed in sensors.
