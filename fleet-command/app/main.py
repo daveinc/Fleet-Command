@@ -85,7 +85,7 @@ async def index(request: Request) -> str:
     return _dashboard_html(root)
 
 
-def _dashboard_html(root: str) -> str:
+def _dashboard_html(root: str) -> str:  # noqa: C901
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -335,6 +335,29 @@ def _dashboard_html(root: str) -> str:
     .log-area .log-line .ts {{ color: #334155; margin-right: 0.4rem; }}
     .log-idle {{ color: #374151; font-style: italic; }}
 
+    /* ── Tabs ── */
+    .tabs {{
+      display: flex;
+      gap: 0;
+      border-bottom: 1px solid #1e293b;
+      margin-bottom: 1.25rem;
+    }}
+    .tab {{
+      padding: 0.5rem 1.1rem;
+      font-size: 0.82rem;
+      font-weight: 500;
+      color: #475569;
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      margin-bottom: -1px;
+      transition: color 0.15s, border-color 0.15s;
+    }}
+    .tab:hover {{ color: #94a3b8; }}
+    .tab.active {{ color: #6366f1; border-bottom-color: #6366f1; }}
+
+    .tab-panel {{ display: none; }}
+    .tab-panel.active {{ display: block; }}
+
     /* ── Save bar ── */
     .save-bar {{
       position: sticky;
@@ -355,6 +378,29 @@ def _dashboard_html(root: str) -> str:
       transition: opacity 0.3s;
     }}
     .save-feedback.show {{ opacity: 1; }}
+
+    /* ── Harness cards ── */
+    .harness-grid {{ display: flex; flex-direction: column; gap: 0.6rem; }}
+    .harness-card {{
+      background: #1e2330;
+      border: 1px solid #2d3748;
+      border-radius: 10px;
+      padding: 0.75rem 1rem;
+      display: flex;
+      align-items: flex-start;
+      gap: 1rem;
+    }}
+    .harness-info {{ flex: 1; }}
+    .harness-name {{ font-size: 0.88rem; font-weight: 600; color: #e2e8f0; margin-bottom: 0.2rem; }}
+    .harness-meta {{ font-size: 0.72rem; color: #475569; display: flex; gap: 0.75rem; flex-wrap: wrap; }}
+    .harness-notes {{ font-size: 0.72rem; color: #374151; margin-top: 0.25rem; }}
+    .cap-tag {{
+      font-size: 0.66rem;
+      padding: 0.15rem 0.4rem;
+      border-radius: 3px;
+      background: #1e293b;
+      color: #6366f1;
+    }}
   </style>
 </head>
 <body>
@@ -363,34 +409,62 @@ def _dashboard_html(root: str) -> str:
   <h1>Fleet <span>Command</span></h1>
 </div>
 
-<div class="section-title">Fleet Roster</div>
-<div class="roster" id="roster">
-  <!-- rendered by JS -->
+<div class="tabs">
+  <div class="tab active" onclick="switchTab('fleet', this)">Fleet</div>
+  <div class="tab" onclick="switchTab('jobs', this)">Jobs</div>
+  <div class="tab" onclick="switchTab('harnesses', this)">Harnesses</div>
+  <div class="tab" onclick="switchTab('templates', this)">Templates</div>
 </div>
 
-<div class="section-title">Available (unassigned)</div>
-<div class="pool" id="pool">
-  <!-- rendered by JS -->
-</div>
+<!-- ── Fleet tab ── -->
+<div class="tab-panel active" id="tab-fleet">
+  <div class="section-title">Fleet Roster</div>
+  <div class="roster" id="roster"></div>
 
-<div class="section-title">Active Job</div>
-<div class="job-monitor">
-  <div class="job-status-row">
-    <div class="status-dot" id="status-dot"></div>
-    <div class="job-id" id="job-id">No active job</div>
-    <div class="job-progress" id="job-progress"></div>
+  <div class="section-title">Available (unassigned)</div>
+  <div class="pool" id="pool"></div>
+
+  <div class="section-title">Active Job</div>
+  <div class="job-monitor">
+    <div class="job-status-row">
+      <div class="status-dot" id="status-dot"></div>
+      <div class="job-id" id="job-id">No active job</div>
+      <div class="job-progress" id="job-progress"></div>
+    </div>
+    <div class="progress-bar-wrap"><div class="progress-bar-fill" id="progress-bar"></div></div>
+    <div class="worker-row-grid" id="worker-pills"></div>
+    <div class="log-area" id="log-area">
+      <div class="log-idle">Fleet is idle.</div>
+    </div>
   </div>
-  <div class="progress-bar-wrap"><div class="progress-bar-fill" id="progress-bar"></div></div>
-  <div class="worker-row-grid" id="worker-pills"></div>
-  <div class="log-area" id="log-area">
-    <div class="log-idle">Fleet is idle.</div>
+
+  <div class="save-bar">
+    <span class="save-feedback" id="save-feedback">Chain saved</span>
+    <button class="btn btn-ghost btn-sm" onclick="resetChain()">Reset</button>
+    <button class="btn btn-primary" onclick="saveChain()">Save Chain</button>
   </div>
 </div>
 
-<div class="save-bar">
-  <span class="save-feedback" id="save-feedback">Chain saved</span>
-  <button class="btn btn-ghost btn-sm" onclick="resetChain()">Reset</button>
-  <button class="btn btn-primary" onclick="saveChain()">Save Chain</button>
+<!-- ── Jobs tab ── -->
+<div class="tab-panel" id="tab-jobs">
+  <div class="section-title">Active &amp; Recent Jobs</div>
+  <div id="jobs-list" style="color:#475569;font-size:0.85rem;padding:1rem 0">
+    No jobs yet. Jobs will appear here once the pipeline is running.
+  </div>
+</div>
+
+<!-- ── Harnesses tab ── -->
+<div class="tab-panel" id="tab-harnesses">
+  <div class="section-title">Registered Models</div>
+  <div class="harness-grid" id="harness-grid"></div>
+</div>
+
+<!-- ── Templates tab ── -->
+<div class="tab-panel" id="tab-templates">
+  <div class="section-title">Project Templates</div>
+  <div style="color:#475569;font-size:0.85rem;padding:1rem 0">
+    Template system coming soon. Drop a template zip here to install a new project type (HA dashboard, Python addon, Windows app, etc.).
+  </div>
 </div>
 
 <script>
@@ -572,6 +646,42 @@ async function resetChain() {{
   roles = JSON.parse(JSON.stringify(originalRoles));
   renderRoster();
   renderPool();
+}}
+
+function switchTab(name, el) {{
+  document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
+  document.querySelectorAll(".tab-panel").forEach(p => p.classList.remove("active"));
+  el.classList.add("active");
+  document.getElementById("tab-" + name).classList.add("active");
+  if (name === "harnesses") renderHarnesses();
+}}
+
+function renderHarnesses() {{
+  const el = document.getElementById("harness-grid");
+  el.innerHTML = Object.entries(harnesses).map(([id, h]) => {{
+    const ctx = h.context_window ? (h.context_window >= 1000 ? (h.context_window/1000).toFixed(0)+"k" : h.context_window) : "?";
+    const caps = (h.capabilities || []).map(c => `<span class="cap-tag">${{c}}</span>`).join(" ");
+    const costBadgeHtml = h.cost_type === "local"
+      ? '<span class="cost-badge local">local</span>'
+      : h.cost_type === "cloud_metered"
+        ? '<span class="cost-badge cloud">metered</span>'
+        : '<span class="cost-badge cloud">cloud</span>';
+    return `
+    <div class="harness-card">
+      <div class="harness-info">
+        <div class="harness-name">${{h.display_name}}</div>
+        <div class="harness-meta">
+          ${{costBadgeHtml}}
+          <span>ctx ${{ctx}}</span>
+          <span>temp ${{h.params?.temperature ?? "?"}}</span>
+          <span>concurrency ${{h.concurrency ?? "?"}}</span>
+          ${{h.reasoning ? '<span style="color:#818cf8">reasoning ✓</span>' : ""}}
+        </div>
+        <div style="margin-top:0.35rem;display:flex;gap:0.3rem;flex-wrap:wrap">${{caps}}</div>
+        ${{h.notes ? `<div class="harness-notes">${{h.notes}}</div>` : ""}}
+      </div>
+    </div>`;
+  }}).join("");
 }}
 
 load();
