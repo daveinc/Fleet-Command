@@ -20,47 +20,61 @@ DEFAULT_PROMPTS: dict[str, str] = {
     "project_manager": (
         "Job request: {spec}\n\n"
         "List the major UI components (blocks) needed. For each block name what cards it contains.\n"
-        "Be concise. Plain text only. No YAML. Under 150 words."
+        "Be concise. Plain text only. No YAML. Under 100 words."
     ),
     "manager": (
         "Original request: {spec}\n\n"
         "Plan:\n{prev}\n\n"
         "Output ONLY a block/task list in this exact format. Nothing else:\n\n"
         "BLOCK 1: [name]\n"
-        "- Task 1: [card type] [entity] [purpose]\n"
-        "- Task 2: [card type] [entity] [purpose]\n\n"
+        "- Task 1: [card type] [brief purpose]\n"
+        "- Task 2: [card type] [brief purpose]\n\n"
         "BLOCK 2: [name]\n"
         "- Task 1: ...\n\n"
-        "Rules: one task = one card. Respect the exact quantities in the original request. No YAML. No explanations. No intro text."
+        "Rules: one task = one card. Match the exact card count in the original request. No YAML. No explanations. No intro text."
     ),
     "generator": (
-        "Block: {block}\n"
-        "Task: {task}\n\n"
-        "Output a single Home Assistant Lovelace card YAML fragment only.\n"
-        "No title. No views wrapper. Card definition only. YAML only."
+        "Task: {task}\n"
+        "Block: {block}\n\n"
+        "Output ONE valid Home Assistant Lovelace card in YAML. Card definition only — no views, no title, no dashboard wrapper.\n\n"
+        "Card format reference:\n"
+        "  Markdown card:  type: markdown\\n  content: |\\n    ## Heading\\n    Body text\n"
+        "  Entities card:  type: entities\\n  title: Title\\n  entities:\\n    - entity: sensor.example\n"
+        "  Gauge card:     type: gauge\\n  entity: sensor.example\\n  name: Label\n\n"
+        "YAML only. No explanation. No fences."
     ),
     "generator_single": (
         "Build this: {spec}\n\n"
-        "Output complete valid Home Assistant Lovelace YAML only."
+        "Output complete valid Home Assistant Lovelace YAML. Include title, views, and all cards.\n"
+        "YAML only. No explanation. No fences."
     ),
     "assembler": (
         "Job specification: {spec}\n\n"
-        "Card fragments to assemble:\n{fragments}\n\n"
-        "Combine these into one complete valid Home Assistant Lovelace YAML dashboard.\n"
-        "Group cards under views by their block name.\n"
+        "Card fragments:\n{fragments}\n\n"
+        "Combine into one complete Home Assistant Lovelace dashboard YAML.\n"
+        "Structure:\n"
+        "  title: Dashboard Title\n"
+        "  views:\n"
+        "    - title: View Name\n"
+        "      cards:\n"
+        "        - [card here]\n\n"
+        "Group cards under views by their block name. Fix any invalid card fields (e.g. markdown cards must use 'content:', not 'entity:').\n"
         "Output complete YAML only. No explanations. No fences."
     ),
     "reviewer": (
         "Spec: {spec}\n\n"
-        "YAML to fix:\n{prev}\n\n"
-        "Output the corrected YAML only. No explanations. No comments. YAML only."
+        "YAML to review:\n{prev}\n\n"
+        "Check: valid Lovelace structure, correct card types, no sensor definitions inside views, markdown cards use 'content:' not 'entity:'.\n"
+        "If valid: return the YAML unchanged.\n"
+        "If invalid: return corrected YAML only. No explanations. No comments. YAML only."
     ),
     "supervisor": (
         "Job specification:\n{spec}\n\n"
         "Final output for sign-off:\n{prev}\n\n"
-        "If acceptable, return the YAML unchanged. "
-        "If not, write REJECTED_AT: <stage> on the first line, then REJECTED: with reasons. "
-        "Valid stages: project_manager, manager, generator, reviewer."
+        "If the YAML is a valid Home Assistant Lovelace dashboard that fulfils the spec, return it unchanged.\n"
+        "If not, write REJECTED_AT: <stage> on the first line, then REJECTED: with specific reasons.\n"
+        "Valid REJECTED_AT stages: project_manager, manager, generator, reviewer.\n"
+        "Choose the stage closest to where the error originated."
     ),
 }
 

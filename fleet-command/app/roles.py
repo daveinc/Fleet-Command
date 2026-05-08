@@ -61,7 +61,7 @@ DEFAULT_ASSIGNMENTS: dict[str, Any] = {
     "manager":         {"harness_id": "gemma4_e4b", "params": {"temperature": 0.5}},
     "reviewer":        {"harness_id": "gemma4_e4b", "params": {}},
     "generator":       {"harness_id": "qwen_ha_1_5b", "params": {}},
-    "assembler":       {"harness_id": None, "params": {}},
+    "assembler":       {"harness_id": "gemma4_e4b", "params": {}},
     "advisor":         {"harness_id": "claude_sonnet", "params": {}},
 }
 
