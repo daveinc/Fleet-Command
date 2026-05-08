@@ -103,6 +103,22 @@ def is_cancelled(job_id: str) -> bool:
     return (_run_dir(job_id) / "cancel").exists()
 
 
+def restart_job(job_id: str) -> dict[str, Any] | None:
+    job = load_job(job_id)
+    if not job:
+        return None
+    cancel_flag = _run_dir(job_id) / "cancel"
+    if cancel_flag.exists():
+        cancel_flag.unlink()
+    job["status"] = STATUS_PENDING
+    job["stages"] = {}
+    job["log"] = []
+    job["final_output"] = None
+    append_log(job, "system", "Restarted by user")
+    save_job(job)
+    return job
+
+
 def delete_job(job_id: str) -> bool:
     import shutil
     d = _run_dir(job_id)

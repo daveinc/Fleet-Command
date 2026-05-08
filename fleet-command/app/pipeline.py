@@ -182,6 +182,59 @@ async def _call_harness(harness: dict[str, Any], system: str, user: str) -> str:
         raise
 
 
+# Escalation order — when a worker is unavailable, try the next rank up
+_FALLBACK_ORDER = ["generator", "reviewer", "supervisor", "advisor"]
+
+
+async def _call_with_fallback(
+    stage: str,
+    primary_harness: dict[str, Any],
+    system: str,
+    user: str,
+    roles: dict[str, Any],
+    job: dict[str, Any],
+) -> tuple[str, str]:
+    """Try primary harness, escalate up the chain, then wrap to highest available. Returns (raw_output, actual_role_used)."""
+    primary_id = primary_harness.get("id") or primary_harness.get("harness_id")
+    tried_ids: set[str] = set()
+
+    try:
+        return await _call_harness(primary_harness, system, user), stage
+    except Exception as primary_exc:
+        _flog(f"  ESCALATE: {stage} primary failed — walking up chain")
+        tried_ids.add(primary_id or "")
+
+    start_idx = _FALLBACK_ORDER.index(stage) + 1 if stage in _FALLBACK_ORDER else len(_FALLBACK_ORDER)
+
+    # Walk up from current role toward the top
+    candidates = _FALLBACK_ORDER[start_idx:] + _FALLBACK_ORDER[:start_idx]
+
+    for fallback_role in candidates:
+        if fallback_role == stage:
+            continue
+        assignment = roles.get(fallback_role, {})
+        fb_harness_id = assignment.get("harness_id")
+        if not fb_harness_id:
+            continue
+        fb_harness = get_harness(fb_harness_id)
+        if not fb_harness:
+            continue
+        fb_id = fb_harness.get("id") or fb_harness_id
+        if fb_id in tried_ids:
+            continue
+
+        tried_ids.add(fb_id)
+        append_log(job, stage, f"Escalating to {fb_harness.get('display_name', fallback_role)} ({fallback_role})")
+        _flog(f"  ESCALATE → {fallback_role} ({fb_harness.get('model')})")
+        try:
+            return await _call_harness(fb_harness, system, user), fallback_role
+        except Exception as fb_exc:
+            _flog(f"  ESCALATE {fallback_role} also failed: {fb_exc}")
+            continue
+
+    raise RuntimeError(f"All workers exhausted for stage '{stage}' — no available harness responded")
+
+
 def _user_prompt(stage: str, spec: str, prev: str | None) -> str:
     if stage == "generator":
         return (
@@ -238,17 +291,18 @@ async def run_stage(job_id: str, stage: str) -> dict[str, Any]:
     save_job(job)
 
     try:
-        raw = await _call_harness(harness, persona, user)
+        raw, handled_by = await _call_with_fallback(stage, harness, persona, user, roles, job)
         output = _strip_fences(raw)
         write_stage_output(job_id, stage, output)
-        job["stages"][stage] = {"status": "done", "preview": output[:400]}
-        append_log(job, stage, f"Done — {len(output)} chars")
+        note = f" (handled by {handled_by})" if handled_by != stage else ""
+        job["stages"][stage] = {"status": "done", "preview": output[:400], "handled_by": handled_by}
+        append_log(job, stage, f"Done — {len(output)} chars{note}")
         save_job(job)
-        return {"ok": True, "stage": stage, "output": output}
+        return {"ok": True, "stage": stage, "output": output, "handled_by": handled_by}
 
     except Exception as exc:
         job["stages"][stage] = {"status": "error", "error": str(exc)}
-        append_log(job, stage, f"ERROR — {exc}")
+        append_log(job, stage, f"ERROR — all workers exhausted: {exc}")
         save_job(job)
         return {"ok": False, "error": str(exc)}
 
