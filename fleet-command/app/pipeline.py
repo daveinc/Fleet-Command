@@ -552,6 +552,16 @@ async def run_pipeline(job_id: str) -> None:
 
         if stage == "generator" and "manager" in pipeline:
             result = await _run_generator_loop(job_id, roles, job)
+        elif stage == "assembler" and "generator" in pipeline and "manager" in pipeline:
+            # Assembler is run inside _run_generator_loop — skip the standalone stage call.
+            # Just read what the generator loop already wrote and continue.
+            job = load_job(job_id)
+            if job.get("stages", {}).get("assembler", {}).get("status") == "done":
+                assembler_out = read_stage_output(job_id, "assembler")
+                prev_output = assembler_out or prev_output
+                continue
+            # Assembler wasn't run (e.g., single-task fallback skipped it) — run it now
+            result = await run_stage(job_id, stage)
         else:
             result = await run_stage(job_id, stage)
         if not result["ok"]:
@@ -578,6 +588,11 @@ async def run_pipeline(job_id: str) -> None:
                         return
                     if rerun_stage == "generator" and "manager" in pipeline:
                         r = await _run_generator_loop(job_id, roles, load_job(job_id))
+                    elif rerun_stage == "assembler" and "generator" in pipeline and "manager" in pipeline:
+                        rjob = load_job(job_id)
+                        if rjob.get("stages", {}).get("assembler", {}).get("status") == "done":
+                            continue
+                        r = await run_stage(job_id, rerun_stage)
                     else:
                         r = await run_stage(job_id, rerun_stage)
                     if not r["ok"]:

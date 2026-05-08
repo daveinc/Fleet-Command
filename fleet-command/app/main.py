@@ -2128,7 +2128,7 @@ function openChainEditor() {{
   const sel = document.getElementById("pl-job-select");
   const job = _plJobs.find(j => j.id === sel.value);
   if (!job) return;
-  const ALL_STAGES = ["project_manager","manager","generator","reviewer","supervisor","advisor"];
+  const ALL_STAGES = ["project_manager","manager","generator","assembler","reviewer","supervisor","advisor"];
   const pipeline = job.pipeline || [];
   const container = document.getElementById("chain-editor-stages");
   container.innerHTML = ALL_STAGES.map(s => `
@@ -2154,7 +2154,7 @@ async function saveChain() {{
 }}
 
 // F3 — Stage instructions
-const STAGE_LABELS = {{project_manager:"PM",manager:"Manager",generator:"Generator",reviewer:"Reviewer",supervisor:"Supervisor",advisor:"Advisor"}};
+const STAGE_LABELS = {{project_manager:"PM",manager:"Manager",generator:"Generator",assembler:"Assembler",reviewer:"Reviewer",supervisor:"Supervisor",advisor:"Advisor"}};
 
 async function loadStageInstructions() {{
   const sel = document.getElementById("pl-job-select");
