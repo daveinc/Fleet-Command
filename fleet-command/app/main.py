@@ -2262,7 +2262,7 @@ async function renderPromptTemplates() {{
         <div style="font-size:0.68rem;color:#475569;margin:0.5rem 0 0.2rem">System persona</div>
         <pre style="font-size:0.72rem;color:#94a3b8;background:#0f1117;padding:0.5rem;border-radius:5px;white-space:pre-wrap;margin:0 0 0.6rem">${{t.system}}</pre>
         ${{t.reference ? `<div style="font-size:0.68rem;color:#475569;margin-bottom:0.2rem">Reference (prepended to user prompt)</div><pre style="font-size:0.72rem;color:#6366f1;background:#0f1117;padding:0.5rem;border-radius:5px;white-space:pre-wrap;margin:0 0 0.6rem">${{t.reference}}</pre>` : ""}}
-        <div style="font-size:0.68rem;color:#475569;margin-bottom:0.2rem">User prompt template <span style="color:#334155">({spec} and {prev_output} filled at runtime)</span></div>
+        <div style="font-size:0.68rem;color:#475569;margin-bottom:0.2rem">User prompt template <span style="color:#334155">({{spec}} and {{prev_output}} filled at runtime)</span></div>
         <pre style="font-size:0.72rem;color:#94a3b8;background:#0f1117;padding:0.5rem;border-radius:5px;white-space:pre-wrap;margin:0">${{t.user}}</pre>
       </div>
     </div>`;
