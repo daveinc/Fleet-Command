@@ -765,12 +765,14 @@ let roleOrder = [];
 let advisorRole = "advisor";
 let originalRoles = {{}};
 let fleetData = {{ staff: [], projects: [], blocks: [], tasks: [] }};
+let configuredWorkers = [];
 
 async function load() {{
-  const [hRes, rRes, fRes] = await Promise.all([
+  const [hRes, rRes, fRes, wRes] = await Promise.all([
     fetch(api("/api/harnesses")).then(r => r.json()),
     fetch(api("/api/roles")).then(r => r.json()),
     fetch(api("/api/fleet")).then(r => r.json()),
+    fetch(api("/workers")).then(r => r.json()),
   ]);
   harnesses = hRes.harnesses || {{}};
   roles = rRes.roles || {{}};
@@ -779,6 +781,7 @@ async function load() {{
   advisorRole = rRes.advisor || "advisor";
   originalRoles = JSON.parse(JSON.stringify(roles));
   fleetData = fRes.fleet || {{ staff: [], projects: [], blocks: [], tasks: [] }};
+  configuredWorkers = (wRes.workers || []).filter(w => w.enabled);
   renderRoster();
   renderPool();
   renderHarnesses();
@@ -1017,13 +1020,31 @@ function staffCard(s) {{
       ${{s.profile ? `<div style="font-size:0.72rem;color:#334155;margin-top:0.25rem;font-style:italic">${{s.profile}}</div>` : ""}}
       ${{taskHtml}}
     </div>
-    <button class="btn btn-ghost btn-sm" onclick="deleteStaff(${{s.id}})" title="Remove" style="font-size:0.7rem;color:#374151">✕</button>
+    ${{s._readonly ? "" : `<button class="btn btn-ghost btn-sm" onclick="deleteStaff(${{s.id}})" title="Remove" style="font-size:0.7rem;color:#374151">✕</button>`}}
   </div>`;
+}}
+
+function workerToStaff(w) {{
+  return {{
+    id: "w" + w.id,
+    type: "AR",
+    name: w.name || ("Worker " + w.id),
+    role: w.role || "worker",
+    budget: w.provider || "—",
+    status: w.status === "Configured" ? "Available" : w.status,
+    score: "",
+    profile: [w.model, w.request_format, w.endpoint].filter(Boolean).join(" · "),
+    assigned_work: [],
+    _readonly: true,
+  }};
 }}
 
 function renderStaff() {{
   const hr = fleetData.staff.filter(s => s.type === "HR");
-  const ar = fleetData.staff.filter(s => s.type === "AR");
+  const arManual = fleetData.staff.filter(s => s.type === "AR");
+  const arWorkers = configuredWorkers.map(workerToStaff);
+  const ar = [...arWorkers, ...arManual];
+
   document.getElementById("staff-hr").innerHTML = hr.length
     ? hr.map(staffCard).join("") : '<div style="color:#374151;font-size:0.8rem;padding:0.5rem 0">No human staff yet.</div>';
   document.getElementById("staff-ar").innerHTML = ar.length
