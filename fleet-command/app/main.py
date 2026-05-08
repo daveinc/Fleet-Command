@@ -757,11 +757,13 @@ def _dashboard_html(root: str) -> str:  # noqa: C901
 
 <!-- ── Templates tab ── -->
 <div class="tab-panel" id="tab-templates">
-  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.75rem">
-    <div class="section-title" style="margin:0">Project Templates</div>
+  <div class="section-title">Worker Configs — What Each AI Is Running</div>
+  <div class="tmpl-grid" id="tmpl-grid"></div>
+  <div style="margin-top:1.5rem;display:flex;justify-content:space-between;align-items:center">
+    <div class="section-title" style="margin:0">Saved Job Templates</div>
     <button class="btn btn-ghost btn-sm" onclick="openAddTemplate()">+ New Template</button>
   </div>
-  <div class="tmpl-grid" id="tmpl-grid"></div>
+  <div class="tmpl-grid" id="job-tmpl-grid" style="margin-top:0.75rem"></div>
 </div>
 
 <!-- ── Modals ── -->
@@ -856,7 +858,7 @@ async function load() {{
   advisorRole = rRes.advisor || "advisor";
   originalRoles = JSON.parse(JSON.stringify(roles));
   fleetData = fRes.fleet || {{ staff: [], projects: [], blocks: [], tasks: [] }};
-  configuredWorkers = (wRes.workers || []).filter(w => w.enabled);
+  configuredWorkers = wRes.workers || [];
   renderRoster();
   renderPool();
   renderHarnesses();
@@ -1079,10 +1081,29 @@ function staffCard(s) {{
   const taskHtml = tasks.length
     ? `<ul class="staff-tasks">${{tasks.map(t => `<li>${{t}}</li>`).join("")}}</ul>`
     : "";
+  const caps = (s.capabilities || []);
+  const capsHtml = caps.length
+    ? `<div style="display:flex;gap:0.3rem;flex-wrap:wrap;margin-top:0.3rem">${{caps.map(c => `<span class="cap-tag">${{c}}</span>`).join("")}}</div>`
+    : "";
+
+  const allRoles = [...roleOrder, advisorRole];
+  const currentRole = allRoles.find(r => roles[r]?.harness_id && s._harness_match &&
+    Object.entries(harnesses).find(([id, h]) => id === roles[r]?.harness_id && h.model === s._harness_match?.model)
+  ) || "";
+  const roleOpts = `<option value="">— no role —</option>` +
+    allRoles.map(r => `<option value="${{r}}" ${{r === currentRole ? "selected" : ""}}>${{roleMeta[r]?.label || r}}</option>`).join("");
+
+  const roleAssign = s._worker_id ? `
+    <div style="display:flex;align-items:center;gap:0.4rem;margin-top:0.5rem">
+      <select style="flex:1;background:#0f1117;border:1px solid #334155;border-radius:5px;color:#e2e8f0;font-size:0.78rem;padding:0.25rem 0.4rem"
+        id="role-assign-${{s._worker_id}}">${{roleOpts}}</select>
+      <button class="btn btn-ghost btn-sm" onclick="assignWorkerRole(${{s._worker_id}})">Assign</button>
+    </div>` : "";
+
   return `
   <div class="staff-card ${{type}}" data-id="${{s.id}}">
     <div class="staff-avatar ${{type}}">${{icon}}</div>
-    <div class="staff-body">
+    <div class="staff-body" style="flex:1">
       <div style="display:flex;align-items:center;gap:0.5rem">
         <span class="staff-name">${{s.name || "Unnamed"}}</span>
         <span class="staff-status ${{statusCls}}">${{s.status || "—"}}</span>
@@ -1093,10 +1114,12 @@ function staffCard(s) {{
         ${{s.budget ? `<span>💰 ${{s.budget}}</span>` : ""}}
         ${{s.hired ? `<span>📅 ${{s.hired}}</span>` : ""}}
       </div>
-      ${{s.profile ? `<div style="font-size:0.72rem;color:#334155;margin-top:0.25rem;font-style:italic">${{s.profile}}</div>` : ""}}
+      ${{s.profile ? `<div style="font-size:0.72rem;color:#334155;margin-top:0.2rem;font-style:italic">${{s.profile}}</div>` : ""}}
+      ${{capsHtml}}
       ${{taskHtml}}
+      ${{roleAssign}}
     </div>
-    ${{s._readonly ? "" : `<button class="btn btn-ghost btn-sm" onclick="deleteStaff(${{s.id}})" title="Remove" style="font-size:0.7rem;color:#374151">✕</button>`}}
+    ${{!s._readonly ? `<button class="btn btn-ghost btn-sm" onclick="deleteStaff(${{s.id}})" title="Remove" style="font-size:0.7rem;color:#374151">✕</button>` : ""}}
   </div>`;
 }}
 
@@ -1107,6 +1130,8 @@ function workerToStaff(w) {{
     "Missing URL": "Unavailable",
     "Missing API key": "Unavailable",
   }};
+  const matchedHarness = Object.values(harnesses).find(h => h.model === w.model) || null;
+  const caps = matchedHarness?.capabilities || [];
   return {{
     id: "w" + w.id,
     type: "AR",
@@ -1115,8 +1140,11 @@ function workerToStaff(w) {{
     budget: w.provider || "—",
     status: statusMap[w.status] || w.status,
     score: "",
-    profile: [w.model, w.request_format, w.endpoint].filter(Boolean).join(" · "),
+    profile: [w.model, w.request_format].filter(Boolean).join(" · "),
     assigned_work: [],
+    capabilities: caps,
+    _worker_id: w.id,
+    _harness_match: matchedHarness,
     _readonly: true,
   }};
 }}
@@ -1171,6 +1199,27 @@ async function deleteStaff(id) {{
     fleetData.staff = fleetData.staff.filter(s => s.id !== id);
     renderStaff();
   }}
+}}
+
+async function assignWorkerRole(workerId) {{
+  const sel = document.getElementById("role-assign-" + workerId);
+  const role = sel?.value;
+  const worker = configuredWorkers.find(w => w.id === workerId);
+  if (!worker) return;
+  const matchedEntry = Object.entries(harnesses).find(([id, h]) => h.model === worker.model);
+  if (!matchedEntry && role) {{
+    alert("No harness found matching this worker's model (" + worker.model + "). Add it in the Harnesses tab first.");
+    return;
+  }}
+  const harnessId = matchedEntry ? matchedEntry[0] : null;
+  if (role) roles[role] = {{ harness_id: harnessId, params: {{}} }};
+  await fetch(api("/api/roles"), {{
+    method: "POST", headers: {{"Content-Type":"application/json"}},
+    body: JSON.stringify({{ assignments: roles }}),
+  }});
+  renderRoster();
+  renderPool();
+  renderStaff();
 }}
 
 // ── Projects ───────────────────────────────────────────────────────────────
@@ -1341,16 +1390,51 @@ function templateCard(t) {{
   </div>`;
 }}
 
+function workerConfigCard(w) {{
+  const h = Object.values(harnesses).find(h => h.model === w.model) || {{}};
+  const caps = h.capabilities || [];
+  const statusCls = w.status === "Configured" ? "status-ongoing" : w.status === "Disabled" ? "status-done" : "status-halted";
+  return `
+  <div class="tmpl-card" style="border-left:3px solid #6366f1">
+    <div style="display:flex;align-items:center;gap:0.4rem;flex-wrap:wrap">
+      <span class="tmpl-name">${{w.name || "Worker " + w.id}}</span>
+      <span class="status-badge ${{statusCls}}">${{w.status}}</span>
+    </div>
+    <div class="tmpl-desc" style="font-family:monospace;font-size:0.72rem">
+      ${{w.model || "—"}}<br>
+      ${{w.request_format}} · ${{w.provider}}<br>
+      ${{w.endpoint || "no endpoint"}}
+    </div>
+    ${{caps.length ? `<div style="display:flex;gap:0.3rem;flex-wrap:wrap;margin-top:0.3rem">${{caps.map(c=>`<span class="cap-tag">${{c}}</span>`).join("")}}</div>` : ""}}
+    ${{h.notes ? `<div style="font-size:0.68rem;color:#334155;margin-top:0.3rem;font-style:italic">${{h.notes}}</div>` : ""}}
+    <div class="tmpl-foot">
+      ${{h.context_window ? `<span style="font-size:0.68rem;color:#475569">ctx ${{h.context_window >= 1000 ? (h.context_window/1000).toFixed(0)+"k" : h.context_window}}</span>` : ""}}
+      ${{h.cost_type ? `<span class="cost-badge ${{h.cost_type === "local" ? "local" : "cloud"}}">${{h.cost_type}}</span>` : ""}}
+      ${{h.reasoning ? `<span style="font-size:0.68rem;color:#818cf8">reasoning ✓</span>` : ""}}
+    </div>
+  </div>`;
+}}
+
+function renderWorkerConfigs() {{
+  const el = document.getElementById("tmpl-grid");
+  if (!configuredWorkers.length) {{
+    el.innerHTML = '<div style="color:#475569;font-size:0.85rem;padding:0.5rem 0;grid-column:1/-1">No workers configured.</div>';
+    return;
+  }}
+  el.innerHTML = configuredWorkers.map(workerConfigCard).join("");
+}}
+
 async function loadTemplates() {{
   const res = await fetch(api("/api/fleet/templates")).then(r => r.json());
-  templates = res.templates || [];
+  templates = (res.templates || []).filter(t => !t._builtin);
+  renderWorkerConfigs();
   renderTemplates();
 }}
 
 function renderTemplates() {{
-  const el = document.getElementById("tmpl-grid");
+  const el = document.getElementById("job-tmpl-grid");
   if (!templates.length) {{
-    el.innerHTML = '<div style="color:#475569;font-size:0.85rem;padding:1rem 0;grid-column:1/-1">No templates yet. Create one to define a reusable job type.</div>';
+    el.innerHTML = '<div style="color:#475569;font-size:0.85rem;padding:0.5rem 0;grid-column:1/-1">No job templates yet.</div>';
     return;
   }}
   el.innerHTML = templates.map(templateCard).join("");
