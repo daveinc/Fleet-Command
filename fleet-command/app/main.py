@@ -12,7 +12,7 @@ from app.workers import configured_workers, test_worker
 from app.harnesses import load_harnesses, save_user_harness
 from app.roles import load_roles, save_roles, swap_roles, ROLE_ORDER, ROLE_LABELS, ROLE_META, ADVISOR_ROLE
 from fastapi import BackgroundTasks
-from app.jobs import create_job, load_job, list_jobs, read_stage_output, cancel_job, delete_job, restart_job
+from app.jobs import create_job, load_job, list_jobs, read_stage_output, cancel_job, delete_job, restart_job, rerun_from_stage
 from app.pipeline import run_pipeline, run_stage
 from app.fleet import (
     load_fleet, save_fleet,
@@ -275,6 +275,26 @@ async def api_job_reassign(job_id: str, payload: dict) -> dict:
     from app.jobs import save_job
     save_job(job)
     return {"ok": True, "job": job}
+
+
+@app.post("/api/jobs/{job_id}/rerun-from/{stage}")
+async def api_rerun_from(job_id: str, stage: str, background_tasks: BackgroundTasks) -> dict:
+    job = rerun_from_stage(job_id, stage)
+    if not job:
+        return JSONResponse({"ok": False, "error": "not found or invalid stage"}, status_code=404)
+    background_tasks.add_task(run_pipeline, job_id)
+    return {"ok": True, "job_id": job_id, "rerun_from": stage}
+
+
+@app.patch("/api/jobs/{job_id}/stage-instructions")
+async def api_stage_instructions(job_id: str, payload: dict) -> dict:
+    from app.jobs import save_job
+    job = load_job(job_id)
+    if not job:
+        return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
+    job["stage_instructions"] = payload.get("stage_instructions", {})
+    save_job(job)
+    return {"ok": True}
 
 
 @app.get("/api/pipeline-rules")
@@ -871,12 +891,39 @@ def _dashboard_html(root: str) -> str:  # noqa: C901
 <!-- ── Pipeline tab ── -->
 <div class="tab-panel" id="tab-pipeline">
   <div class="section-title">Pipeline Visualizer</div>
-  <div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:1rem">
+  <div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:1rem;flex-wrap:wrap">
     <label style="font-size:0.82rem;color:#94a3b8">Job</label>
-    <select id="pl-job-select" style="font-size:0.82rem;background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:6px;padding:0.25rem 0.5rem" onchange="renderPipelineNodes()"></select>
+    <select id="pl-job-select" style="font-size:0.82rem;background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:6px;padding:0.25rem 0.5rem;flex:1;min-width:200px" onchange="renderPipelineNodes();loadStageInstructions()"></select>
     <button class="btn btn-ghost btn-sm" onclick="loadPipelineTab()">↺ Refresh</button>
+    <button class="btn btn-ghost btn-sm" onclick="openChainEditor()">Edit Chain</button>
   </div>
   <div id="pl-canvas" style="overflow-x:auto;padding:1rem 0"></div>
+
+  <!-- Stage Instructions (F3) -->
+  <details style="margin-top:1rem">
+    <summary style="font-size:0.82rem;color:#94a3b8;cursor:pointer;user-select:none">Stage Instructions (optional overrides per stage)</summary>
+    <div id="pl-instructions" style="margin-top:0.75rem;display:grid;gap:0.5rem"></div>
+    <button class="btn btn-primary btn-sm" style="margin-top:0.5rem" onclick="saveStageInstructions()">Save Instructions</button>
+  </details>
+
+  <!-- Escalation Rules (E1/E2) -->
+  <div style="margin-top:1.5rem">
+    <div class="section-title" style="font-size:0.82rem">Escalation Rules</div>
+    <div id="pl-rules-list" style="display:grid;gap:0.5rem;margin-top:0.5rem"></div>
+    <button class="btn btn-ghost btn-sm" style="margin-top:0.5rem" onclick="loadRulesPanel()">↺ Reload Rules</button>
+  </div>
+</div>
+
+<!-- Chain editor modal (F1/F2) -->
+<div class="modal-overlay" id="modal-chain-editor">
+  <div class="modal" style="width:min(480px,94vw)">
+    <h3>Edit Pipeline Chain</h3>
+    <div id="chain-editor-stages" style="display:flex;flex-direction:column;gap:0.4rem;margin-bottom:1rem"></div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost btn-sm" onclick="closeModal('modal-chain-editor')">Cancel</button>
+      <button class="btn btn-primary btn-sm" onclick="saveChain()">Save Chain</button>
+    </div>
+  </div>
 </div>
 
 <!-- ── Templates tab ── -->
@@ -1911,6 +1958,8 @@ async function loadPipelineTab() {{
     ? _plJobs.map(j => `<option value="${{j.id}}"${{j.id===prev?" selected":""}}>${{j.id}} — ${{j.status}} (${{(j.spec||"").slice(0,40)}})</option>`).join("")
     : `<option>No jobs yet</option>`;
   renderPipelineNodes();
+  loadStageInstructions();
+  loadRulesPanel();
   _plSchedulePoll();
 }}
 
@@ -1945,7 +1994,7 @@ function renderPipelineNodes() {{
     manager: "plan", generator: "brief", reviewer: "YAML", supervisor: "reviewed", advisor: "escalation",
   }};
 
-  const nodeW = 140, nodeH = 96, gapX = 80, padY = 20;
+  const nodeW = 140, nodeH = 108, gapX = 80, padY = 20;
   const totalW = pipeline.length * nodeW + (pipeline.length - 1) * gapX + 40;
   const totalH = nodeH + padY * 2 + 30;
 
@@ -1974,18 +2023,20 @@ function renderPipelineNodes() {{
     const chars = s.preview ? s.preview.length : 0;
     const statusTxt = s.status || "pending";
     const hasOutput = s.status === "done" || s.status === "error";
+    const progress = s.progress || "";
 
     html += `
-      <g class="pl-node" style="cursor:${{hasOutput?"pointer":"default"}}" onclick="${{hasOutput?`showNodeOutput('${{job.id}}','${{stage}}')`:""}}" >
+      <g class="pl-node">
         <rect x="${{x}}" y="${{y}}" width="${{nodeW}}" height="${{nodeH}}" rx="8"
               fill="#1e293b" stroke="${{color}}" stroke-width="2"/>
         <rect x="${{x}}" y="${{y}}" width="${{nodeW}}" height="24" rx="8" fill="${{color}}22"/>
         <rect x="${{x}}" y="${{y+16}}" width="${{nodeW}}" height="8" fill="${{color}}22"/>
         <text x="${{x+nodeW/2}}" y="${{y+16}}" text-anchor="middle" font-size="11" font-weight="bold" fill="${{color}}">${{label}}</text>
-        <text x="${{x+nodeW/2}}" y="${{y+34}}" text-anchor="middle" font-size="9" fill="#94a3b8">${{statusTxt}}</text>
+        <text x="${{x+nodeW/2}}" y="${{y+34}}" text-anchor="middle" font-size="9" fill="#94a3b8">${{progress || statusTxt}}</text>
         <text x="${{x+nodeW/2}}" y="${{y+48}}" text-anchor="middle" font-size="8" fill="#64748b">${{model}}</text>
         <text x="${{x+nodeW/2}}" y="${{y+62}}" text-anchor="middle" font-size="8" fill="#475569">${{chars?chars+" chars":""}}</text>
-        ${{hasOutput ? `<text x="${{x+nodeW/2}}" y="${{y+78}}" text-anchor="middle" font-size="8" fill="${{color}}">▶ view output</text>` : ""}}
+        ${{hasOutput ? `<text x="${{x+nodeW/2}}" y="${{y+78}}" text-anchor="middle" font-size="8" fill="${{color}}" style="cursor:pointer" onclick="showNodeOutput('${{job.id}}','${{stage}}')">▶ output</text>` : ""}}
+        ${{hasOutput ? `<text x="${{x+nodeW/2}}" y="${{y+90}}" text-anchor="middle" font-size="8" fill="#f59e0b" style="cursor:pointer" onclick="rerunFromStage('${{job.id}}','${{stage}}')">↺ rerun from here</text>` : ""}}
       </g>`;
   }});
 
@@ -2001,6 +2052,113 @@ function renderPipelineNodes() {{
   </div>`;
 
   canvas.innerHTML = html;
+}}
+
+// D1 — Re-run from stage
+async function rerunFromStage(jobId, stage) {{
+  if (!confirm(`Re-run from "${{stage}}" and all downstream stages?`)) return;
+  await fetch(api(`/api/jobs/${{jobId}}/rerun-from/${{stage}}`), {{method: "POST"}});
+  await loadPipelineTab();
+}}
+
+// F1/F2 — Chain editor
+function openChainEditor() {{
+  const sel = document.getElementById("pl-job-select");
+  const job = _plJobs.find(j => j.id === sel.value);
+  if (!job) return;
+  const ALL_STAGES = ["project_manager","manager","generator","reviewer","supervisor","advisor"];
+  const pipeline = job.pipeline || [];
+  const container = document.getElementById("chain-editor-stages");
+  container.innerHTML = ALL_STAGES.map(s => `
+    <label style="display:flex;align-items:center;gap:0.5rem;font-size:0.82rem">
+      <input type="checkbox" name="ce-stage" value="${{s}}" ${{pipeline.includes(s)?"checked":""}}>
+      ${{s}}
+    </label>`).join("");
+  document.getElementById("modal-chain-editor").classList.add("open");
+}}
+
+async function saveChain() {{
+  const sel = document.getElementById("pl-job-select");
+  const job = _plJobs.find(j => j.id === sel.value);
+  if (!job) return;
+  const checked = [...document.querySelectorAll('input[name="ce-stage"]:checked')].map(i => i.value);
+  if (!checked.length) {{ alert("Select at least one stage."); return; }}
+  await fetch(api(`/api/jobs/${{job.id}}/pipeline`), {{
+    method: "PATCH", headers: {{"Content-Type":"application/json"}},
+    body: JSON.stringify({{pipeline: checked}}),
+  }});
+  closeModal("modal-chain-editor");
+  await loadPipelineTab();
+}}
+
+// F3 — Stage instructions
+const STAGE_LABELS = {{project_manager:"PM",manager:"Manager",generator:"Generator",reviewer:"Reviewer",supervisor:"Supervisor",advisor:"Advisor"}};
+
+async function loadStageInstructions() {{
+  const sel = document.getElementById("pl-job-select");
+  const job = _plJobs.find(j => j.id === sel.value);
+  const container = document.getElementById("pl-instructions");
+  if (!job || !container) return;
+  const pipeline = job.pipeline || [];
+  const existing = job.stage_instructions || {{}};
+  container.innerHTML = pipeline.map(s => `
+    <div>
+      <label style="font-size:0.75rem;color:#64748b">${{STAGE_LABELS[s]||s}}</label>
+      <textarea id="si-${{s}}" rows="2" style="width:100%;background:#0f172a;color:#94a3b8;border:1px solid #334155;border-radius:6px;font-size:0.75rem;padding:0.3rem;resize:vertical">${{existing[s]||""}}</textarea>
+    </div>`).join("");
+}}
+
+async function saveStageInstructions() {{
+  const sel = document.getElementById("pl-job-select");
+  const job = _plJobs.find(j => j.id === sel.value);
+  if (!job) return;
+  const instructions = {{}};
+  (job.pipeline||[]).forEach(s => {{
+    const el = document.getElementById(`si-${{s}}`);
+    if (el && el.value.trim()) instructions[s] = el.value.trim();
+  }});
+  await fetch(api(`/api/jobs/${{job.id}}/stage-instructions`), {{
+    method: "PATCH", headers: {{"Content-Type":"application/json"}},
+    body: JSON.stringify({{stage_instructions: instructions}}),
+  }});
+  alert("Instructions saved.");
+}}
+
+// E1/E2 — Escalation rules panel
+let _plRules = {{}};
+
+async function loadRulesPanel() {{
+  const res = await fetch(api("/api/pipeline-rules")).then(r => r.json());
+  _plRules = res.rules || {{}};
+  renderRulesPanel();
+}}
+
+function renderRulesPanel() {{
+  const container = document.getElementById("pl-rules-list");
+  if (!container) return;
+  const rules = _plRules.escalation_rules || [];
+  if (!rules.length) {{ container.innerHTML = `<p style="color:#64748b;font-size:0.8rem">No rules defined.</p>`; return; }}
+  container.innerHTML = rules.map((r,i) => `
+    <div style="background:#1e293b;border:1px solid #334155;border-radius:8px;padding:0.75rem;display:flex;align-items:center;gap:0.75rem;flex-wrap:wrap">
+      <input type="checkbox" ${{r.enabled?"checked":""}} onchange="toggleRule(${{i}},this.checked)">
+      <span style="font-size:0.82rem;color:#e2e8f0;flex:1">${{r.name}}</span>
+      <label style="font-size:0.75rem;color:#94a3b8">Threshold:
+        <input type="number" value="${{r.threshold}}" min="1" max="99"
+          style="width:48px;background:#0f172a;color:#e2e8f0;border:1px solid #334155;border-radius:4px;padding:0.1rem 0.3rem;font-size:0.75rem;margin-left:0.3rem"
+          onchange="setRuleThreshold(${{i}},this.value)">
+      </label>
+      <span style="font-size:0.72rem;color:#64748b">→ ${{r.action}}</span>
+    </div>`).join("");
+}}
+
+async function toggleRule(idx, enabled) {{
+  _plRules.escalation_rules[idx].enabled = enabled;
+  await fetch(api("/api/pipeline-rules"), {{method:"POST",headers:{{"Content-Type":"application/json"}},body:JSON.stringify(_plRules)}});
+}}
+
+async function setRuleThreshold(idx, val) {{
+  _plRules.escalation_rules[idx].threshold = parseInt(val);
+  await fetch(api("/api/pipeline-rules"), {{method:"POST",headers:{{"Content-Type":"application/json"}},body:JSON.stringify(_plRules)}});
 }}
 
 async function showNodeOutput(jobId, stage) {{

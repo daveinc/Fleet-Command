@@ -23,7 +23,7 @@ def _flog(msg: str) -> None:
 from app.jobs import (
     load_job, save_job, append_log,
     write_stage_output, read_stage_output,
-    is_cancelled,
+    is_cancelled, rerun_from_stage,
     STATUS_RUNNING, STATUS_DONE, STATUS_FAILED,
 )
 from app.roles import load_roles, ROLE_META
@@ -235,7 +235,11 @@ async def _call_with_fallback(
     raise RuntimeError(f"All workers exhausted for stage '{stage}' — no available harness responded")
 
 
-def _user_prompt(stage: str, spec: str, prev: str | None, task: str | None = None, block: str | None = None) -> str:
+def _count_rejection_issues(text: str) -> int:
+    return len(re.findall(r'^\s*\d+[\.\)]\s+', text, re.MULTILINE))
+
+
+def _user_prompt(stage: str, spec: str, prev: str | None, task: str | None = None, block: str | None = None, extra: str | None = None) -> str:
     if stage == "project_manager":
         return (
             f"Job request: {spec}\n\n"
@@ -278,13 +282,20 @@ def _user_prompt(stage: str, spec: str, prev: str | None, task: str | None = Non
             f"Output the corrected YAML only. No explanations. No comments. YAML only."
         )
     if stage == "supervisor":
-        return (
+        result = (
             f"Job specification:\n{spec}\n\n"
             f"Final output for sign-off:\n{prev}\n\n"
             f"If acceptable, return the YAML unchanged. "
-            f"If not, write REJECTED: with reasons."
+            f"If not, write REJECTED_AT: <stage> on the first line, then REJECTED: with reasons. "
+            f"Valid stages: project_manager, manager, generator, reviewer."
         )
-    return spec
+        if extra:
+            result += f"\n\nAdditional context: {extra}"
+        return result
+    prompt = spec
+    if extra:
+        prompt += f"\n\nAdditional instructions: {extra}"
+    return prompt
 
 
 def _parse_blocks_and_tasks(text: str) -> list[dict[str, str]]:
@@ -357,6 +368,10 @@ async def run_stage(job_id: str, stage: str) -> dict[str, Any]:
     # Trim persona for small models — keep first sentence only
     persona = full_persona.split(".")[0] + "." if full_persona else "You are a helpful AI assistant."
     spec = job.get("spec", "")
+    extra = job.get("stage_instructions", {}).get(stage)
+    rejection_feedback = job.get("rejection_feedback") if stage in ("project_manager", "manager", "generator") else None
+    if rejection_feedback:
+        extra = (extra or "") + f"\n\nPrevious attempt was rejected. Feedback:\n{rejection_feedback}"
 
     # Each stage reads from its predecessor
     prev_stages = {
@@ -367,7 +382,7 @@ async def run_stage(job_id: str, stage: str) -> dict[str, Any]:
     }
     prev = read_stage_output(job_id, prev_stages.get(stage, "")) if stage in prev_stages else None
 
-    user = _user_prompt(stage, spec, prev)
+    user = _user_prompt(stage, spec, prev, extra=extra)
 
     append_log(job, stage, f"Calling {harness.get('display_name', harness_id)}...")
     job["stages"][stage] = {"status": "running"}
@@ -376,6 +391,25 @@ async def run_stage(job_id: str, stage: str) -> dict[str, Any]:
     try:
         raw, handled_by = await _call_with_fallback(stage, harness, persona, user, roles, job)
         output = _strip_fences(raw)
+
+        # Reviewer escalation: count issues, fix inline if within threshold
+        if stage == "reviewer" and output.strip().upper().startswith("REJECTED"):
+            from app.pipeline_rules import reviewer_threshold
+            issue_count = _count_rejection_issues(output)
+            threshold = reviewer_threshold()
+            if issue_count <= threshold:
+                append_log(job, stage, f"Found {issue_count} issues (≤{threshold}) — fixing inline")
+                fix_user = (
+                    f"Issues found:\n{output}\n\n"
+                    f"Original YAML:\n{prev}\n\n"
+                    f"Fix ALL listed issues. Output corrected YAML only. No explanations."
+                )
+                try:
+                    raw2, handled_by = await _call_with_fallback(stage, harness, persona, fix_user, roles, job)
+                    output = _strip_fences(raw2)
+                except Exception:
+                    pass  # Keep rejection if fix attempt fails
+
         write_stage_output(job_id, stage, output)
         note = f" (handled by {handled_by})" if handled_by != stage else ""
         job["stages"][stage] = {"status": "done", "preview": output[:400], "handled_by": handled_by}
@@ -480,12 +514,39 @@ async def run_pipeline(job_id: str) -> None:
         prev_output = result.get("output")
         job = load_job(job_id)
 
-        # Supervisor is the only stage allowed to reject
+        # Supervisor rejection — check for REJECTED_AT routing
         if stage == "supervisor" and prev_output and prev_output.strip().upper().startswith("REJECTED"):
-            append_log(job, stage, "Rejected — use ↺ Retry to rerun with adjusted settings")
-            job["status"] = STATUS_FAILED
-            save_job(job)
-            return
+            match = re.search(r'REJECTED_AT:\s*(\w+)', prev_output, re.IGNORECASE)
+            target = match.group(1).strip() if match else None
+            if target and target in pipeline:
+                job = load_job(job_id)
+                job["rejection_feedback"] = prev_output
+                save_job(job)
+                rerun_from_stage(job_id, target)
+                _flog(f"  REJECTED_AT={target} — re-running from {target}")
+                start_idx = pipeline.index(target)
+                for rerun_stage in pipeline[start_idx:]:
+                    if is_cancelled(job_id):
+                        return
+                    if rerun_stage == "generator" and "manager" in pipeline:
+                        r = await _run_generator_loop(job_id, roles, load_job(job_id))
+                    else:
+                        r = await run_stage(job_id, rerun_stage)
+                    if not r["ok"]:
+                        job = load_job(job_id)
+                        job["status"] = STATUS_FAILED
+                        save_job(job)
+                        return
+                    job = load_job(job_id)
+                # Clear feedback after successful rerun
+                job["rejection_feedback"] = None
+                save_job(job)
+                prev_output = r.get("output")
+            else:
+                append_log(job, stage, "Rejected — use ↺ Retry to rerun with adjusted settings")
+                job["status"] = STATUS_FAILED
+                save_job(job)
+                return
 
     # All stages passed
     if prev_output:

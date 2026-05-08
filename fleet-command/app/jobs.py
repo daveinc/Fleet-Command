@@ -119,6 +119,32 @@ def restart_job(job_id: str) -> dict[str, Any] | None:
     return job
 
 
+def rerun_from_stage(job_id: str, stage: str) -> dict[str, Any] | None:
+    job = load_job(job_id)
+    if not job:
+        return None
+    pipeline = job.get("pipeline", [])
+    if stage not in pipeline:
+        return None
+    idx = pipeline.index(stage)
+    for s in pipeline[idx:]:
+        job["stages"].pop(s, None)
+        p = _run_dir(job_id) / f"stage_{s}.txt"
+        if p.exists():
+            p.unlink()
+    final = _run_dir(job_id) / "stage_final.txt"
+    if final.exists():
+        final.unlink()
+    job["final_output"] = None
+    cancel_flag = _run_dir(job_id) / "cancel"
+    if cancel_flag.exists():
+        cancel_flag.unlink()
+    job["status"] = STATUS_PENDING
+    append_log(job, "system", f"Re-run from: {stage}")
+    save_job(job)
+    return job
+
+
 def delete_job(job_id: str) -> bool:
     import shutil
     d = _run_dir(job_id)
