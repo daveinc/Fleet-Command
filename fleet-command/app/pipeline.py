@@ -649,20 +649,23 @@ async def _push_dashboard(job: dict[str, Any], yaml_content: str) -> None:
         # Try to parse to confirm it's valid YAML before pushing
         _yaml.safe_load(yaml_content)
 
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
         async with httpx.AsyncClient(timeout=15) as client:
+            # Ensure dashboard exists (ignored if already present)
+            await client.post(
+                "http://supervisor/core/api/lovelace/dashboards",
+                headers=headers,
+                json={"icon": "mdi:robot-industrial", "title": dashboard_id.replace("_", " ").title(),
+                      "url_path": dashboard_id, "show_in_sidebar": True, "require_admin": False},
+            )
+            # Push config — body is raw YAML string
             resp = await client.post(
-                f"http://supervisor/core/api/lovelace/dashboards/{dashboard_id}",
-                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-                json={"mode": "yaml"},
-            )
-            # Dashboard may already exist — either way attempt config update
-            resp2 = await client.post(
                 f"http://supervisor/core/api/lovelace/dashboards/{dashboard_id}/config",
-                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-                json={"config": yaml_content},
+                headers={**headers, "Content-Type": "application/octet-stream"},
+                content=yaml_content.encode(),
             )
-            ok = resp2.is_success or resp.is_success
-            append_log(job, "ha_push", f"Dashboard push {'OK' if ok else 'FAILED'} — {resp2.status_code}")
+            ok = resp.is_success
+            append_log(job, "ha_push", f"Dashboard push {'OK' if ok else 'FAILED'} — {resp.status_code}")
 
     except Exception as exc:
         append_log(job, "ha_push", f"HA push error — {exc}")

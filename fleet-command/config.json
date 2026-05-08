@@ -1,6 +1,6 @@
 {
   "name": "Fleet Command",
-  "version": "1.2.4",
+  "version": "1.2.5",
   "slug": "fleet_command",
   "description": "Fleet Command status server for AI worker pipelines.",
   "url": "https://github.com/daveinc/fleet-command",
@@ -8,6 +8,7 @@
   "startup": "application",
   "boot": "auto",
   "map": ["share:rw"],
+  "homeassistant_api": true,
   "ingress": true,
   "ingress_port": 8765,
   "panel_icon": "mdi:robot-industrial",
