@@ -372,7 +372,9 @@ async def run_stage(job_id: str, stage: str) -> dict[str, Any]:
             issue_count = _count_rejection_issues(output)
             threshold = reviewer_threshold()
             if issue_count <= threshold:
-                append_log(job, stage, f"Found {issue_count} issues (≤{threshold}) — fixing inline")
+                review_notes = output
+                append_log(job, stage, f"Review notes ({issue_count} issues): {output[:600]}")
+                append_log(job, stage, f"Fixing {issue_count} issues inline")
                 fix_user = (
                     f"Issues found:\n{output}\n\n"
                     f"Original YAML:\n{prev}\n\n"
@@ -383,10 +385,17 @@ async def run_stage(job_id: str, stage: str) -> dict[str, Any]:
                     output = _strip_fences(raw2)
                 except Exception:
                     pass  # Keep rejection if fix attempt fails
+            else:
+                review_notes = None
+        else:
+            review_notes = None
 
         write_stage_output(job_id, stage, output)
         note = f" (handled by {handled_by})" if handled_by != stage else ""
-        job["stages"][stage] = {"status": "done", "preview": output[:400], "handled_by": handled_by}
+        stage_data: dict = {"status": "done", "preview": output[:400], "handled_by": handled_by}
+        if review_notes:
+            stage_data["review_notes"] = review_notes
+        job["stages"][stage] = stage_data
         append_log(job, stage, f"Done — {len(output)} chars{note}")
         save_job(job)
         return {"ok": True, "stage": stage, "output": output, "handled_by": handled_by}

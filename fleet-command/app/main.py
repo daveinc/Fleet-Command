@@ -2556,10 +2556,19 @@ async function showNodeOutput(jobId, stage) {{
   const code = document.getElementById("pl-output-code");
   if (!panel || !title || !code) return;
   title.textContent = stage + " output";
+
+  // Check if job has review_notes for this stage
+  const job = _plJobs.find(j => j.id === jobId);
+  const reviewNotes = job && job.stages && job.stages[stage] && job.stages[stage].review_notes;
+
   const txt = res.output || res.error || "No output";
   const isRejected = txt.trim().toUpperCase().startsWith("REJECTED");
-  code.textContent = txt;
-  code.style.color = isRejected ? "#f87171" : "#94a3b8";
+  if (reviewNotes) {{
+    code.innerHTML = `<div style="color:#fbbf24;border-bottom:1px solid #334155;margin-bottom:0.5rem;padding-bottom:0.5rem;white-space:pre-wrap">${{reviewNotes}}</div><div style="color:#94a3b8;white-space:pre-wrap">${{txt}}</div>`;
+  }} else {{
+    code.textContent = txt;
+    code.style.color = isRejected ? "#f87171" : "#94a3b8";
+  }}
   panel.style.display = "block";
   panel.scrollIntoView({{behavior:"smooth", block:"nearest"}});
 }}
