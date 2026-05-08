@@ -180,7 +180,20 @@ async def api_task_update(task_id: int, payload: dict) -> dict:
 
 @app.get("/api/fleet/templates")
 async def api_templates_get() -> dict:
-    return {"templates": load_templates()}
+    builtin = [
+        {
+            "id": f"__role_{role}",
+            "name": f"{meta['label']} — Instruction",
+            "type": "instruction",
+            "description": meta["description"],
+            "author": "fleet-command",
+            "body": meta["persona"],
+            "_builtin": True,
+        }
+        for role, meta in ROLE_META.items()
+    ]
+    user = load_templates()
+    return {"templates": builtin + user}
 
 
 @app.post("/api/fleet/templates")
@@ -952,7 +965,7 @@ function renderRoster() {{
 function renderPool() {{
   const el = document.getElementById("pool");
   const assignedIds = new Set(
-    ROLE_ORDER.map(r => roles[r]?.harness_id).filter(Boolean)
+    roleOrder.map(r => roles[r]?.harness_id).filter(Boolean)
   );
   const unassigned = Object.entries(harnesses).filter(([id]) => !assignedIds.has(id));
   if (unassigned.length === 0) {{
@@ -1303,21 +1316,27 @@ const TYPE_LABELS = {{
   python_addon: "Python Addon",
   yaml_config: "YAML Config",
   code_project: "Code Project",
+  instruction: "Instruction",
   custom: "Custom",
 }};
 
 function templateCard(t) {{
+  const isBuiltin = !!t._builtin;
+  const bodyPreview = t.body ? `<div style="font-size:0.7rem;color:#334155;margin-top:0.35rem;font-style:italic;white-space:pre-wrap;max-height:3.5rem;overflow:hidden">${{t.body.slice(0,180)}}${{t.body.length > 180 ? "…" : ""}}</div>` : "";
   return `
-  <div class="tmpl-card">
-    <div class="tmpl-name">${{t.name || "Untitled"}}</div>
+  <div class="tmpl-card" style="${{isBuiltin ? "border-left:3px solid #334155" : ""}}">
+    <div style="display:flex;align-items:center;gap:0.4rem">
+      <span class="tmpl-name">${{t.name || "Untitled"}}</span>
+      ${{isBuiltin ? '<span style="font-size:0.62rem;color:#334155;border:1px solid #334155;border-radius:3px;padding:0.1rem 0.3rem">built-in</span>' : ""}}
+    </div>
     <div class="tmpl-desc">${{t.description || "No description."}}</div>
+    ${{bodyPreview}}
     <div class="tmpl-foot">
       <span class="tmpl-type">${{TYPE_LABELS[t.type] || t.type || "—"}}</span>
       ${{t.author ? `<span style="font-size:0.68rem;color:#374151">by ${{t.author}}</span>` : ""}}
       <button class="btn btn-ghost btn-sm" style="margin-left:auto"
         onclick="useTemplate('${{t.id}}')">Use</button>
-      <button class="btn btn-ghost btn-sm" style="font-size:0.7rem;color:#374151"
-        onclick="deleteTemplate('${{t.id}}')">✕</button>
+      ${{!isBuiltin ? `<button class="btn btn-ghost btn-sm" style="font-size:0.7rem;color:#374151" onclick="deleteTemplate('${{t.id}}')">✕</button>` : ""}}
     </div>
   </div>`;
 }}
