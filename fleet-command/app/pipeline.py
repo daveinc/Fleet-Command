@@ -128,15 +128,27 @@ def _strip_fences(text: str) -> str:
 
 
 def _resolve_endpoint(harness: dict[str, Any]) -> str:
-    """Use a configured worker slot URL if one matches this harness model — more reliable than harness endpoint."""
-    from app.workers import configured_workers
+    from app.workers import configured_workers, ensure_path
     model = harness.get("model", "")
-    for w in configured_workers():
+    workers = configured_workers()
+
+    # Exact model match — use that slot's base URL
+    for w in workers:
         if w.get("model") == model and w.get("base_url"):
             api_path = harness.get("api_path") or w.get("api_path", "")
-            from app.workers import ensure_path
             return w["base_url"].rstrip("/") + ensure_path(api_path)
-    return harness.get("endpoint", "").rstrip("/") + (harness.get("api_path") or "")
+
+    # No exact match — substitute host.docker.internal with PC IP from any Ollama worker slot
+    harness_endpoint = harness.get("endpoint", "")
+    if "host.docker.internal" in harness_endpoint:
+        for w in workers:
+            if w.get("base_url") and "host.docker.internal" not in w.get("base_url", ""):
+                pc_base = w["base_url"].rstrip("/")
+                api_path = harness.get("api_path") or ""
+                _flog(f"  endpoint substitution: {harness_endpoint} -> {pc_base}{api_path}")
+                return pc_base + ensure_path(api_path)
+
+    return harness_endpoint.rstrip("/") + (harness.get("api_path") or "")
 
 
 async def _call_harness(harness: dict[str, Any], system: str, user: str) -> str:
