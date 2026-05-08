@@ -1,6 +1,6 @@
 {
   "name": "Fleet Command",
-  "version": "0.8.6",
+  "version": "0.8.7",
   "slug": "fleet_command",
   "description": "Fleet Command status server for AI worker pipelines.",
   "url": "https://github.com/daveinc/fleet-command",
@@ -20,6 +20,7 @@
   },
   "options": {
     "runs_dir": "/data/runs",
+    "ollama_host": "http://192.168.0.15:11434",
     "worker_1_enabled": true,
     "worker_1_name": "Ollama PC",
     "worker_1_role": "coder",
@@ -67,6 +68,7 @@
   },
   "schema": {
     "runs_dir": "str",
+    "ollama_host": "str?",
     "worker_1_enabled": "bool",
     "worker_1_name": "str?",
     "worker_1_role": "str?",

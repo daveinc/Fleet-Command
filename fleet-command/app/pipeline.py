@@ -127,28 +127,29 @@ def _strip_fences(text: str) -> str:
     return text.strip()
 
 
+def _ollama_host() -> str:
+    from app.config import options
+    host = str(options().get("ollama_host", "") or "").strip().rstrip("/")
+    if host and not host.startswith(("http://", "https://")):
+        host = "http://" + host
+    return host
+
+
 def _resolve_endpoint(harness: dict[str, Any]) -> str:
-    from app.workers import configured_workers, ensure_path
-    model = harness.get("model", "")
-    workers = configured_workers()
+    from app.workers import ensure_path
+    fmt = harness.get("request_format", "")
+    api_path = ensure_path(harness.get("api_path") or "")
 
-    # Exact model match — use that slot's base URL
-    for w in workers:
-        if w.get("model") == model and w.get("base_url"):
-            api_path = harness.get("api_path") or w.get("api_path", "")
-            return w["base_url"].rstrip("/") + ensure_path(api_path)
+    # Local Ollama harnesses — always use the global ollama_host setting
+    if fmt in ("ollama_chat", "ollama_generate"):
+        host = _ollama_host()
+        if host:
+            endpoint = host + api_path
+            _flog(f"  using ollama_host: {endpoint}")
+            return endpoint
 
-    # No exact match — substitute host.docker.internal with PC IP from any Ollama worker slot
-    harness_endpoint = harness.get("endpoint", "")
-    if "host.docker.internal" in harness_endpoint:
-        for w in workers:
-            if w.get("base_url") and "host.docker.internal" not in w.get("base_url", ""):
-                pc_base = w["base_url"].rstrip("/")
-                api_path = harness.get("api_path") or ""
-                _flog(f"  endpoint substitution: {harness_endpoint} -> {pc_base}{api_path}")
-                return pc_base + ensure_path(api_path)
-
-    return harness_endpoint.rstrip("/") + (harness.get("api_path") or "")
+    # Cloud/API harnesses — use harness endpoint as-is
+    return harness.get("endpoint", "").rstrip("/") + api_path
 
 
 async def _call_harness(harness: dict[str, Any], system: str, user: str) -> str:
