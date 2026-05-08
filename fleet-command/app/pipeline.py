@@ -298,22 +298,33 @@ def _user_prompt(stage: str, spec: str, prev: str | None, task: str | None = Non
 
 
 def _parse_blocks_and_tasks(text: str) -> list[dict[str, str]]:
-    """Parse manager output into [{block, task}] list."""
+    """Parse manager output into [{block, task}] list. Tolerates markdown formatting."""
     tasks = []
     current_block = "Main"
-    for line in text.splitlines():
-        line = line.strip()
-        block_match = re.match(r'^BLOCK\s+\d+\s*:\s*(.+)', line, re.IGNORECASE)
-        if block_match:
-            current_block = block_match.group(1).strip()
+    for raw_line in text.splitlines():
+        # Strip markdown bold/headers/bullets before matching
+        line = re.sub(r'[*_#`]+', '', raw_line).strip()
+        if not line:
             continue
-        task_match = re.match(r'^-\s*Task\s*\d+\s*:\s*(.+)', line, re.IGNORECASE)
+
+        block_match = re.match(r'^BLOCK\s*\d*\s*:?\s*(.+)', line, re.IGNORECASE)
+        if block_match:
+            current_block = block_match.group(1).strip().rstrip(':').strip()
+            _flog(f"  parse block: {current_block!r}")
+            continue
+
+        task_match = re.match(r'^-?\s*Task\s*\d+\s*:?\s*(.+)', line, re.IGNORECASE)
         if not task_match:
-            task_match = re.match(r'^[\-\*]\s+(.+)', line)
+            task_match = re.match(r'^[-•]\s+(.+)', raw_line.strip())
+        if not task_match:
+            task_match = re.match(r'^\d+[\.\)]\s+(.+)', line)
+
         if task_match:
             task_text = task_match.group(1).strip()
-            if task_text:
+            if task_text and not re.match(r'^BLOCK', task_text, re.IGNORECASE):
                 tasks.append({"block": current_block, "task": task_text})
+
+    _flog(f"  parse result: {len(tasks)} tasks")
     return tasks
 
 
@@ -431,6 +442,7 @@ async def _run_generator_loop(job_id: str, roles: dict[str, Any], job: dict[str,
     if len(task_list) < 2:
         # Manager didn't produce a task list — run generator with spec only, not the full manager dump
         _flog(f"  generator: no task list found, falling back to spec-only run")
+        append_log(job, "generator", "WARNING: no task list parsed from manager output — running single pass from spec")
         spec = job.get("spec", "")
         assignment = roles.get("generator", {})
         harness_id = assignment.get("harness_id")
@@ -466,7 +478,9 @@ async def _run_generator_loop(job_id: str, roles: dict[str, Any], job: dict[str,
     persona = persona.split(".")[0] + "."
     spec = job.get("spec", "")
 
-    _flog(f"  generator loop: {len(task_list)} tasks across {len(set(t['block'] for t in task_list))} blocks")
+    block_count = len(set(t['block'] for t in task_list))
+    _flog(f"  generator loop: {len(task_list)} tasks across {block_count} blocks")
+    append_log(job, "generator", f"Starting loop: {len(task_list)} tasks across {block_count} blocks")
     fragments: list[dict[str, str]] = []
 
     for i, item in enumerate(task_list):
