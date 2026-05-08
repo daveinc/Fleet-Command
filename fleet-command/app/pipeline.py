@@ -591,7 +591,6 @@ async def run_pipeline(job_id: str) -> None:
         job["final_output"] = prev_output[:600]
 
     job["status"] = STATUS_DONE
-    job["rejection_feedback"] = None
     append_log(job, "pipeline", "All stages complete")
     save_job(job)
 

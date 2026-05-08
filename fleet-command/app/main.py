@@ -2069,9 +2069,23 @@ function renderPipelineNodes() {{
 async function rerunFromStage(jobId, stage) {{
   const stageLabel = STAGE_LABELS[stage] || stage;
   const job = _plJobs.find(j => j.id === jobId);
-  const hasFeedback = job && job.rejection_feedback;
+  let hasFeedback = job && job.rejection_feedback;
+
+  // If no cached feedback, try fetching supervisor output as fallback
+  if (!hasFeedback) {{
+    const res = await fetch(api(`/api/jobs/${{jobId}}/stage/supervisor`)).then(r => r.json()).catch(() => ({{}}));
+    if (res.ok && res.output && res.output.trim().toUpperCase().startsWith("REJECTED")) {{
+      // Store it in the job so backend will inject it
+      await fetch(api(`/api/jobs/${{jobId}}/stage-instructions`), {{
+        method: "PATCH", headers: {{"Content-Type":"application/json"}},
+        body: JSON.stringify({{stage_instructions: {{[stage]: `Supervisor rejection feedback:\n${{res.output}}`}}}})
+      }});
+      hasFeedback = true;
+    }}
+  }}
+
   const msg = hasFeedback
-    ? `Re-run from "${{stageLabel}}" with supervisor rejection feedback injected.`
+    ? `Re-run from "${{stageLabel}}" — supervisor rejection feedback will be injected.`
     : `Re-run from "${{stageLabel}}" — no rejection feedback found, will rerun as-is.`;
   if (!confirm(msg)) return;
   await fetch(api(`/api/jobs/${{jobId}}/rerun-from/${{stage}}`), {{method: "POST"}});
