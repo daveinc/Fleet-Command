@@ -243,22 +243,20 @@ def _user_prompt(stage: str, spec: str, prev: str | None, task: str | None = Non
     if stage == "project_manager":
         return (
             f"Job request: {spec}\n\n"
-            f"Produce a structured build plan. List:\n"
-            f"- Dashboard title\n"
-            f"- Major components (blocks) needed\n"
-            f"- For each block: what it contains and its purpose\n"
-            f"Plain text only. No YAML. Be specific."
+            f"List the major UI components (blocks) needed. For each block name what cards it contains.\n"
+            f"Be concise. Plain text only. No YAML. Under 150 words."
         )
     if stage == "manager":
+        plan = (prev or "")[:600]
         return (
-            f"Build plan:\n{prev}\n\n"
-            f"Break this into building blocks and tasks using this exact format:\n\n"
-            f"BLOCK 1: [component name]\n"
-            f"- Task 1: [card type, entity name, purpose]\n"
-            f"- Task 2: [card type, entity name, purpose]\n\n"
-            f"BLOCK 2: [component name]\n"
+            f"Plan:\n{plan}\n\n"
+            f"Output ONLY a block/task list in this exact format. Nothing else:\n\n"
+            f"BLOCK 1: [name]\n"
+            f"- Task 1: [card type] [entity] [purpose]\n"
+            f"- Task 2: [card type] [entity] [purpose]\n\n"
+            f"BLOCK 2: [name]\n"
             f"- Task 1: ...\n\n"
-            f"Rules: one task = one card. Include exact entity names. No YAML. No explanations."
+            f"One task = one card. No YAML. No explanations. No intro text."
         )
     if stage == "generator":
         if task:
@@ -430,9 +428,32 @@ async def _run_generator_loop(job_id: str, roles: dict[str, Any], job: dict[str,
     task_list = _parse_blocks_and_tasks(manager_output) if manager_output else []
 
     if len(task_list) < 2:
-        # No structured breakdown — fall back to single generator run
-        _flog(f"  generator: no task list found, falling back to single run")
-        return await run_stage(job_id, "generator")
+        # Manager didn't produce a task list — run generator with spec only, not the full manager dump
+        _flog(f"  generator: no task list found, falling back to spec-only run")
+        spec = job.get("spec", "")
+        assignment = roles.get("generator", {})
+        harness_id = assignment.get("harness_id")
+        harness = get_harness(harness_id) if harness_id else None
+        if not harness:
+            return {"ok": False, "error": "No model assigned to role: generator"}
+        persona = ROLE_META.get("generator", {}).get("persona", "You are a helpful AI assistant.")
+        persona = persona.split(".")[0] + "."
+        user = _user_prompt("generator", spec, None)
+        append_log(job, "generator", "No task list — running single pass from spec")
+        job["stages"]["generator"] = {"status": "running"}
+        save_job(job)
+        try:
+            raw, handled_by = await _call_with_fallback("generator", harness, persona, user, roles, job)
+            output = _strip_fences(raw)
+            write_stage_output(job_id, "generator", output)
+            job["stages"]["generator"] = {"status": "done", "preview": output[:400], "handled_by": handled_by}
+            append_log(job, "generator", f"Done — {len(output)} chars")
+            save_job(job)
+            return {"ok": True, "stage": "generator", "output": output, "handled_by": handled_by}
+        except Exception as exc:
+            job["stages"]["generator"] = {"status": "error", "error": str(exc)}
+            save_job(job)
+            return {"ok": False, "error": str(exc)}
 
     assignment = roles.get("generator", {})
     harness_id = assignment.get("harness_id")
