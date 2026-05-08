@@ -1321,7 +1321,7 @@ const REQUEST_FORMATS = ["ollama_chat","ollama_generate","openai_responses","ope
 const AUTH_TYPES = ["none","bearer","x_api_key","custom_header"];
 
 function renderHarnesses() {{
-  // Build map: harness_id → list of active {job_id, stage} from running jobs
+  // Build map: harness_id → list of active {{job_id, stage}} from running jobs
   const activeByHarness = {{}};
   for (const j of _jobs) {{
     if (j.status !== "running" && j.status !== "reviewing") continue;
