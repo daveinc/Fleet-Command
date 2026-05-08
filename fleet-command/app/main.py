@@ -920,8 +920,20 @@ def _dashboard_html(root: str) -> str:  # noqa: C901
     .flog-mini {{
       font-family: monospace; font-size: 0.68rem; color: #475569;
       background: #0f1117; border-radius: 5px; padding: 0.5rem;
-      max-height: 100px; overflow-y: auto; margin-top: 0.5rem; line-height: 1.6;
+      max-height: 220px; overflow-y: auto; margin-top: 0.5rem; line-height: 1.7;
     }}
+    .factivity-row {{
+      display: flex; align-items: flex-start; gap: 0.5rem;
+      padding: 0.18rem 0; border-bottom: 1px solid #0f1117;
+    }}
+    .factivity-dot {{
+      width: 7px; height: 7px; border-radius: 50%; margin-top: 0.3rem; flex-shrink: 0;
+    }}
+    .factivity-dot.pulse {{ animation: pulse 1.2s infinite; }}
+    @keyframes pulse {{ 0%,100%{{opacity:1}} 50%{{opacity:0.3}} }}
+    .factivity-ts {{ color: #334155; font-size: 0.65rem; flex-shrink: 0; width: 52px; }}
+    .factivity-stage {{ color: #64748b; font-size: 0.65rem; flex-shrink: 0; width: 64px; }}
+    .factivity-msg {{ color: #94a3b8; font-size: 0.68rem; flex: 1; word-break: break-word; }}
     .fstat-card {{
       background: #1e2330; border: 1px solid #2d3748; border-radius: 8px;
       padding: 0.65rem 0.75rem; margin-bottom: 0.5rem;
@@ -2226,8 +2238,28 @@ function renderFleetDetail(j) {{
       ${{tasks.map(t => `<div class="ftask-item" style="cursor:pointer" onclick="fleetShowTaskText('${{t.full.replace(/'/g,"&#39;")}}')">· ${{t.short}}${{t.full.length > 60 ? "…" : ""}}</div>`).join("")}}
     </div>`).join("");
 
-  const logLines = (j.log || []).slice(-8).map(l =>
-    `<div><span style="color:#334155">${{l.ts?.slice(11,19)||""}}</span> <span style="color:#475569">[${{l.stage}}]</span> ${{l.msg}}</div>`
+  // Activity timeline — all log entries + upcoming pending stages
+  const SC = {{ running:"#f59e0b", done:"#22c55e", error:"#ef4444", pending:"#475569", reviewing:"#818cf8" }};
+  const logRows = (j.log || []).map(l => {{
+    const stageStatus = (j.stages||{{}})[l.stage]?.status || "done";
+    const isActive = l.stage === j.log[j.log.length-1]?.stage && isActive;
+    const dotColor = SC[stageStatus] || "#475569";
+    const pulse = stageStatus === "running" ? " pulse" : "";
+    return `<div class="factivity-row">
+      <span class="factivity-dot${{pulse}}" style="background:${{dotColor}}"></span>
+      <span class="factivity-ts">${{l.ts?.slice(11,19)||""}}</span>
+      <span class="factivity-stage">${{LABEL[l.stage]||l.stage}}</span>
+      <span class="factivity-msg">${{l.msg}}</span>
+    </div>`;
+  }}).join("");
+  const completedStages = new Set((j.log||[]).map(l => l.stage));
+  const upcomingRows = (j.pipeline||[]).filter(s => !completedStages.has(s)).map(s =>
+    `<div class="factivity-row">
+      <span class="factivity-dot" style="background:#1e293b;border:1px solid #334155"></span>
+      <span class="factivity-ts"></span>
+      <span class="factivity-stage" style="color:#334155">${{LABEL[s]||s}}</span>
+      <span class="factivity-msg" style="color:#334155">pending</span>
+    </div>`
   ).join("");
 
   const isActive = j.status === "running" || j.status === "pending";
@@ -2257,8 +2289,11 @@ function renderFleetDetail(j) {{
 
       ${{blockRows ? `<div class="section-title" style="font-size:0.65rem;margin:0.65rem 0 0.3rem">Blocks &amp; Tasks</div><div class="fblock-list">${{blockRows}}</div>` : ""}}
 
-      <div class="section-title" style="font-size:0.65rem;margin:0.65rem 0 0.15rem">Log${{isActive?" · live":""}}</div>
-      <div class="flog-mini" id="flog-mini">${{logLines||'<span style="color:#334155">No log yet.</span>'}}</div>
+      <div class="section-title" style="font-size:0.65rem;margin:0.65rem 0 0.15rem">Activity${{isActive?" · live":""}}</div>
+      <div class="flog-mini" id="flog-mini">
+        ${{logRows || '<div class="factivity-row"><span style="color:#334155">No activity yet.</span></div>'}}
+        ${{upcomingRows}}
+      </div>
 
       <div style="display:flex;gap:0.4rem;flex-wrap:wrap;margin-top:0.75rem">
         ${{j.status === "pending" ? `<button class="btn btn-primary btn-sm" onclick="fleetRunJob('${{j.id}}')">▶ Run</button>` : ""}}
