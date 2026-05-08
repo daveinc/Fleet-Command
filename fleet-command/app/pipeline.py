@@ -249,6 +249,7 @@ def _user_prompt(stage: str, spec: str, prev: str | None, task: str | None = Non
     if stage == "manager":
         plan = (prev or "")[:600]
         return (
+            f"Original request: {spec}\n\n"
             f"Plan:\n{plan}\n\n"
             f"Output ONLY a block/task list in this exact format. Nothing else:\n\n"
             f"BLOCK 1: [name]\n"
@@ -256,7 +257,7 @@ def _user_prompt(stage: str, spec: str, prev: str | None, task: str | None = Non
             f"- Task 2: [card type] [entity] [purpose]\n\n"
             f"BLOCK 2: [name]\n"
             f"- Task 1: ...\n\n"
-            f"One task = one card. No YAML. No explanations. No intro text."
+            f"Rules: one task = one card. Respect the exact quantities in the original request. No YAML. No explanations. No intro text."
         )
     if stage == "generator":
         if task:
