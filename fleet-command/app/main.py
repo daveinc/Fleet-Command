@@ -1899,16 +1899,29 @@ async function submitJob(autorun) {{
 // ── Pipeline tab ─────────────────────────────────────────────────────────────
 
 let _plJobs = [];
+let _plPollTimer = null;
 
 async function loadPipelineTab() {{
   const res = await fetch(api("/api/jobs")).then(r => r.json());
   _plJobs = res.jobs || [];
   const sel = document.getElementById("pl-job-select");
   if (!sel) return;
+  const prev = sel.value;
   sel.innerHTML = _plJobs.length
-    ? _plJobs.map(j => `<option value="${{j.id}}">${{j.id}} — ${{j.status}} (${{(j.spec||"").slice(0,40)}})</option>`).join("")
+    ? _plJobs.map(j => `<option value="${{j.id}}"${{j.id===prev?" selected":""}}>${{j.id}} — ${{j.status}} (${{(j.spec||"").slice(0,40)}})</option>`).join("")
     : `<option>No jobs yet</option>`;
   renderPipelineNodes();
+  _plSchedulePoll();
+}}
+
+function _plSchedulePoll() {{
+  clearTimeout(_plPollTimer);
+  const sel = document.getElementById("pl-job-select");
+  if (!sel) return;
+  const job = _plJobs.find(j => j.id === sel.value);
+  if (job && (job.status === "running" || job.status === "pending")) {{
+    _plPollTimer = setTimeout(loadPipelineTab, 2000);
+  }}
 }}
 
 function renderPipelineNodes() {{
@@ -1932,13 +1945,12 @@ function renderPipelineNodes() {{
     manager: "plan", generator: "brief", reviewer: "YAML", supervisor: "reviewed", advisor: "escalation",
   }};
 
-  const nodeW = 140, nodeH = 90, gapX = 80, padY = 20;
+  const nodeW = 140, nodeH = 96, gapX = 80, padY = 20;
   const totalW = pipeline.length * nodeW + (pipeline.length - 1) * gapX + 40;
   const totalH = nodeH + padY * 2 + 30;
 
   let html = `<svg width="${{totalW}}" height="${{totalH}}" style="display:block;min-width:100%">`;
 
-  // Draw bezier connections first (behind nodes)
   pipeline.forEach((stage, i) => {{
     if (i === 0) return;
     const x1 = 20 + (i - 1) * (nodeW + gapX) + nodeW;
@@ -1948,12 +1960,10 @@ function renderPipelineNodes() {{
     const lbl = EDGE_LABEL[stage] || "";
     html += `<path d="M${{x1}},${{y}} C${{cx}},${{y}} ${{cx}},${{y}} ${{x2}},${{y}}" stroke="#334155" stroke-width="2" fill="none"/>`;
     html += `<text x="${{cx}}" y="${{y - 6}}" text-anchor="middle" font-size="9" fill="#64748b">${{lbl}}</text>`;
-    // Port dots
     html += `<circle cx="${{x1}}" cy="${{y}}" r="4" fill="#334155"/>`;
     html += `<circle cx="${{x2}}" cy="${{y}}" r="4" fill="#334155"/>`;
   }});
 
-  // Draw nodes
   pipeline.forEach((stage, i) => {{
     const x = 20 + i * (nodeW + gapX);
     const y = padY;
@@ -1963,21 +1973,49 @@ function renderPipelineNodes() {{
     const model = (s.handled_by && s.handled_by !== stage) ? `↑ ${{s.handled_by}}` : (s.model || "");
     const chars = s.preview ? s.preview.length : 0;
     const statusTxt = s.status || "pending";
+    const hasOutput = s.status === "done" || s.status === "error";
 
     html += `
-      <rect x="${{x}}" y="${{y}}" width="${{nodeW}}" height="${{nodeH}}" rx="8"
-            fill="#1e293b" stroke="${{color}}" stroke-width="2"/>
-      <rect x="${{x}}" y="${{y}}" width="${{nodeW}}" height="24" rx="8" fill="${{color}}22"/>
-      <rect x="${{x}}" y="${{y + 16}}" width="${{nodeW}}" height="8" fill="${{color}}22"/>
-      <text x="${{x + nodeW/2}}" y="${{y + 16}}" text-anchor="middle" font-size="11" font-weight="bold" fill="${{color}}">${{label}}</text>
-      <text x="${{x + nodeW/2}}" y="${{y + 34}}" text-anchor="middle" font-size="9" fill="#94a3b8">${{statusTxt}}</text>
-      <text x="${{x + nodeW/2}}" y="${{y + 48}}" text-anchor="middle" font-size="8" fill="#64748b">${{model}}</text>
-      <text x="${{x + nodeW/2}}" y="${{y + 62}}" text-anchor="middle" font-size="8" fill="#475569">${{chars ? chars+" chars" : ""}}</text>
-    `;
+      <g class="pl-node" style="cursor:${{hasOutput?"pointer":"default"}}" onclick="${{hasOutput?`showNodeOutput('${{job.id}}','${{stage}}')`:""}}" >
+        <rect x="${{x}}" y="${{y}}" width="${{nodeW}}" height="${{nodeH}}" rx="8"
+              fill="#1e293b" stroke="${{color}}" stroke-width="2"/>
+        <rect x="${{x}}" y="${{y}}" width="${{nodeW}}" height="24" rx="8" fill="${{color}}22"/>
+        <rect x="${{x}}" y="${{y+16}}" width="${{nodeW}}" height="8" fill="${{color}}22"/>
+        <text x="${{x+nodeW/2}}" y="${{y+16}}" text-anchor="middle" font-size="11" font-weight="bold" fill="${{color}}">${{label}}</text>
+        <text x="${{x+nodeW/2}}" y="${{y+34}}" text-anchor="middle" font-size="9" fill="#94a3b8">${{statusTxt}}</text>
+        <text x="${{x+nodeW/2}}" y="${{y+48}}" text-anchor="middle" font-size="8" fill="#64748b">${{model}}</text>
+        <text x="${{x+nodeW/2}}" y="${{y+62}}" text-anchor="middle" font-size="8" fill="#475569">${{chars?chars+" chars":""}}</text>
+        ${{hasOutput ? `<text x="${{x+nodeW/2}}" y="${{y+78}}" text-anchor="middle" font-size="8" fill="${{color}}">▶ view output</text>` : ""}}
+      </g>`;
   }});
 
   html += `</svg>`;
+
+  // Output panel below canvas
+  html += `<div id="pl-output-panel" style="margin-top:1rem;display:none">
+    <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.5rem">
+      <span id="pl-output-title" style="font-size:0.82rem;font-weight:600;color:#e2e8f0"></span>
+      <button class="btn btn-ghost btn-sm" style="margin-left:auto" onclick="document.getElementById('pl-output-panel').style.display='none'">✕</button>
+    </div>
+    <pre id="pl-output-code" style="background:#0f172a;color:#94a3b8;padding:1rem;border-radius:8px;font-size:0.75rem;overflow:auto;max-height:400px;white-space:pre-wrap;border:1px solid #334155"></pre>
+  </div>`;
+
   canvas.innerHTML = html;
+}}
+
+async function showNodeOutput(jobId, stage) {{
+  const res = await fetch(api(`/api/jobs/${{jobId}}/stage/${{stage}}`)).then(r => r.json());
+  const panel = document.getElementById("pl-output-panel");
+  const title = document.getElementById("pl-output-title");
+  const code = document.getElementById("pl-output-code");
+  if (!panel || !title || !code) return;
+  title.textContent = stage + " output";
+  const txt = res.output || res.error || "No output";
+  const isRejected = txt.trim().toUpperCase().startsWith("REJECTED");
+  code.textContent = txt;
+  code.style.color = isRejected ? "#f87171" : "#94a3b8";
+  panel.style.display = "block";
+  panel.scrollIntoView({{behavior:"smooth", block:"nearest"}});
 }}
 
 async function cancelJob(id) {{
