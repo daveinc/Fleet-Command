@@ -86,3 +86,27 @@ def write_stage_output(job_id: str, stage: str, content: str) -> None:
 def read_stage_output(job_id: str, stage: str) -> str | None:
     p = _run_dir(job_id) / f"stage_{stage}.txt"
     return p.read_text(encoding="utf-8") if p.exists() else None
+
+
+def cancel_job(job_id: str) -> bool:
+    job = load_job(job_id)
+    if not job:
+        return False
+    (_run_dir(job_id) / "cancel").touch()
+    job["status"] = "cancelled"
+    append_log(job, "system", "Cancelled by user")
+    save_job(job)
+    return True
+
+
+def is_cancelled(job_id: str) -> bool:
+    return (_run_dir(job_id) / "cancel").exists()
+
+
+def delete_job(job_id: str) -> bool:
+    import shutil
+    d = _run_dir(job_id)
+    if not d.exists():
+        return False
+    shutil.rmtree(d)
+    return True

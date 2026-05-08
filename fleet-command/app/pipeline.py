@@ -1,13 +1,29 @@
 from __future__ import annotations
 
 import re
+import time
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 import httpx
 
+_LOG_FILE = Path("/share/fleet_command.log")
+
+
+def _flog(msg: str) -> None:
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    line = f"[{ts}] {msg}\n"
+    try:
+        with _LOG_FILE.open("a", encoding="utf-8") as f:
+            f.write(line)
+    except Exception:
+        pass
+
 from app.jobs import (
     load_job, save_job, append_log,
     write_stage_output, read_stage_output,
+    is_cancelled,
     STATUS_RUNNING, STATUS_DONE, STATUS_FAILED,
 )
 from app.roles import load_roles, ROLE_META
@@ -16,36 +32,16 @@ from app.harnesses import get_harness
 # ── HA card reference baked in — enough for generator to produce valid YAML ──
 
 HA_REFERENCE = """
-## HA Dashboard YAML Structure
-```yaml
-title: "Dashboard Title"
+YAML only. No fences. No explanations.
+Structure:
+title: "Title"
 views:
-  - title: "View Name"
-    path: view-path
+  - title: "View"
     cards:
-      - type: CARD_TYPE
-        ...options...
-```
-
-## Available Card Types
-- weather-forecast: entity: weather.X, forecast_type: daily
-- sensor: entity: sensor.X, name: "Label", unit: "°C"
-- entities: title: "Group", entities: [entity: X, name: Y, ...]
-- gauge: entity: sensor.X, min: 0, max: 100, name: "Label"
-- history-graph: entities: [{entity: X}], hours_to_show: 24
-- button: entity: switch.X, name: "Label", tap_action: {action: toggle}
-- markdown: content: "## Heading\\nText"
-- picture-entity: entity: camera.X, camera_view: live
-- energy-distribution: (no extra config needed)
-- grid: columns: 2, cards: [...]
-- vertical-stack: cards: [...]
-- horizontal-stack: cards: [...]
-
-## Rules
-- Output ONLY valid YAML. No markdown fences. No explanations.
-- Use real HA entity patterns: sensor.X, switch.X, light.X, binary_sensor.X
-- Every card must have a `type` field.
-- views must be a list under the root `views` key.
+      - type: TYPE
+        entity: domain.name
+Cards: sensor, entities, gauge, weather-forecast, history-graph, button, markdown, grid, vertical-stack
+Rules: every card needs type. entities card uses list under entities key.
 """
 
 
@@ -63,7 +59,7 @@ def _build_payload(harness: dict[str, Any], system: str, user: str) -> dict[str,
                 {"role": "user", "content": user},
             ],
             "stream": False,
-            "options": {"temperature": temp},
+            "options": {"temperature": temp, "num_predict": 1024},
         }
     if fmt == "ollama_generate":
         return {"model": model, "prompt": f"{system}\n\n{user}", "stream": False}
@@ -105,11 +101,21 @@ def _extract(response: httpx.Response, fmt: str) -> str:
 
 
 def _auth_headers(harness: dict[str, Any]) -> dict[str, str]:
+    from app.workers import configured_workers, worker_secret
     auth = harness.get("auth_type", "none")
     if auth == "none":
         return {}
-    # API keys for cloud workers need to come from env or worker slots.
-    # Placeholder — cloud auth wired in next iteration.
+    model = harness.get("model", "")
+    for w in configured_workers():
+        if w.get("model") == model:
+            secret = worker_secret(int(w["id"]))
+            if secret:
+                if auth == "bearer":
+                    return {"Authorization": f"Bearer {secret}"}
+                if auth == "x_api_key":
+                    return {"x-api-key": secret}
+                header = harness.get("auth_header") or w.get("auth_header") or "Authorization"
+                return {header: secret}
     return {}
 
 
@@ -136,19 +142,39 @@ def _resolve_endpoint(harness: dict[str, Any]) -> str:
 async def _call_harness(harness: dict[str, Any], system: str, user: str) -> str:
     endpoint = _resolve_endpoint(harness)
     payload = _build_payload(harness, system, user)
-    headers = {"Content-Type": "application/json", **_auth_headers(harness)}
-    async with httpx.AsyncClient(timeout=120) as client:
-        resp = await client.post(endpoint, headers=headers, json=payload)
-        resp.raise_for_status()
-        return _extract(resp, harness.get("request_format", "ollama_chat"))
+    auth_headers = _auth_headers(harness)
+    headers = {"Content-Type": "application/json", **auth_headers}
+    fmt = harness.get("request_format", "ollama_chat")
+
+    _flog(f"CALL model={harness.get('model')} fmt={fmt}")
+    _flog(f"  endpoint={endpoint}")
+    _flog(f"  auth={'yes ('+harness.get('auth_type')+')' if auth_headers else 'none'}")
+    _flog(f"  payload_keys={list(payload.keys())}")
+    if "messages" in payload:
+        _flog(f"  messages={len(payload['messages'])} total_chars={sum(len(m.get('content','')) for m in payload['messages'])}")
+
+    t0 = time.monotonic()
+    try:
+        async with httpx.AsyncClient(timeout=90) as client:
+            resp = await client.post(endpoint, headers=headers, json=payload)
+            elapsed = time.monotonic() - t0
+            _flog(f"  response status={resp.status_code} elapsed={elapsed:.1f}s size={len(resp.content)}b")
+            resp.raise_for_status()
+            result = _extract(resp, fmt)
+            _flog(f"  extracted={len(result)} chars preview={result[:120].strip()!r}")
+            return result
+    except Exception as exc:
+        elapsed = time.monotonic() - t0
+        _flog(f"  ERROR after {elapsed:.1f}s: {exc}")
+        raise
 
 
 def _user_prompt(stage: str, spec: str, prev: str | None) -> str:
     if stage == "generator":
         return (
-            f"Job specification:\n{spec}\n\n"
-            f"Produce the HA dashboard YAML now.\n\n"
-            f"Reference:\n{HA_REFERENCE}"
+            f"{HA_REFERENCE}\n"
+            f"Build this: {spec}\n"
+            f"Output YAML only."
         )
     if stage == "reviewer":
         return (
@@ -183,7 +209,9 @@ async def run_stage(job_id: str, stage: str) -> dict[str, Any]:
         save_job(job)
         return {"ok": False, "error": msg}
 
-    persona = ROLE_META.get(stage, {}).get("persona", "You are a helpful AI assistant.")
+    full_persona = ROLE_META.get(stage, {}).get("persona", "You are a helpful AI assistant.")
+    # Trim persona for small models — keep first sentence only
+    persona = full_persona.split(".")[0] + "." if full_persona else "You are a helpful AI assistant."
     spec = job.get("spec", "")
 
     # Previous stage output (reviewer/supervisor need generator output)
@@ -219,11 +247,18 @@ async def run_pipeline(job_id: str) -> None:
 
     job["status"] = STATUS_RUNNING
     save_job(job)
+    _flog(f"=== JOB {job_id} START pipeline={job.get('pipeline')} ===")
 
     pipeline = job.get("pipeline", ["generator"])
     prev_output: str | None = None
 
     for stage in pipeline:
+        if is_cancelled(job_id):
+            job = load_job(job_id)
+            job["status"] = "cancelled"
+            save_job(job)
+            return
+
         result = await run_stage(job_id, stage)
         if not result["ok"]:
             job = load_job(job_id)  # reload to get log

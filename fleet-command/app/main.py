@@ -12,7 +12,7 @@ from app.workers import configured_workers, test_worker
 from app.harnesses import load_harnesses, save_user_harness
 from app.roles import load_roles, save_roles, swap_roles, ROLE_ORDER, ROLE_LABELS, ROLE_META, ADVISOR_ROLE
 from fastapi import BackgroundTasks
-from app.jobs import create_job, load_job, list_jobs, read_stage_output
+from app.jobs import create_job, load_job, list_jobs, read_stage_output, cancel_job, delete_job
 from app.pipeline import run_pipeline, run_stage
 from app.fleet import (
     load_fleet, save_fleet,
@@ -238,6 +238,34 @@ async def api_job_stage_output(job_id: str, stage: str) -> dict:
     if output is None:
         return JSONResponse({"ok": False, "error": "no output yet"}, status_code=404)
     return {"ok": True, "stage": stage, "output": output}
+
+
+@app.post("/api/jobs/{job_id}/cancel")
+async def api_job_cancel(job_id: str) -> dict:
+    ok = cancel_job(job_id)
+    return {"ok": ok}
+
+
+@app.delete("/api/jobs/{job_id}")
+async def api_job_delete(job_id: str) -> dict:
+    ok = delete_job(job_id)
+    if not ok:
+        return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
+    return {"ok": True}
+
+
+@app.patch("/api/jobs/{job_id}/pipeline")
+async def api_job_reassign(job_id: str, payload: dict) -> dict:
+    job = load_job(job_id)
+    if not job:
+        return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
+    if "pipeline" in payload:
+        job["pipeline"] = payload["pipeline"]
+    if "target_dashboard" in payload:
+        job["target_dashboard"] = payload["target_dashboard"]
+    from app.jobs import save_job
+    save_job(job)
+    return {"ok": True, "job": job}
 
 
 @app.get("/api/fleet/templates")
@@ -1646,13 +1674,23 @@ function jobCard(j) {{
       <div style="font-size:0.68rem;color:#475569;margin-bottom:0.2rem">Log ${{isActive ? '— live' : ''}}</div>
       <div id="jlog-${{j.id}}" style="font-family:monospace;font-size:0.72rem;background:#0f1117;border-radius:5px;padding:0.5rem;height:160px;overflow-y:auto;margin-bottom:0.6rem;line-height:1.6">${{logHtml}}</div>
       ${{hasFinal ? `<div style="margin-bottom:0.6rem"><div style="font-size:0.68rem;color:#475569;margin-bottom:0.2rem">Final Output</div><pre style="font-size:0.7rem;color:#94a3b8;background:#0f1117;padding:0.5rem;border-radius:5px;max-height:220px;overflow:auto;white-space:pre-wrap">${{j.final_output}}</pre></div>` : ""}}
-      <div style="display:flex;gap:0.4rem;flex-wrap:wrap;align-items:center">
+      <div style="display:flex;gap:0.4rem;flex-wrap:wrap;align-items:center;margin-bottom:0.4rem">
         ${{j.status === "pending" ? `<button class="btn btn-primary btn-sm" onclick="runJob('${{j.id}}')">▶ Run</button>` : ""}}
         ${{isActive ? `<span style="font-size:0.75rem;color:#fbbf24">● Running…</span>` : ""}}
+        ${{isActive ? `<button class="btn btn-ghost btn-sm" onclick="cancelJob('${{j.id}}')">⏸ Cancel</button>` : ""}}
         <button class="btn btn-ghost btn-sm" onclick="runJobStage('${{j.id}}','generator')">gen only</button>
         <button class="btn btn-ghost btn-sm" onclick="runJobStage('${{j.id}}','reviewer')">review only</button>
         <button class="btn btn-ghost btn-sm" onclick="loadStageOutput('${{j.id}}','final')">view output</button>
-        <button class="btn btn-ghost btn-sm" style="margin-left:auto" onclick="refreshJobs()">↻</button>
+        <button class="btn btn-ghost btn-sm" style="margin-left:auto;color:#f87171" onclick="removeJob('${{j.id}}')">✕ Remove</button>
+      </div>
+      <div style="display:flex;gap:0.4rem;align-items:center;flex-wrap:wrap">
+        <span style="font-size:0.7rem;color:#475569">Reassign:</span>
+        <select id="reassign-${{j.id}}" style="background:#0f1117;border:1px solid #334155;border-radius:4px;color:#e2e8f0;font-size:0.75rem;padding:0.2rem 0.35rem">
+          <option value="generator">generator only</option>
+          <option value="generator,reviewer">gen + reviewer</option>
+          <option value="generator,reviewer,supervisor">full chain</option>
+        </select>
+        <button class="btn btn-ghost btn-sm" onclick="reassignJob('${{j.id}}')">Apply</button>
       </div>
     </div>
   </div>`;
@@ -1668,10 +1706,10 @@ async function loadJobs() {{
   }}
   el.innerHTML = jobs.map(jobCard).join("");
 
-  // Auto-poll if any job is running
-  const hasActive = jobs.some(j => j.status === "running" || j.status === "reviewing");
-  if (hasActive && !_jobPollTimer) {{
-    _jobPollTimer = setTimeout(() => {{ _jobPollTimer = null; loadJobs(); }}, 3000);
+  // Re-open previously open panel without resetting live poll
+  if (_openJobId) {{
+    const panel = document.getElementById("jdetail-" + _openJobId);
+    if (panel) panel.style.display = "block";
   }}
 }}
 
@@ -1725,9 +1763,9 @@ async function refreshJobDetail(id) {{
     statusEl.innerHTML = jobStatusBadge(j.status);
   }}
 
-  if (j.status === "done" || j.status === "failed") {{
+  if (j.status === "done" || j.status === "failed" || j.status === "cancelled") {{
     stopLivePoll();
-    await loadJobs();
+    loadJobs();
   }}
 }}
 
@@ -1781,6 +1819,30 @@ async function submitJob(autorun) {{
     switchTab("jobs", document.querySelector(".tab:nth-child(3)"));
     await loadJobs();
   }}
+}}
+
+async function cancelJob(id) {{
+  await fetch(api("/api/jobs/" + id + "/cancel"), {{ method: "POST" }});
+  stopLivePoll();
+  _openJobId = null;
+  loadJobs();
+}}
+
+async function removeJob(id) {{
+  if (!confirm("Remove this job and all its output?")) return;
+  await fetch(api("/api/jobs/" + id), {{ method: "DELETE" }});
+  if (_openJobId === id) {{ _openJobId = null; stopLivePoll(); }}
+  loadJobs();
+}}
+
+async function reassignJob(id) {{
+  const sel = document.getElementById("reassign-" + id);
+  const pipeline = sel.value.split(",");
+  await fetch(api("/api/jobs/" + id + "/pipeline"), {{
+    method: "PATCH", headers: {{"Content-Type":"application/json"}},
+    body: JSON.stringify({{ pipeline }}),
+  }});
+  loadJobs();
 }}
 
 function refreshJobs() {{ loadJobs(); }}
