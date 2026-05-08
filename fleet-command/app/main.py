@@ -2187,6 +2187,7 @@ function renderFleetStats() {{
 }}
 
 async function selectFleetJob(id) {{
+  if (id !== _fleetSelectedId) _fleetDetailPanel = null;
   _fleetSelectedId = id;
   renderFleetJobList(); // update selected highlight
   const res = await fetch(api("/api/jobs/" + id)).then(r => r.json());
@@ -2206,6 +2207,8 @@ function hideFleetDetail() {{
   if (center) center.innerHTML = '<div style="color:#334155;font-size:0.8rem;text-align:center;padding-top:4rem;pointer-events:none">← select a project</div>';
 }}
 
+let _fleetDetailPanel = null; // {{ type, title, content }} — persists across re-renders
+
 function renderFleetDetail(j) {{
   const center = document.getElementById("fleet-center");
   if (!center) return;
@@ -2218,9 +2221,12 @@ function renderFleetDetail(j) {{
     const color = STATUS_COLOR[s.status] || "#475569";
     const model = s.handled_by && s.handled_by !== stage ? "↑ " + s.handled_by : "";
     const progress = s.progress ? " · " + s.progress : "";
-    return `<div class="fstage-row">
+    const hasOutput = s.status === "done" || s.status === "error";
+    const clickable = hasOutput ? `style="cursor:pointer" onclick="fleetShowStageOutput('${{j.id}}','${{stage}}','${{LABEL[stage]||stage}}')"` : "";
+    const active = _fleetDetailPanel?.key === stage ? "background:#1e293b;border-radius:4px;" : "";
+    return `<div class="fstage-row" ${{clickable}} style="${{active}}">
       <span class="fstage-dot" style="background:${{color}}"></span>
-      <span class="fstage-name">${{LABEL[stage]||stage}}</span>
+      <span class="fstage-name" style="color:${{hasOutput?"#e2e8f0":"#475569"}}">${{LABEL[stage]||stage}}</span>
       <span class="fstage-model">${{model}}${{progress}}</span>
       <span class="fstage-status" style="color:${{color}}">${{s.status||"pending"}}</span>
     </div>`;
@@ -2234,13 +2240,13 @@ function renderFleetDetail(j) {{
     if (m) {{
       const block = m[1], task = m[2];
       if (!blocksMap[block]) blocksMap[block] = [];
-      blocksMap[block].push(task);
+      blocksMap[block].push({{ short: task.slice(0,60), full: task }});
     }}
   }});
   const blockRows = Object.entries(blocksMap).map(([block, tasks]) => `
     <div class="fblock-row">
       <div class="fblock-name">${{block}}</div>
-      ${{tasks.map(t => `<div class="ftask-item">· ${{t.slice(0,60)}}</div>`).join("")}}
+      ${{tasks.map(t => `<div class="ftask-item" style="cursor:pointer" onclick="fleetShowTaskText('${{t.full.replace(/'/g,"&#39;")}}')">· ${{t.short}}${{t.full.length > 60 ? "…" : ""}}</div>`).join("")}}
     </div>`).join("");
 
   const logLines = (j.log || []).slice(-8).map(l =>
@@ -2249,6 +2255,14 @@ function renderFleetDetail(j) {{
 
   const isActive = j.status === "running" || j.status === "pending";
   const statusColor = STATUS_COLOR[j.status] || "#475569";
+  const panelHtml = _fleetDetailPanel ? `
+    <div id="fdetail-panel" style="margin:0.5rem 0;background:#0f172a;border:1px solid #334155;border-radius:6px;padding:0.6rem;font-size:0.72rem">
+      <div style="display:flex;align-items:center;gap:0.4rem;margin-bottom:0.4rem">
+        <span style="color:#94a3b8;font-weight:600">${{_fleetDetailPanel.title}}</span>
+        <button class="btn btn-ghost btn-sm" style="margin-left:auto;padding:0 0.3rem;font-size:0.65rem" onclick="_fleetDetailPanel=null;document.getElementById('fdetail-panel')?.remove()">✕</button>
+      </div>
+      <pre style="color:#94a3b8;white-space:pre-wrap;word-break:break-word;max-height:200px;overflow-y:auto;margin:0">${{_fleetDetailPanel.content}}</pre>
+    </div>` : "";
 
   center.innerHTML = `
     <div class="fleet-detail-card">
@@ -2261,6 +2275,8 @@ function renderFleetDetail(j) {{
 
       <div class="section-title" style="font-size:0.65rem;margin-bottom:0.3rem">Pipeline</div>
       <div class="fdetail-stages">${{stageRows}}</div>
+
+      ${{panelHtml}}
 
       ${{blockRows ? `<div class="section-title" style="font-size:0.65rem;margin:0.65rem 0 0.3rem">Blocks &amp; Tasks</div><div class="fblock-list">${{blockRows}}</div>` : ""}}
 
@@ -2276,6 +2292,21 @@ function renderFleetDetail(j) {{
     </div>`;
   const logEl = document.getElementById("flog-mini");
   if (logEl) logEl.scrollTop = logEl.scrollHeight;
+}}
+
+async function fleetShowStageOutput(jobId, stage, label) {{
+  const res = await fetch(api(`/api/jobs/${{jobId}}/stage/${{stage}}`)).then(r => r.json());
+  const txt = res.output || res.error || "No output";
+  _fleetDetailPanel = {{ key: stage, title: label + " output", content: txt }};
+  // Re-render current job to show panel
+  const job = (_fleetJobs || []).find(j => j.id === jobId);
+  if (job) renderFleetDetail(job);
+}}
+
+function fleetShowTaskText(fullText) {{
+  _fleetDetailPanel = {{ key: "task_" + fullText.slice(0,20), title: "Task", content: fullText }};
+  const job = (_fleetJobs || []).find(j => j.id === _fleetSelectedId);
+  if (job) renderFleetDetail(job);
 }}
 
 async function fleetRunJob(id) {{
