@@ -1189,6 +1189,7 @@ function switchTab(name, el) {{
   document.getElementById("tab-" + name).classList.add("active");
   if (name === "harnesses") renderHarnesses();
   if (name === "jobs") loadJobs();
+  if (name !== "jobs") stopLivePoll();
 }}
 
 const REQUEST_FORMATS = ["ollama_chat","ollama_generate","openai_responses","openai_chat","anthropic_messages","raw_prompt_json"];
@@ -1600,6 +1601,8 @@ async function submitProject() {{
 // ── Jobs ───────────────────────────────────────────────────────────────────
 
 let _jobPollTimer = null;
+let _jobLivePollTimer = null;
+let _openJobId = null;
 
 const STATUS_COLORS = {{
   pending:   "#475569",
@@ -1616,39 +1619,40 @@ function jobStatusBadge(status) {{
 
 function jobCard(j) {{
   const stages = j.stages || {{}};
-  const stageHtml = Object.entries(stages).map(([name, s]) => `
-    <span style="font-size:0.7rem;color:${{s.status === "done" ? "#4ade80" : s.status === "error" ? "#f87171" : "#fbbf24"}}">
-      ${{name}}: ${{s.status}}
-    </span>`).join(" · ");
+  const stageHtml = Object.entries(stages).map(([name, s]) =>
+    `<span style="font-size:0.7rem;color:${{s.status === "done" ? "#4ade80" : s.status === "error" ? "#f87171" : "#fbbf24"}}">${{name}}: ${{s.status}}</span>`
+  ).join(" · ");
 
-  const logHtml = (j.log || []).slice(-6).map(l =>
-    `<div style="font-size:0.7rem;color:#334155"><span style="color:#1e293b">${{l.ts?.slice(11,19) || ""}}</span> <span style="color:#475569">[${{l.stage}}]</span> ${{l.msg}}</div>`
-  ).join("");
+  const logHtml = (j.log || []).map(l =>
+    `<div><span style="color:#334155">${{l.ts?.slice(11,19) || ""}}</span> <span style="color:#475569">[${{l.stage}}]</span> <span style="color:#94a3b8">${{l.msg}}</span></div>`
+  ).join("") || '<span style="color:#334155">No log yet.</span>';
 
   const hasFinal = j.status === "done" && j.final_output;
+  const isActive = j.status === "running" || j.status === "reviewing";
 
   return `
-  <div style="background:#1e2330;border:1px solid #2d3748;border-radius:10px;margin-bottom:0.75rem;overflow:hidden">
+  <div style="background:#1e2330;border:1px solid ${{isActive ? "#fbbf24" : "#2d3748"}};border-radius:10px;margin-bottom:0.75rem;overflow:hidden;transition:border-color 0.3s">
     <div style="padding:0.75rem 1rem;display:flex;align-items:center;gap:0.75rem;cursor:pointer"
       onclick="toggleJobDetail('${{j.id}}')">
       <div style="flex:1">
         <div style="font-size:0.88rem;font-weight:600;color:#e2e8f0">#${{j.id}} — ${{j.type}}</div>
-        <div style="font-size:0.72rem;color:#475569;margin-top:0.15rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:60vw">${{j.spec?.slice(0,120) || "—"}}</div>
+        <div style="font-size:0.72rem;color:#475569;margin-top:0.1rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:55vw">${{j.spec?.slice(0,120) || "—"}}</div>
       </div>
-      ${{jobStatusBadge(j.status)}}
+      <span id="jstatus-${{j.id}}">${{jobStatusBadge(j.status)}}</span>
       <span style="color:#475569;font-size:0.8rem">▾</span>
     </div>
     <div id="jdetail-${{j.id}}" style="display:none;padding:0 1rem 0.75rem;border-top:1px solid #1e293b">
-      <div style="font-size:0.72rem;color:#475569;margin-bottom:0.4rem">${{stageHtml || "No stages run yet"}}</div>
-      <div style="font-family:monospace;background:#0f1117;border-radius:5px;padding:0.5rem;max-height:140px;overflow-y:auto;margin-bottom:0.5rem">${{logHtml || '<span style="color:#334155">No log entries.</span>'}}</div>
-      ${{hasFinal ? `<div style="margin-bottom:0.5rem"><label style="font-size:0.7rem;color:#475569">Final Output Preview</label><pre style="font-size:0.7rem;color:#94a3b8;background:#0f1117;padding:0.5rem;border-radius:5px;max-height:200px;overflow:auto;white-space:pre-wrap">${{j.final_output}}</pre></div>` : ""}}
-      <div style="display:flex;gap:0.4rem;flex-wrap:wrap">
+      <div id="jstages-${{j.id}}" style="font-size:0.72rem;color:#475569;margin-bottom:0.5rem;min-height:1rem">${{stageHtml || "No stages run yet"}}</div>
+      <div style="font-size:0.68rem;color:#475569;margin-bottom:0.2rem">Log ${{isActive ? '— live' : ''}}</div>
+      <div id="jlog-${{j.id}}" style="font-family:monospace;font-size:0.72rem;background:#0f1117;border-radius:5px;padding:0.5rem;height:160px;overflow-y:auto;margin-bottom:0.6rem;line-height:1.6">${{logHtml}}</div>
+      ${{hasFinal ? `<div style="margin-bottom:0.6rem"><div style="font-size:0.68rem;color:#475569;margin-bottom:0.2rem">Final Output</div><pre style="font-size:0.7rem;color:#94a3b8;background:#0f1117;padding:0.5rem;border-radius:5px;max-height:220px;overflow:auto;white-space:pre-wrap">${{j.final_output}}</pre></div>` : ""}}
+      <div style="display:flex;gap:0.4rem;flex-wrap:wrap;align-items:center">
         ${{j.status === "pending" ? `<button class="btn btn-primary btn-sm" onclick="runJob('${{j.id}}')">▶ Run</button>` : ""}}
-        ${{j.status === "running" || j.status === "reviewing" ? `<span style="font-size:0.78rem;color:#fbbf24;align-self:center">Running…</span>` : ""}}
-        <button class="btn btn-ghost btn-sm" onclick="runJobStage('${{j.id}}','generator')">generator only</button>
-        <button class="btn btn-ghost btn-sm" onclick="runJobStage('${{j.id}}','reviewer')">reviewer only</button>
-        <button class="btn btn-ghost btn-sm" onclick="loadStageOutput('${{j.id}}','final')">view final</button>
-        <button class="btn btn-ghost btn-sm" onclick="refreshJobs()">↻</button>
+        ${{isActive ? `<span style="font-size:0.75rem;color:#fbbf24">● Running…</span>` : ""}}
+        <button class="btn btn-ghost btn-sm" onclick="runJobStage('${{j.id}}','generator')">gen only</button>
+        <button class="btn btn-ghost btn-sm" onclick="runJobStage('${{j.id}}','reviewer')">review only</button>
+        <button class="btn btn-ghost btn-sm" onclick="loadStageOutput('${{j.id}}','final')">view output</button>
+        <button class="btn btn-ghost btn-sm" style="margin-left:auto" onclick="refreshJobs()">↻</button>
       </div>
     </div>
   </div>`;
@@ -1676,6 +1680,55 @@ function toggleJobDetail(id) {{
   if (!el) return;
   const open = el.style.display !== "none";
   el.style.display = open ? "none" : "block";
+  if (!open) {{
+    _openJobId = id;
+    startLivePoll(id);
+  }} else {{
+    _openJobId = null;
+    stopLivePoll();
+  }}
+}}
+
+function startLivePoll(id) {{
+  stopLivePoll();
+  _jobLivePollTimer = setInterval(() => refreshJobDetail(id), 2000);
+}}
+
+function stopLivePoll() {{
+  if (_jobLivePollTimer) {{ clearInterval(_jobLivePollTimer); _jobLivePollTimer = null; }}
+}}
+
+async function refreshJobDetail(id) {{
+  const res = await fetch(api("/api/jobs/" + id)).then(r => r.json());
+  if (!res.ok) return;
+  const j = res.job;
+
+  const logEl = document.getElementById("jlog-" + id);
+  const stageEl = document.getElementById("jstages-" + id);
+  const statusEl = document.getElementById("jstatus-" + id);
+
+  if (logEl) {{
+    logEl.innerHTML = (j.log || []).map(l =>
+      `<div><span style="color:#334155">${{l.ts?.slice(11,19) || ""}}</span> <span style="color:#475569">[${{l.stage}}]</span> <span style="color:#94a3b8">${{l.msg}}</span></div>`
+    ).join("") || '<span style="color:#334155">No log yet.</span>';
+    logEl.scrollTop = logEl.scrollHeight;
+  }}
+
+  if (stageEl) {{
+    const stages = j.stages || {{}};
+    stageEl.innerHTML = Object.entries(stages).map(([name, s]) =>
+      `<span style="font-size:0.7rem;color:${{s.status === "done" ? "#4ade80" : s.status === "error" ? "#f87171" : "#fbbf24"}}">${{name}}: ${{s.status}}</span>`
+    ).join(" · ");
+  }}
+
+  if (statusEl) {{
+    statusEl.innerHTML = jobStatusBadge(j.status);
+  }}
+
+  if (j.status === "done" || j.status === "failed") {{
+    stopLivePoll();
+    await loadJobs();
+  }}
 }}
 
 async function runJob(id) {{
