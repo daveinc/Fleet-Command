@@ -235,8 +235,16 @@ async def _call_with_fallback(
     raise RuntimeError(f"All workers exhausted for stage '{stage}' — no available harness responded")
 
 
-def _user_prompt(stage: str, spec: str, prev: str | None) -> str:
+def _user_prompt(stage: str, spec: str, prev: str | None, feedback: str | None = None) -> str:
     if stage == "generator":
+        if feedback:
+            return (
+                f"{HA_REFERENCE}\n"
+                f"Build this: {spec}\n\n"
+                f"Your previous attempt was rejected by the reviewer.\n"
+                f"Rejection feedback:\n{feedback}\n\n"
+                f"Fix every issue listed above. Output corrected YAML only."
+            )
         return (
             f"{HA_REFERENCE}\n"
             f"Build this: {spec}\n"
@@ -246,8 +254,9 @@ def _user_prompt(stage: str, spec: str, prev: str | None) -> str:
         return (
             f"Job specification:\n{spec}\n\n"
             f"Output to review:\n{prev}\n\n"
-            f"Return corrected YAML only. "
-            f"If it cannot be fixed, write REJECTED: followed by a list of issues."
+            f"Fix any issues yourself and output the corrected YAML. "
+            f"Do not list problems — just fix them and output working YAML. "
+            f"Only write REJECTED: (followed by reasons) if the output is so fundamentally wrong that fixing it would require a complete rewrite."
         )
     if stage == "supervisor":
         return (
@@ -307,6 +316,45 @@ async def run_stage(job_id: str, stage: str) -> dict[str, Any]:
         return {"ok": False, "error": str(exc)}
 
 
+async def _run_generator(job_id: str, spec: str, roles: dict, feedback: str | None, attempt: int) -> dict[str, Any]:
+    """Run the generator stage, injecting rejection feedback on retries."""
+    job = load_job(job_id)
+    if not job:
+        return {"ok": False, "error": "job not found"}
+
+    assignment = roles.get("generator", {})
+    harness_id = assignment.get("harness_id")
+    harness = get_harness(harness_id) if harness_id else None
+    if not harness:
+        return {"ok": False, "error": "No model assigned to role: generator"}
+
+    full_persona = ROLE_META.get("generator", {}).get("persona", "You are a helpful AI assistant.")
+    persona = full_persona.split(".")[0] + "."
+    user = _user_prompt("generator", spec, None, feedback=feedback)
+
+    label = f"generator (attempt {attempt + 1})" if attempt > 0 else "generator"
+    append_log(job, label, f"Calling {harness.get('display_name', harness_id)}...")
+    job["stages"]["generator"] = {"status": "running"}
+    save_job(job)
+
+    try:
+        raw, handled_by = await _call_with_fallback("generator", harness, persona, user, roles, job)
+        output = _strip_fences(raw)
+        write_stage_output(job_id, "generator", output)
+        note = f" (handled by {handled_by})" if handled_by != "generator" else ""
+        job = load_job(job_id)
+        job["stages"]["generator"] = {"status": "done", "preview": output[:400], "handled_by": handled_by}
+        append_log(job, label, f"Done — {len(output)} chars{note}")
+        save_job(job)
+        return {"ok": True, "stage": "generator", "output": output}
+    except Exception as exc:
+        job = load_job(job_id)
+        job["stages"]["generator"] = {"status": "error", "error": str(exc)}
+        append_log(job, label, f"ERROR — {exc}")
+        save_job(job)
+        return {"ok": False, "error": str(exc)}
+
+
 async def run_pipeline(job_id: str) -> None:
     job = load_job(job_id)
     if not job:
@@ -317,32 +365,72 @@ async def run_pipeline(job_id: str) -> None:
     _flog(f"=== JOB {job_id} START pipeline={job.get('pipeline')} ===")
 
     pipeline = job.get("pipeline", ["generator"])
-    prev_output: str | None = None
+    max_retries = job.get("max_retries", 2)
+    roles = load_roles()
+    spec = job.get("spec", "")
 
-    for stage in pipeline:
+    rejection_feedback: str | None = None
+
+    for attempt in range(max_retries + 1):
         if is_cancelled(job_id):
             job = load_job(job_id)
             job["status"] = "cancelled"
             save_job(job)
             return
 
-        result = await run_stage(job_id, stage)
-        if not result["ok"]:
-            job = load_job(job_id)  # reload to get log
-            job["status"] = STATUS_FAILED
+        if attempt > 0:
+            job = load_job(job_id)
+            append_log(job, "pipeline", f"Correction attempt {attempt}/{max_retries} — feeding reviewer feedback to generator")
             save_job(job)
-            return
-        prev_output = result.get("output")
 
-        # Reload so log is current
-        job = load_job(job_id)
+        prev_output: str | None = None
+        pipeline_ok = True
 
-        # Reviewer rejection check
-        if stage == "reviewer" and prev_output and prev_output.strip().upper().startswith("REJECTED"):
-            job["status"] = STATUS_FAILED
-            append_log(job, stage, "Pipeline halted — reviewer rejected output")
-            save_job(job)
-            return
+        for stage in pipeline:
+            if is_cancelled(job_id):
+                job = load_job(job_id)
+                job["status"] = "cancelled"
+                save_job(job)
+                return
+
+            # Generator gets feedback on retries
+            if stage == "generator" and attempt > 0:
+                result = await _run_generator(job_id, spec, roles, rejection_feedback, attempt)
+            else:
+                result = await run_stage(job_id, stage)
+
+            if not result["ok"]:
+                job = load_job(job_id)
+                job["status"] = STATUS_FAILED
+                save_job(job)
+                return
+
+            prev_output = result.get("output")
+            job = load_job(job_id)
+
+            # Reviewer rejection — capture feedback and retry if attempts remain
+            if stage == "reviewer" and prev_output and prev_output.strip().upper().startswith("REJECTED"):
+                rejection_feedback = prev_output
+                if attempt < max_retries:
+                    append_log(job, "reviewer", f"Rejected — will retry generator (attempt {attempt + 1}/{max_retries})")
+                    save_job(job)
+                    pipeline_ok = False
+                    break
+                else:
+                    append_log(job, "reviewer", f"Rejected — max retries ({max_retries}) reached")
+                    job["status"] = STATUS_FAILED
+                    save_job(job)
+                    return
+
+            # Supervisor rejection — no retry, fail immediately
+            if stage == "supervisor" and prev_output and prev_output.strip().upper().startswith("REJECTED"):
+                append_log(job, "supervisor", "Supervisor rejected final output")
+                job["status"] = STATUS_FAILED
+                save_job(job)
+                return
+
+        if pipeline_ok:
+            break
 
     # All stages passed
     if prev_output:
