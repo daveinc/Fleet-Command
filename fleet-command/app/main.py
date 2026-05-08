@@ -277,6 +277,19 @@ async def api_job_reassign(job_id: str, payload: dict) -> dict:
     return {"ok": True, "job": job}
 
 
+@app.get("/api/pipeline-rules")
+async def api_pipeline_rules_get() -> dict:
+    from app.pipeline_rules import load_rules
+    return {"rules": load_rules()}
+
+
+@app.post("/api/pipeline-rules")
+async def api_pipeline_rules_save(payload: dict) -> dict:
+    from app.pipeline_rules import save_rules
+    save_rules(payload)
+    return {"ok": True}
+
+
 @app.get("/api/fleet/templates")
 async def api_templates_get() -> dict:
     builtin = [
