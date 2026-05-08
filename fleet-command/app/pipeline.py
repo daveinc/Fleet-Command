@@ -594,7 +594,7 @@ async def run_pipeline(job_id: str) -> None:
     append_log(job, "pipeline", "All stages complete")
     save_job(job)
 
-    if job.get("type") == "ha_dashboard" and prev_output:
+    if job.get("type") == "ha_dashboard" and prev_output and not prev_output.strip().upper().startswith("REJECTED"):
         await _push_dashboard(job, prev_output)
 
 
