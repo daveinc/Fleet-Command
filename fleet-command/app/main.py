@@ -11,6 +11,15 @@ from app.snapshot import capabilities, status
 from app.workers import configured_workers, test_worker
 from app.harnesses import load_harnesses
 from app.roles import load_roles, save_roles, swap_roles, ROLE_ORDER, ROLE_LABELS, ROLE_META, ADVISOR_ROLE
+from app.fleet import (
+    load_fleet, save_fleet,
+    add_staff, update_staff, remove_staff,
+    add_project, update_project,
+    add_block, update_block,
+    add_task, update_task,
+    fleet_counts,
+)
+from app.sensor_push import push_fleet_sensors
 
 app = FastAPI(title="Fleet Command")
 
@@ -67,6 +76,105 @@ async def get_status() -> dict:
 @app.get("/workers")
 async def get_workers() -> dict:
     return {"workers": configured_workers()}
+
+
+# ── Fleet API ────────────────────────────────────────────────────────────────
+
+@app.get("/api/fleet")
+async def api_fleet_get() -> dict:
+    fleet = load_fleet()
+    return {"fleet": fleet, "counts": fleet_counts(fleet)}
+
+
+@app.post("/api/fleet/staff")
+async def api_staff_add(payload: dict) -> dict:
+    fleet = load_fleet()
+    record = add_staff(fleet, payload)
+    save_fleet(fleet)
+    await push_fleet_sensors(fleet)
+    return {"ok": True, "record": record}
+
+
+@app.patch("/api/fleet/staff/{staff_id}")
+async def api_staff_update(staff_id: int, payload: dict) -> dict:
+    fleet = load_fleet()
+    record = update_staff(fleet, staff_id, payload)
+    if record is None:
+        return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
+    save_fleet(fleet)
+    await push_fleet_sensors(fleet)
+    return {"ok": True, "record": record}
+
+
+@app.delete("/api/fleet/staff/{staff_id}")
+async def api_staff_delete(staff_id: int) -> dict:
+    fleet = load_fleet()
+    removed = remove_staff(fleet, staff_id)
+    if not removed:
+        return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
+    save_fleet(fleet)
+    await push_fleet_sensors(fleet)
+    return {"ok": True}
+
+
+@app.post("/api/fleet/projects")
+async def api_project_add(payload: dict) -> dict:
+    fleet = load_fleet()
+    record = add_project(fleet, payload)
+    save_fleet(fleet)
+    await push_fleet_sensors(fleet)
+    return {"ok": True, "record": record}
+
+
+@app.patch("/api/fleet/projects/{project_id}")
+async def api_project_update(project_id: int, payload: dict) -> dict:
+    fleet = load_fleet()
+    record = update_project(fleet, project_id, payload)
+    if record is None:
+        return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
+    save_fleet(fleet)
+    await push_fleet_sensors(fleet)
+    return {"ok": True, "record": record}
+
+
+@app.post("/api/fleet/blocks")
+async def api_block_add(payload: dict) -> dict:
+    fleet = load_fleet()
+    record = add_block(fleet, payload)
+    save_fleet(fleet)
+    await push_fleet_sensors(fleet)
+    return {"ok": True, "record": record}
+
+
+@app.patch("/api/fleet/blocks/{block_id}")
+async def api_block_update(block_id: int, payload: dict) -> dict:
+    fleet = load_fleet()
+    record = update_block(fleet, block_id, payload)
+    if record is None:
+        return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
+    save_fleet(fleet)
+    await push_fleet_sensors(fleet)
+    return {"ok": True, "record": record}
+
+
+@app.post("/api/fleet/tasks")
+async def api_task_add(payload: dict) -> dict:
+    fleet = load_fleet()
+    record = add_task(fleet, payload)
+    save_fleet(fleet)
+    await push_fleet_sensors(fleet)
+    return {"ok": True, "record": record}
+
+
+@app.patch("/api/fleet/tasks/{task_id}")
+async def api_task_update(task_id: int, payload: dict) -> dict:
+    fleet = load_fleet()
+    record = update_task(fleet, task_id, payload)
+    if record is None:
+        return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
+    save_fleet(fleet)
+    await push_fleet_sensors(fleet)
+    return {"ok": True, "record": record}
 
 
 @app.post("/workers/{worker_id}/test")
@@ -406,6 +514,116 @@ def _dashboard_html(root: str) -> str:  # noqa: C901
       background: #1e293b;
       color: #6366f1;
     }}
+
+    /* ── Staff cards ── */
+    .staff-grid {{ display: flex; flex-direction: column; gap: 0.55rem; }}
+    .staff-card {{
+      background: #1e2330;
+      border: 1px solid #2d3748;
+      border-radius: 10px;
+      padding: 0.75rem 1rem;
+      display: flex;
+      gap: 1rem;
+      align-items: flex-start;
+    }}
+    .staff-card.hr {{ border-left: 3px solid #38bdf8; }}
+    .staff-card.ar {{ border-left: 3px solid #a78bfa; }}
+    .staff-avatar {{
+      width: 36px; height: 36px;
+      border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 1rem;
+      flex-shrink: 0;
+    }}
+    .staff-avatar.hr {{ background: #0c2233; color: #38bdf8; }}
+    .staff-avatar.ar {{ background: #1a1033; color: #a78bfa; }}
+    .staff-body {{ flex: 1; min-width: 0; }}
+    .staff-name {{ font-size: 0.9rem; font-weight: 600; color: #e2e8f0; }}
+    .staff-role {{ font-size: 0.7rem; color: #64748b; text-transform: uppercase; letter-spacing: 0.06em; }}
+    .staff-meta {{ display: flex; gap: 0.75rem; flex-wrap: wrap; margin-top: 0.3rem; font-size: 0.72rem; color: #475569; }}
+    .staff-status {{
+      font-size: 0.68rem; padding: 0.15rem 0.45rem; border-radius: 3px; font-weight: 500;
+    }}
+    .staff-status.available {{ background: #052e16; color: #4ade80; }}
+    .staff-status.busy {{ background: #1c1917; color: #fbbf24; }}
+    .staff-status.vacation {{ background: #1e293b; color: #475569; }}
+    .staff-tasks {{ margin-top: 0.4rem; font-size: 0.72rem; color: #334155; }}
+    .staff-tasks li {{ margin-left: 1rem; margin-top: 0.1rem; }}
+
+    /* ── Project / block / task cards ── */
+    .project-card {{
+      background: #1e2330;
+      border: 1px solid #2d3748;
+      border-radius: 10px;
+      margin-bottom: 0.75rem;
+      overflow: hidden;
+    }}
+    .project-header {{
+      padding: 0.75rem 1rem;
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      cursor: pointer;
+      user-select: none;
+    }}
+    .project-header:hover {{ background: #1a2030; }}
+    .project-name {{ font-size: 0.9rem; font-weight: 600; color: #e2e8f0; flex: 1; }}
+    .project-body {{ padding: 0 1rem 0.75rem; }}
+    .project-meta {{ font-size: 0.72rem; color: #475569; display: flex; gap: 0.75rem; flex-wrap: wrap; margin-bottom: 0.5rem; }}
+
+    .prog-wrap {{ margin: 0.4rem 0 0.6rem; }}
+    .prog-label {{ display: flex; justify-content: space-between; font-size: 0.7rem; color: #475569; margin-bottom: 0.2rem; }}
+    .prog-bar {{ height: 5px; background: #1e293b; border-radius: 3px; overflow: hidden; }}
+    .prog-fill {{ height: 100%; border-radius: 3px; background: linear-gradient(90deg,#6366f1,#818cf8); transition: width 0.3s; }}
+
+    .status-badge {{
+      font-size: 0.68rem; padding: 0.15rem 0.5rem; border-radius: 3px; font-weight: 500; white-space: nowrap;
+    }}
+    .status-ongoing {{ background: #052e16; color: #4ade80; }}
+    .status-done {{ background: #1e293b; color: #475569; }}
+    .status-halted {{ background: #2d1515; color: #f87171; }}
+    .status-pending {{ background: #1c1917; color: #fbbf24; }}
+
+    .block-list {{ display: flex; flex-direction: column; gap: 0.45rem; margin-top: 0.5rem; }}
+    .block-card {{
+      background: #171c28;
+      border: 1px solid #243040;
+      border-radius: 7px;
+      padding: 0.55rem 0.75rem;
+    }}
+    .block-name {{ font-size: 0.8rem; font-weight: 500; color: #cbd5e1; }}
+    .block-meta {{ font-size: 0.7rem; color: #475569; display: flex; gap: 0.6rem; flex-wrap: wrap; margin-top: 0.2rem; }}
+
+    .task-list {{ margin-top: 0.4rem; display: flex; flex-direction: column; gap: 0.3rem; }}
+    .task-row {{
+      display: flex; align-items: center; gap: 0.5rem;
+      font-size: 0.72rem; color: #475569;
+      padding: 0.2rem 0;
+    }}
+    .task-num {{ color: #334155; min-width: 1.5rem; }}
+    .task-name {{ flex: 1; }}
+    .task-worker {{ color: #374151; font-size: 0.68rem; }}
+
+    /* ── Modal ── */
+    .modal-overlay {{
+      display: none; position: fixed; inset: 0;
+      background: rgba(0,0,0,0.6); z-index: 100;
+      align-items: center; justify-content: center;
+    }}
+    .modal-overlay.open {{ display: flex; }}
+    .modal {{
+      background: #1e2330; border: 1px solid #334155; border-radius: 12px;
+      padding: 1.25rem; width: min(420px, 90vw); display: flex; flex-direction: column; gap: 0.75rem;
+    }}
+    .modal h3 {{ font-size: 0.95rem; font-weight: 600; color: #e2e8f0; }}
+    .field {{ display: flex; flex-direction: column; gap: 0.2rem; }}
+    .field label {{ font-size: 0.72rem; color: #64748b; }}
+    .field input, .field select, .field textarea {{
+      background: #0f1117; border: 1px solid #334155; border-radius: 5px;
+      color: #e2e8f0; font-size: 0.85rem; padding: 0.35rem 0.5rem; outline: none; width: 100%;
+    }}
+    .field input:focus, .field select:focus {{ border-color: #6366f1; }}
+    .modal-actions {{ display: flex; gap: 0.5rem; justify-content: flex-end; margin-top: 0.25rem; }}
   </style>
 </head>
 <body>
@@ -416,7 +634,8 @@ def _dashboard_html(root: str) -> str:  # noqa: C901
 
 <div class="tabs">
   <div class="tab active" onclick="switchTab('fleet', this)">Fleet</div>
-  <div class="tab" onclick="switchTab('jobs', this)">Jobs</div>
+  <div class="tab" onclick="switchTab('staff', this)">Staff</div>
+  <div class="tab" onclick="switchTab('jobs', this)">Projects</div>
   <div class="tab" onclick="switchTab('harnesses', this)">Harnesses</div>
   <div class="tab" onclick="switchTab('templates', this)">Templates</div>
 </div>
@@ -455,12 +674,28 @@ def _dashboard_html(root: str) -> str:  # noqa: C901
   </div>
 </div>
 
+<!-- ── Staff tab ── -->
+<div class="tab-panel" id="tab-staff">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.75rem">
+    <div class="section-title" style="margin:0">Human Resources</div>
+    <button class="btn btn-ghost btn-sm" onclick="openAddStaff('HR')">+ Add</button>
+  </div>
+  <div class="staff-grid" id="staff-hr"></div>
+
+  <div style="display:flex;justify-content:space-between;align-items:center;margin:1.25rem 0 0.75rem">
+    <div class="section-title" style="margin:0">AI Resources</div>
+    <button class="btn btn-ghost btn-sm" onclick="openAddStaff('AR')">+ Add</button>
+  </div>
+  <div class="staff-grid" id="staff-ar"></div>
+</div>
+
 <!-- ── Jobs tab ── -->
 <div class="tab-panel" id="tab-jobs">
-  <div class="section-title">Active &amp; Recent Jobs</div>
-  <div id="jobs-list" style="color:#475569;font-size:0.85rem;padding:1rem 0">
-    No jobs yet. Jobs will appear here once the pipeline is running.
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.75rem">
+    <div class="section-title" style="margin:0">Projects</div>
+    <button class="btn btn-ghost btn-sm" onclick="openAddProject()">+ New Project</button>
   </div>
+  <div id="projects-list"></div>
 </div>
 
 <!-- ── Harnesses tab ── -->
@@ -477,6 +712,48 @@ def _dashboard_html(root: str) -> str:  # noqa: C901
   </div>
 </div>
 
+<!-- ── Modals ── -->
+<div class="modal-overlay" id="modal-staff">
+  <div class="modal">
+    <h3 id="modal-staff-title">Add Staff</h3>
+    <div class="field"><label>Name</label><input id="sf-name" placeholder="Name"></div>
+    <div class="field"><label>Role</label><input id="sf-role" placeholder="e.g. Developer, Reviewer"></div>
+    <div class="field"><label>Budget</label><input id="sf-budget" placeholder="e.g. Infinite, Electricity"></div>
+    <div class="field">
+      <label>Status</label>
+      <select id="sf-status">
+        <option>Available</option><option>Busy</option><option>On Vacation</option><option>Unavailable</option>
+      </select>
+    </div>
+    <div class="field"><label>Score (e.g. 9/10)</label><input id="sf-score" placeholder="—"></div>
+    <div class="field"><label>Profile / Notes</label><textarea id="sf-profile" rows="2" style="resize:vertical"></textarea></div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost btn-sm" onclick="closeModal('modal-staff')">Cancel</button>
+      <button class="btn btn-primary btn-sm" onclick="submitStaff()">Add</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="modal-project">
+  <div class="modal">
+    <h3>New Project</h3>
+    <div class="field"><label>Name</label><input id="pj-name" placeholder="Project name"></div>
+    <div class="field"><label>Budget</label><input id="pj-budget" placeholder="e.g. Full time"></div>
+    <div class="field">
+      <label>Status</label>
+      <select id="pj-status">
+        <option>Ongoing</option><option>Halted</option><option>Done</option>
+      </select>
+    </div>
+    <div class="field"><label>Progress (current/total e.g. 5/50)</label><input id="pj-progress" placeholder="0/100"></div>
+    <div class="field"><label>Notes</label><textarea id="pj-notes" rows="2" style="resize:vertical"></textarea></div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost btn-sm" onclick="closeModal('modal-project')">Cancel</button>
+      <button class="btn btn-primary btn-sm" onclick="submitProject()">Create</button>
+    </div>
+  </div>
+</div>
+
 <script>
 const ROOT = "{root}";
 const api = path => ROOT + path;
@@ -487,11 +764,13 @@ let roleMeta = {{}};
 let roleOrder = [];
 let advisorRole = "advisor";
 let originalRoles = {{}};
+let fleetData = {{ staff: [], projects: [], blocks: [], tasks: [] }};
 
 async function load() {{
-  const [hRes, rRes] = await Promise.all([
+  const [hRes, rRes, fRes] = await Promise.all([
     fetch(api("/api/harnesses")).then(r => r.json()),
     fetch(api("/api/roles")).then(r => r.json()),
+    fetch(api("/api/fleet")).then(r => r.json()),
   ]);
   harnesses = hRes.harnesses || {{}};
   roles = rRes.roles || {{}};
@@ -499,9 +778,12 @@ async function load() {{
   roleOrder = rRes.order || [];
   advisorRole = rRes.advisor || "advisor";
   originalRoles = JSON.parse(JSON.stringify(roles));
+  fleetData = fRes.fleet || {{ staff: [], projects: [], blocks: [], tasks: [] }};
   renderRoster();
   renderPool();
   renderHarnesses();
+  renderStaff();
+  renderProjects();
 }}
 
 function ctxLabel(h) {{
@@ -700,6 +982,237 @@ function renderHarnesses() {{
     </div>`;
   }}).join("");
 }}
+
+// ── Staff ──────────────────────────────────────────────────────────────────
+
+function staffStatusClass(status) {{
+  const s = (status || "").toLowerCase();
+  if (s === "available") return "available";
+  if (s === "busy" || s.includes("progress")) return "busy";
+  return "vacation";
+}}
+
+function staffCard(s) {{
+  const type = (s.type || "HR").toLowerCase();
+  const statusCls = staffStatusClass(s.status);
+  const icon = type === "hr" ? "👤" : "🤖";
+  const tasks = (s.assigned_work || []);
+  const taskHtml = tasks.length
+    ? `<ul class="staff-tasks">${{tasks.map(t => `<li>${{t}}</li>`).join("")}}</ul>`
+    : "";
+  return `
+  <div class="staff-card ${{type}}" data-id="${{s.id}}">
+    <div class="staff-avatar ${{type}}">${{icon}}</div>
+    <div class="staff-body">
+      <div style="display:flex;align-items:center;gap:0.5rem">
+        <span class="staff-name">${{s.name || "Unnamed"}}</span>
+        <span class="staff-status ${{statusCls}}">${{s.status || "—"}}</span>
+      </div>
+      <div class="staff-role">${{s.role || "—"}}</div>
+      <div class="staff-meta">
+        ${{s.score ? `<span>⭐ ${{s.score}}</span>` : ""}}
+        ${{s.budget ? `<span>💰 ${{s.budget}}</span>` : ""}}
+        ${{s.hired ? `<span>📅 ${{s.hired}}</span>` : ""}}
+      </div>
+      ${{s.profile ? `<div style="font-size:0.72rem;color:#334155;margin-top:0.25rem;font-style:italic">${{s.profile}}</div>` : ""}}
+      ${{taskHtml}}
+    </div>
+    <button class="btn btn-ghost btn-sm" onclick="deleteStaff(${{s.id}})" title="Remove" style="font-size:0.7rem;color:#374151">✕</button>
+  </div>`;
+}}
+
+function renderStaff() {{
+  const hr = fleetData.staff.filter(s => s.type === "HR");
+  const ar = fleetData.staff.filter(s => s.type === "AR");
+  document.getElementById("staff-hr").innerHTML = hr.length
+    ? hr.map(staffCard).join("") : '<div style="color:#374151;font-size:0.8rem;padding:0.5rem 0">No human staff yet.</div>';
+  document.getElementById("staff-ar").innerHTML = ar.length
+    ? ar.map(staffCard).join("") : '<div style="color:#374151;font-size:0.8rem;padding:0.5rem 0">No AI staff yet.</div>';
+}}
+
+let _addStaffType = "HR";
+
+function openAddStaff(type) {{
+  _addStaffType = type;
+  document.getElementById("modal-staff-title").textContent = type === "HR" ? "Add Human Staff" : "Add AI Staff";
+  ["sf-name","sf-role","sf-budget","sf-score","sf-profile"].forEach(id => document.getElementById(id).value = "");
+  document.getElementById("sf-status").value = "Available";
+  document.getElementById("modal-staff").classList.add("open");
+}}
+
+async function submitStaff() {{
+  const record = {{
+    type: _addStaffType,
+    name: document.getElementById("sf-name").value.trim(),
+    role: document.getElementById("sf-role").value.trim(),
+    budget: document.getElementById("sf-budget").value.trim(),
+    status: document.getElementById("sf-status").value,
+    score: document.getElementById("sf-score").value.trim(),
+    profile: document.getElementById("sf-profile").value.trim(),
+    assigned_work: [],
+  }};
+  const res = await fetch(api("/api/fleet/staff"), {{
+    method: "POST", headers: {{"Content-Type":"application/json"}}, body: JSON.stringify(record),
+  }}).then(r => r.json());
+  if (res.ok) {{
+    fleetData.staff.push(res.record);
+    renderStaff();
+    closeModal("modal-staff");
+  }}
+}}
+
+async function deleteStaff(id) {{
+  if (!confirm("Remove this staff member?")) return;
+  const res = await fetch(api("/api/fleet/staff/" + id), {{ method: "DELETE" }}).then(r => r.json());
+  if (res.ok) {{
+    fleetData.staff = fleetData.staff.filter(s => s.id !== id);
+    renderStaff();
+  }}
+}}
+
+// ── Projects ───────────────────────────────────────────────────────────────
+
+function parseProgress(str) {{
+  if (!str) return [0, 100];
+  const parts = String(str).split("/");
+  return [parseInt(parts[0]) || 0, parseInt(parts[1]) || 100];
+}}
+
+function progressBar(cur, total) {{
+  const pct = total > 0 ? Math.min(100, Math.round(cur / total * 100)) : 0;
+  return `
+  <div class="prog-wrap">
+    <div class="prog-label"><span>Progress</span><span>${{cur}}/${{total}} (${{pct}}%)</span></div>
+    <div class="prog-bar"><div class="prog-fill" style="width:${{pct}}%"></div></div>
+  </div>`;
+}}
+
+function statusBadge(status) {{
+  const s = (status || "").toLowerCase();
+  const cls = s.includes("ongoing") || s.includes("progress") || s.includes("active") ? "ongoing"
+    : s === "done" ? "done"
+    : s === "halted" ? "halted"
+    : "pending";
+  return `<span class="status-badge status-${{cls}}">${{status || "—"}}</span>`;
+}}
+
+function projectCard(p) {{
+  const [cur, total] = parseProgress(p.progress_str || (p.progress !== undefined ? `${{p.progress}}/${{p.progress_total || 100}}` : "0/100"));
+  const blocks = fleetData.blocks.filter(b => b.project_id === p.id);
+  const tasks = fleetData.tasks.filter(t => t.project_id === p.id);
+
+  const blockHtml = blocks.map(b => {{
+    const [bc, bt] = parseProgress(b.progress_str || `${{b.progress || 0}}/${{b.progress_total || 100}}`);
+    const bTasks = fleetData.tasks.filter(t => t.block_id === b.id);
+    const taskRows = bTasks.map((t, i) => `
+      <div class="task-row">
+        <span class="task-num">#${{t.id}}</span>
+        <span class="task-name">${{t.name || "—"}}</span>
+        ${{statusBadge(t.status)}}
+        <span class="task-worker">${{t.worker || ""}}</span>
+      </div>`).join("");
+    return `
+    <div class="block-card">
+      <div style="display:flex;align-items:center;gap:0.5rem">
+        <span class="block-name">${{b.name || "Block " + b.id}}</span>
+        ${{statusBadge(b.status)}}
+      </div>
+      <div class="block-meta">
+        ${{b.task_current !== undefined ? `<span>Task ${{b.task_current}}/${{b.task_total || "?"}}</span>` : ""}}
+        ${{b.worker ? `<span>${{b.worker}}</span>` : ""}}
+      </div>
+      ${{progressBar(bc, bt)}}
+      ${{bTasks.length ? `<div class="task-list">${{taskRows}}</div>` : ""}}
+    </div>`;
+  }}).join("");
+
+  const looseTasks = tasks.filter(t => !t.block_id);
+  const looseRows = looseTasks.map(t => `
+    <div class="task-row">
+      <span class="task-num">#${{t.id}}</span>
+      <span class="task-name">${{t.name || "—"}}</span>
+      ${{statusBadge(t.status)}}
+      <span class="task-worker">${{t.worker || ""}}</span>
+    </div>`).join("");
+
+  return `
+  <div class="project-card">
+    <div class="project-header" onclick="this.parentElement.classList.toggle('open')">
+      <span class="project-name">${{p.name || "Project " + p.id}}</span>
+      ${{statusBadge(p.status)}}
+      <span style="font-size:0.72rem;color:#475569">${{cur}}/${{total}}</span>
+      <span style="color:#475569;font-size:0.8rem;margin-left:auto">▾</span>
+    </div>
+    <div class="project-body" style="display:none">
+      <div class="project-meta">
+        ${{p.budget ? `<span>💰 ${{p.budget}}</span>` : ""}}
+        ${{p.started ? `<span>📅 ${{p.started}}</span>` : ""}}
+        ${{p.estimated_completion ? `<span>⏱ ${{p.estimated_completion}}</span>` : ""}}
+      </div>
+      ${{progressBar(cur, total)}}
+      ${{blocks.length ? `<div class="block-list">${{blockHtml}}</div>` : ""}}
+      ${{looseTasks.length ? `<div class="task-list" style="margin-top:0.5rem">${{looseRows}}</div>` : ""}}
+      ${{!blocks.length && !looseTasks.length ? `<div style="font-size:0.75rem;color:#374151;padding:0.25rem 0">No blocks or tasks yet.</div>` : ""}}
+    </div>
+  </div>`;
+}}
+
+document.addEventListener("click", e => {{
+  const header = e.target.closest(".project-header");
+  if (!header) return;
+  const body = header.nextElementSibling;
+  const open = body.style.display !== "none";
+  body.style.display = open ? "none" : "block";
+  header.querySelector("span:last-child").textContent = open ? "▾" : "▴";
+}});
+
+function renderProjects() {{
+  const el = document.getElementById("projects-list");
+  if (!fleetData.projects.length) {{
+    el.innerHTML = '<div style="color:#475569;font-size:0.85rem;padding:1rem 0">No projects yet.</div>';
+    return;
+  }}
+  el.innerHTML = fleetData.projects.map(projectCard).join("");
+}}
+
+function openAddProject() {{
+  ["pj-name","pj-budget","pj-progress","pj-notes"].forEach(id => document.getElementById(id).value = "");
+  document.getElementById("pj-status").value = "Ongoing";
+  document.getElementById("modal-project").classList.add("open");
+}}
+
+async function submitProject() {{
+  const progressRaw = document.getElementById("pj-progress").value.trim() || "0/100";
+  const [cur, total] = parseProgress(progressRaw);
+  const record = {{
+    name: document.getElementById("pj-name").value.trim(),
+    budget: document.getElementById("pj-budget").value.trim(),
+    status: document.getElementById("pj-status").value,
+    progress: cur,
+    progress_total: total,
+    progress_str: progressRaw,
+    started: new Date().toISOString().slice(0, 10),
+    notes: document.getElementById("pj-notes").value.trim(),
+  }};
+  const res = await fetch(api("/api/fleet/projects"), {{
+    method: "POST", headers: {{"Content-Type":"application/json"}}, body: JSON.stringify(record),
+  }}).then(r => r.json());
+  if (res.ok) {{
+    fleetData.projects.push(res.record);
+    renderProjects();
+    closeModal("modal-project");
+  }}
+}}
+
+// ── Modal helpers ──────────────────────────────────────────────────────────
+
+function closeModal(id) {{
+  document.getElementById(id).classList.remove("open");
+}}
+
+document.querySelectorAll(".modal-overlay").forEach(el => {{
+  el.addEventListener("click", e => {{ if (e.target === el) el.classList.remove("open"); }});
+}});
 
 load();
 </script>
