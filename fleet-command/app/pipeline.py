@@ -340,7 +340,11 @@ async def run_stage(job_id: str, stage: str) -> dict[str, Any]:
     extra = job.get("stage_instructions", {}).get(stage)
     rejection_feedback = job.get("rejection_feedback") if stage in ("project_manager", "manager", "generator") else None
     if rejection_feedback:
-        extra = (extra or "") + f"\n\nPrevious attempt was rejected. Feedback:\n{rejection_feedback}"
+        extra = (extra or "") + (
+            f"\n\nThis is a retry. The original request was:\n{spec}\n\n"
+            f"The previous attempt was rejected with these remarks:\n{rejection_feedback}\n\n"
+            f"Address all rejection remarks in your output."
+        )
 
     # Each stage reads from its predecessor
     prev_stages = {
