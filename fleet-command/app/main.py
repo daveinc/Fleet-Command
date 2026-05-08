@@ -58,85 +58,6 @@ async def api_roles_get() -> dict:
     return {"roles": load_roles(), "order": ROLE_ORDER, "advisor": ADVISOR_ROLE, "meta": ROLE_META}
 
 
-@app.get("/api/prompts")
-async def api_prompts_get() -> dict:
-    from app.pipeline import HA_REFERENCE, _user_prompt
-    templates = {
-        "generator": {
-            "system": ROLE_META["generator"]["persona"],
-            "user": _user_prompt("generator", "{spec}", None),
-            "reference": HA_REFERENCE.strip(),
-        },
-        "reviewer": {
-            "system": ROLE_META["reviewer"]["persona"],
-            "user": _user_prompt("reviewer", "{spec}", "{prev_output}"),
-        },
-        "supervisor": {
-            "system": ROLE_META["supervisor"]["persona"],
-            "user": _user_prompt("supervisor", "{spec}", "{prev_output}"),
-        },
-    }
-    return {"prompts": templates}
-
-
-# ── Domain Templates ──────────────────────────────────────────────────────────
-
-@app.get("/api/domain-templates")
-async def api_domain_templates_list() -> dict:
-    from app.domain_templates import list_domain_templates, seed_yaml_template
-    from app.pipeline import _ollama_host
-    await seed_yaml_template(_ollama_host())
-    return {"templates": list_domain_templates()}
-
-
-@app.get("/api/domain-templates/{tid}")
-async def api_domain_template_get(tid: str) -> dict:
-    from app.domain_templates import get_domain_template
-    t = get_domain_template(tid)
-    if not t:
-        return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
-    return {"ok": True, "template": t}
-
-
-@app.put("/api/domain-templates/{tid}")
-async def api_domain_template_save(tid: str, payload: dict) -> dict:
-    from app.domain_templates import get_domain_template, save_domain_template
-    existing = get_domain_template(tid) or {}
-    merged = {**existing, **payload, "id": tid}
-    save_domain_template(tid, merged)
-    return {"ok": True, "template": merged}
-
-
-@app.post("/api/domain-templates/{tid}/deploy")
-async def api_domain_template_deploy(tid: str) -> dict:
-    from app.domain_templates import get_domain_template, push_modelfile
-    from app.pipeline import _ollama_host
-    t = get_domain_template(tid)
-    if not t:
-        return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
-    host = _ollama_host()
-    results = {}
-    for stage, cfg in (t.get("stages") or {}).items():
-        mf = cfg.get("modelfile", "").strip()
-        model = cfg.get("model_name", "")
-        if not mf or not model:
-            results[stage] = {"ok": False, "error": "no modelfile or model_name"}
-            continue
-        ok, msg = await push_modelfile(model, mf, host)
-        results[stage] = {"ok": ok, "msg": msg}
-    return {"ok": True, "results": results}
-
-
-@app.get("/api/ollama/show/{model:path}")
-async def api_ollama_show(model: str) -> dict:
-    from app.domain_templates import fetch_modelfile
-    from app.pipeline import _ollama_host
-    mf = await fetch_modelfile(model, _ollama_host())
-    if mf is None:
-        return JSONResponse({"ok": False, "error": "model not found or Ollama unreachable"}, status_code=404)
-    return {"ok": True, "modelfile": mf}
-
-
 @app.post("/api/roles")
 async def api_roles_save(payload: dict) -> dict:
     assignments = payload.get("assignments", {})
@@ -935,13 +856,6 @@ def _dashboard_html(root: str) -> str:  # noqa: C901
 
 <!-- ── Templates tab ── -->
 <div class="tab-panel" id="tab-templates">
-  <div style="display:flex;justify-content:space-between;align-items:center">
-    <div class="section-title">Domain Templates</div>
-    <button class="btn btn-ghost btn-sm" onclick="openNewDomainTemplate()">+ New Domain</button>
-  </div>
-  <div id="domain-tmpl-grid" style="display:flex;flex-direction:column;gap:0.75rem;margin-bottom:1.5rem"></div>
-  <div class="section-title">Pipeline Prompt Templates</div>
-  <div id="prompt-tmpl-grid" style="display:flex;flex-direction:column;gap:0.6rem;margin-bottom:1.5rem"></div>
   <div class="section-title">Worker Configs — What Each AI Is Running</div>
   <div class="tmpl-grid" id="tmpl-grid"></div>
   <div style="margin-top:1.5rem;display:flex;justify-content:space-between;align-items:center">
@@ -1111,7 +1025,6 @@ const api = path => ROOT + path;
 
 let harnesses = {{}};
 let roles = {{}};
-let _jobs = [];
 let roleMeta = {{}};
 let roleOrder = [];
 let advisorRole = "advisor";
@@ -1313,7 +1226,6 @@ function switchTab(name, el) {{
   document.getElementById("tab-" + name).classList.add("active");
   if (name === "harnesses") renderHarnesses();
   if (name === "jobs") loadJobs();
-  if (name === "templates") loadTemplates();
   if (name !== "jobs") stopLivePoll();
 }}
 
@@ -1321,27 +1233,10 @@ const REQUEST_FORMATS = ["ollama_chat","ollama_generate","openai_responses","ope
 const AUTH_TYPES = ["none","bearer","x_api_key","custom_header"];
 
 function renderHarnesses() {{
-  // Build map: harness_id → list of active {{job_id, stage}} from running jobs
-  const activeByHarness = {{}};
-  for (const j of _jobs) {{
-    if (j.status !== "running" && j.status !== "reviewing") continue;
-    for (const [stage, s] of Object.entries(j.stages || {{}})) {{
-      if (s.status !== "running") continue;
-      const hid = (roles[stage] || {{}}).harness_id;
-      if (!hid) continue;
-      if (!activeByHarness[hid]) activeByHarness[hid] = [];
-      activeByHarness[hid].push({{ job: j.id, stage }});
-    }}
-  }}
-
   const el = document.getElementById("harness-grid");
   el.innerHTML = Object.entries(harnesses).map(([id, h]) => {{
     const ctx = h.context_window ? (h.context_window >= 1000 ? (h.context_window/1000).toFixed(0)+"k" : h.context_window) : "?";
-    const activeTasks = activeByHarness[id] || [];
-    const taskHtml = activeTasks.length
-      ? activeTasks.map(t => `<span class="cap-tag" style="background:#1e3a2f;border-color:#4ade80;color:#4ade80">● ${{t.stage}} #${{t.job}}</span>`).join(" ")
-      : `<span style="font-size:0.66rem;color:#334155">idle</span>`;
-    const caps = (h.capabilities || []).map(c => `<span class="cap-tag" style="opacity:0.45">${{c}}</span>`).join(" ");
+    const caps = (h.capabilities || []).map(c => `<span class="cap-tag">${{c}}</span>`).join(" ");
     const costBadgeHtml = h.cost_type === "local"
       ? '<span class="cost-badge local">local</span>'
       : h.cost_type === "cloud_metered"
@@ -1361,10 +1256,7 @@ function renderHarnesses() {{
             <span>concurrency ${{h.concurrency ?? "?"}}</span>
             ${{h.reasoning ? '<span style="color:#818cf8">reasoning ✓</span>' : ""}}
           </div>
-          <div style="margin-top:0.35rem;display:flex;gap:0.3rem;flex-wrap:wrap;align-items:center">
-            <span style="font-size:0.62rem;color:#475569;margin-right:0.2rem">Active:</span>${{taskHtml}}
-          </div>
-          ${{caps ? `<div style="margin-top:0.25rem;display:flex;gap:0.3rem;flex-wrap:wrap">${{caps}}</div>` : ""}}
+          <div style="margin-top:0.35rem;display:flex;gap:0.3rem;flex-wrap:wrap">${{caps}}</div>
           ${{h.notes ? `<div class="harness-notes">${{h.notes}}</div>` : ""}}
         </div>
         <button class="btn btn-ghost btn-sm" onclick="toggleHarnessEdit('${{id}}')" title="Edit">⚙</button>
@@ -1816,15 +1708,13 @@ function jobCard(j) {{
 
 async function loadJobs() {{
   const res = await fetch(api("/api/jobs")).then(r => r.json());
-  _jobs = res.jobs || [];
+  const jobs = res.jobs || [];
   const el = document.getElementById("job-list");
-  if (!_jobs.length) {{
+  if (!jobs.length) {{
     el.innerHTML = '<div style="color:#475569;font-size:0.85rem;padding:1rem 0">No jobs yet. Click + New Job to start.</div>';
-    renderHarnesses();
     return;
   }}
-  el.innerHTML = _jobs.map(jobCard).join("");
-  renderHarnesses();
+  el.innerHTML = jobs.map(jobCard).join("");
 
   // Re-open previously open panel without resetting live poll
   if (_openJobId) {{
@@ -2088,190 +1978,11 @@ function renderWorkerConfigs() {{
   el.innerHTML = configuredWorkers.map(workerConfigCard).join("");
 }}
 
-let domainTemplates = [];
-
 async function loadTemplates() {{
-  const [dtRes, tmplRes] = await Promise.all([
-    fetch(api("/api/domain-templates")).then(r => r.json()),
-    fetch(api("/api/fleet/templates")).then(r => r.json()),
-  ]);
-  domainTemplates = dtRes.templates || [];
-  templates = (tmplRes.templates || []).filter(t => !t._builtin);
-  renderDomainTemplates();
+  const res = await fetch(api("/api/fleet/templates")).then(r => r.json());
+  templates = (res.templates || []).filter(t => !t._builtin);
   renderWorkerConfigs();
-  renderPromptTemplates();
   renderTemplates();
-}}
-
-const DOMAIN_COLORS = {{
-  yaml: "#818cf8", java: "#f59e0b", linux: "#4ade80", python: "#38bdf8", generic: "#94a3b8"
-}};
-
-function renderDomainTemplates() {{
-  const el = document.getElementById("domain-tmpl-grid");
-  if (!el) return;
-  if (!domainTemplates.length) {{
-    el.innerHTML = '<div style="color:#475569;font-size:0.85rem;padding:0.5rem 0">No domain templates yet.</div>';
-    return;
-  }}
-  el.innerHTML = domainTemplates.map(domainTemplateCard).join("");
-}}
-
-function domainTemplateCard(t) {{
-  const color = DOMAIN_COLORS[t.domain] || DOMAIN_COLORS.generic;
-  const stages = Object.entries(t.stages || {{}});
-  const stagesHtml = stages.map(([stage, cfg]) => {{
-    const eid = `dt-${{t.id}}-${{stage}}`;
-    return `
-    <div style="margin-bottom:0.75rem">
-      <div style="font-size:0.78rem;font-weight:600;color:#94a3b8;margin-bottom:0.4rem;text-transform:capitalize">${{stage}} — <span style="font-family:monospace;color:#818cf8">${{cfg.model_name || "?"}}</span></div>
-      <div style="font-size:0.68rem;color:#475569;margin-bottom:0.2rem">Modelfile <button class="btn btn-ghost btn-sm" style="font-size:0.6rem;padding:0.1rem 0.4rem" onclick="refreshModelfile('${{t.id}}','${{stage}}','${{cfg.model_name}}')">↺ fetch live</button></div>
-      <textarea id="mf-${{eid}}" rows="8" style="width:100%;box-sizing:border-box;background:#0a0d14;border:1px solid #334155;border-radius:5px;color:#94a3b8;font-family:monospace;font-size:0.7rem;padding:0.5rem;resize:vertical">${{escHtml(cfg.modelfile || "")}}</textarea>
-      <div style="font-size:0.68rem;color:#475569;margin:0.4rem 0 0.2rem">User prompt template</div>
-      <textarea id="up-${{eid}}" rows="4" style="width:100%;box-sizing:border-box;background:#0a0d14;border:1px solid #334155;border-radius:5px;color:#94a3b8;font-family:monospace;font-size:0.7rem;padding:0.5rem;resize:vertical">${{escHtml(cfg.user_prompt || "")}}</textarea>
-      ${{cfg.reference !== undefined ? `<div style="font-size:0.68rem;color:#475569;margin:0.4rem 0 0.2rem">Reference block</div><textarea id="ref-${{eid}}" rows="5" style="width:100%;box-sizing:border-box;background:#0a0d14;border:1px solid #334155;border-radius:5px;color:#6366f1;font-family:monospace;font-size:0.7rem;padding:0.5rem;resize:vertical">${{escHtml(cfg.reference || "")}}</textarea>` : ""}}
-    </div>`;
-  }}).join('<div style="border-top:1px solid #1e293b;margin:0.5rem 0"></div>');
-
-  return `
-  <div style="background:#1e2330;border:1px solid #2d3748;border-left:3px solid ${{color}};border-radius:10px;overflow:hidden">
-    <div style="padding:0.75rem 1rem;display:flex;align-items:center;gap:0.75rem;cursor:pointer"
-      onclick="togglePromptPanel('dtbody-${{t.id}}')">
-      <div style="flex:1">
-        <span style="font-size:0.9rem;font-weight:600;color:#e2e8f0">${{t.name}}</span>
-        <span class="tmpl-type" style="margin-left:0.5rem;background:#0f1117;color:${{color}};border:1px solid ${{color}}">${{t.domain}}</span>
-        <div style="font-size:0.72rem;color:#475569;margin-top:0.1rem">${{t.description || ""}}</div>
-      </div>
-      <span style="color:#475569;font-size:0.8rem">▾</span>
-    </div>
-    <div id="dtbody-${{t.id}}" style="display:none;padding:0 1rem 1rem;border-top:1px solid #1e293b">
-      <div style="margin:0.75rem 0">${{stagesHtml}}</div>
-      <div style="display:flex;gap:0.5rem;flex-wrap:wrap">
-        <button class="btn btn-primary btn-sm" onclick="saveDomainTemplate('${{t.id}}')">Save Changes</button>
-        <button class="btn btn-ghost btn-sm" style="color:#4ade80" onclick="deployDomainTemplate('${{t.id}}')">⬆ Deploy to Ollama</button>
-      </div>
-      <div id="dt-status-${{t.id}}" style="font-size:0.72rem;margin-top:0.4rem;color:#475569"></div>
-    </div>
-  </div>`;
-}}
-
-function escHtml(s) {{
-  return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
-}}
-
-async function refreshModelfile(tid, stage, modelName) {{
-  const eid = `dt-${{tid}}-${{stage}}`;
-  const res = await fetch(api("/api/ollama/show/" + encodeURIComponent(modelName))).then(r => r.json());
-  if (res.ok) {{
-    document.getElementById("mf-" + eid).value = res.modelfile;
-  }} else {{
-    alert("Could not fetch modelfile: " + (res.error || "unknown error"));
-  }}
-}}
-
-async function saveDomainTemplate(tid) {{
-  const t = domainTemplates.find(x => x.id === tid);
-  if (!t) return;
-  const stages = {{}};
-  for (const [stage, cfg] of Object.entries(t.stages || {{}})) {{
-    const eid = `dt-${{tid}}-${{stage}}`;
-    stages[stage] = {{
-      ...cfg,
-      modelfile: document.getElementById("mf-" + eid)?.value ?? cfg.modelfile,
-      user_prompt: document.getElementById("up-" + eid)?.value ?? cfg.user_prompt,
-      reference: document.getElementById("ref-" + eid)?.value ?? cfg.reference,
-    }};
-  }}
-  const res = await fetch(api("/api/domain-templates/" + tid), {{
-    method: "PUT",
-    headers: {{"Content-Type":"application/json"}},
-    body: JSON.stringify({{ ...t, stages }}),
-  }}).then(r => r.json());
-  const statusEl = document.getElementById("dt-status-" + tid);
-  if (res.ok) {{
-    domainTemplates = domainTemplates.map(x => x.id === tid ? res.template : x);
-    if (statusEl) statusEl.innerHTML = '<span style="color:#4ade80">Saved.</span>';
-  }} else {{
-    if (statusEl) statusEl.innerHTML = '<span style="color:#f87171">Save failed.</span>';
-  }}
-}}
-
-async function deployDomainTemplate(tid) {{
-  const statusEl = document.getElementById("dt-status-" + tid);
-  if (statusEl) statusEl.innerHTML = '<span style="color:#fbbf24">Deploying to Ollama…</span>';
-  const res = await fetch(api("/api/domain-templates/" + tid + "/deploy"), {{ method: "POST" }}).then(r => r.json());
-  if (!res.ok) {{
-    if (statusEl) statusEl.innerHTML = `<span style="color:#f87171">Deploy failed: ${{res.error}}</span>`;
-    return;
-  }}
-  const lines = Object.entries(res.results || {{}}).map(([stage, r]) =>
-    `${{stage}}: ${{r.ok ? '<span style="color:#4ade80">OK</span>' : '<span style="color:#f87171">' + r.msg + '</span>'}}`
-  ).join(" · ");
-  if (statusEl) statusEl.innerHTML = lines || "Done.";
-}}
-
-function openNewDomainTemplate() {{
-  const name = prompt("Domain template name (e.g. Java Coding):");
-  if (!name) return;
-  const domain = prompt("Domain type (yaml / java / python / linux / generic):", "generic");
-  const tid = (name.toLowerCase().replace(/[^a-z0-9]+/g, "-") + "-" + Date.now()).slice(0, 40);
-  const newTmpl = {{
-    id: tid, name, domain: domain || "generic",
-    description: "",
-    pipeline: ["generator", "reviewer"],
-    stages: {{
-      generator: {{ model_name: "", base_model: "", modelfile: "", persona: "", reference: "", user_prompt: "Build this: {{spec}}\nOutput only." }},
-      reviewer:  {{ model_name: "", base_model: "", modelfile: "", persona: "", reference: "", user_prompt: "Review:\n{{prev_output}}\n\nSpec:\n{{spec}}\n\nReturn corrected output or REJECTED:." }},
-    }},
-  }};
-  fetch(api("/api/domain-templates/" + tid), {{
-    method: "PUT", headers: {{"Content-Type":"application/json"}}, body: JSON.stringify(newTmpl),
-  }}).then(() => loadTemplates());
-}}
-
-async function renderPromptTemplates() {{
-  const el = document.getElementById("prompt-tmpl-grid");
-  if (!el) return;
-  let data;
-  try {{
-    const res = await fetch(api("/api/prompts")).then(r => r.json());
-    data = res.prompts || {{}};
-  }} catch(e) {{
-    el.innerHTML = '<div style="color:#f87171;font-size:0.8rem">Failed to load prompt templates.</div>';
-    return;
-  }}
-
-  const STAGE_COLORS = {{ generator: "#818cf8", reviewer: "#fbbf24", supervisor: "#4ade80" }};
-  const STAGE_LABELS = {{ generator: "Generator — Senior Developer", reviewer: "Reviewer — QA Engineer", supervisor: "Supervisor — CTO" }};
-
-  el.innerHTML = Object.entries(data).map(([stage, t]) => {{
-    const color = STAGE_COLORS[stage] || "#475569";
-    const label = STAGE_LABELS[stage] || stage;
-    const panelId = "pt-" + stage;
-    return `
-    <div style="background:#1e2330;border:1px solid #2d3748;border-left:3px solid ${{color}};border-radius:8px;overflow:hidden">
-      <div style="padding:0.65rem 1rem;display:flex;align-items:center;gap:0.75rem;cursor:pointer"
-        onclick="togglePromptPanel('${{panelId}}')">
-        <div style="flex:1">
-          <span style="font-size:0.88rem;font-weight:600;color:#e2e8f0">${{label}}</span>
-          <span style="margin-left:0.75rem;font-size:0.68rem;color:#475569">system + user prompt</span>
-        </div>
-        <span style="color:#475569;font-size:0.8rem">▾</span>
-      </div>
-      <div id="${{panelId}}" style="display:none;padding:0 1rem 0.85rem;border-top:1px solid #1e293b">
-        <div style="font-size:0.68rem;color:#475569;margin:0.5rem 0 0.2rem">System persona</div>
-        <pre style="font-size:0.72rem;color:#94a3b8;background:#0f1117;padding:0.5rem;border-radius:5px;white-space:pre-wrap;margin:0 0 0.6rem">${{t.system}}</pre>
-        ${{t.reference ? `<div style="font-size:0.68rem;color:#475569;margin-bottom:0.2rem">Reference (prepended to user prompt)</div><pre style="font-size:0.72rem;color:#6366f1;background:#0f1117;padding:0.5rem;border-radius:5px;white-space:pre-wrap;margin:0 0 0.6rem">${{t.reference}}</pre>` : ""}}
-        <div style="font-size:0.68rem;color:#475569;margin-bottom:0.2rem">User prompt template <span style="color:#334155">({{spec}} and {{prev_output}} filled at runtime)</span></div>
-        <pre style="font-size:0.72rem;color:#94a3b8;background:#0f1117;padding:0.5rem;border-radius:5px;white-space:pre-wrap;margin:0">${{t.user}}</pre>
-      </div>
-    </div>`;
-  }}).join("");
-}}
-
-function togglePromptPanel(id) {{
-  const el = document.getElementById(id);
-  if (el) el.style.display = el.style.display === "none" ? "block" : "none";
 }}
 
 function renderTemplates() {{
