@@ -29,6 +29,19 @@ from app.jobs import (
 from app.roles import load_roles, ROLE_META
 from app.harnesses import get_harness
 
+# ── Output type generator strategies ─────────────────────────────────────────
+# cumulative: each call gets previous output + one task, returns complete updated output
+# fragment:   each call gets one task only, returns a fragment — assembled afterwards
+OUTPUT_TYPE_STRATEGY: dict[str, str] = {
+    "ha_dashboard":  "cumulative",
+    "yaml_config":   "cumulative",
+    "python_code":   "fragment",
+}
+
+def _generator_strategy(job_type: str) -> str:
+    return OUTPUT_TYPE_STRATEGY.get(job_type, "fragment")
+
+
 # ── HA card reference baked in — enough for generator to produce valid YAML ──
 
 HA_REFERENCE = """
@@ -239,7 +252,7 @@ def _count_rejection_issues(text: str) -> int:
     return len(re.findall(r'^\s*\d+[\.\)]\s+', text, re.MULTILINE))
 
 
-def _user_prompt(stage: str, spec: str, prev: str | None, task: str | None = None, block: str | None = None, extra: str | None = None) -> str:
+def _user_prompt(stage: str, spec: str, prev: str | None, task: str | None = None, block: str | None = None, extra: str | None = None, strategy: str = "fragment") -> str:
     if stage == "project_manager":
         return (
             f"Job request: {spec}\n\n"
@@ -262,6 +275,23 @@ def _user_prompt(stage: str, spec: str, prev: str | None, task: str | None = Non
     if stage == "generator":
         if task:
             block_ctx = f"Block: {block}\n" if block else ""
+            if strategy == "cumulative":
+                if prev:
+                    return (
+                        f"{HA_REFERENCE}\n"
+                        f"Existing YAML so far:\n{prev}\n\n"
+                        f"{block_ctx}"
+                        f"Add this next: {task}\n"
+                        f"Return the complete updated YAML only. No explanations."
+                    )
+                else:
+                    return (
+                        f"{HA_REFERENCE}\n"
+                        f"{block_ctx}"
+                        f"Build this first component: {task}\n"
+                        f"Output complete valid YAML only."
+                    )
+            # fragment strategy
             return (
                 f"{HA_REFERENCE}\n"
                 f"{block_ctx}"
@@ -479,9 +509,12 @@ async def _run_generator_loop(job_id: str, roles: dict[str, Any], job: dict[str,
     spec = job.get("spec", "")
 
     block_count = len(set(t['block'] for t in task_list))
-    _flog(f"  generator loop: {len(task_list)} tasks across {block_count} blocks")
-    append_log(job, "generator", f"Starting loop: {len(task_list)} tasks across {block_count} blocks")
-    fragments: list[dict[str, str]] = []
+    strategy = _generator_strategy(job.get("type", ""))
+    _flog(f"  generator loop: {len(task_list)} tasks across {block_count} blocks strategy={strategy}")
+    append_log(job, "generator", f"Starting loop: {len(task_list)} tasks, {block_count} blocks, strategy={strategy}")
+
+    accumulated = ""      # cumulative: grows with each task
+    fragments: list[dict[str, str]] = []  # fragment: collected for assembly
 
     for i, item in enumerate(task_list):
         if is_cancelled(job_id):
@@ -492,12 +525,17 @@ async def _run_generator_loop(job_id: str, roles: dict[str, Any], job: dict[str,
         job["stages"]["generator"] = {"status": "running", "progress": f"{i+1}/{len(task_list)}"}
         save_job(job)
 
-        user = _user_prompt("generator", spec, None, task=item["task"], block=item["block"])
+        prev_ctx = accumulated if strategy == "cumulative" else None
+        user = _user_prompt("generator", spec, prev_ctx, task=item["task"], block=item["block"], strategy=strategy)
+
         try:
             raw, _ = await _call_with_fallback("generator", harness, persona, user, roles, job)
-            fragment_yaml = _strip_fences(raw)
-            fragments.append({"block": item["block"], "task": item["task"], "yaml": fragment_yaml})
-            _flog(f"  task {i+1} done: {len(fragment_yaml)} chars")
+            output = _strip_fences(raw)
+            if strategy == "cumulative":
+                accumulated = output  # last call's output is the full YAML
+            else:
+                fragments.append({"block": item["block"], "task": item["task"], "yaml": output})
+            _flog(f"  task {i+1} done: {len(output)} chars")
         except Exception as exc:
             _flog(f"  task {i+1} failed: {exc}")
             job["stages"]["generator"] = {"status": "error", "error": str(exc)}
@@ -505,17 +543,17 @@ async def _run_generator_loop(job_id: str, roles: dict[str, Any], job: dict[str,
             save_job(job)
             return {"ok": False, "error": str(exc)}
 
-    assembled = _assemble_yaml_fragments(fragments)
-    write_stage_output(job_id, "generator", assembled)
+    final = accumulated if strategy == "cumulative" else _assemble_yaml_fragments(fragments)
+    write_stage_output(job_id, "generator", final)
     job["stages"]["generator"] = {
         "status": "done",
-        "preview": assembled[:400],
+        "preview": final[:400],
         "handled_by": "generator",
-        "tasks_completed": len(fragments),
+        "tasks_completed": len(task_list),
     }
-    append_log(job, "generator", f"Done — {len(fragments)} tasks assembled, {len(assembled)} chars total")
+    append_log(job, "generator", f"Done — {len(task_list)} tasks, {len(final)} chars total")
     save_job(job)
-    return {"ok": True, "stage": "generator", "output": assembled, "handled_by": "generator"}
+    return {"ok": True, "stage": "generator", "output": final, "handled_by": "generator"}
 
 
 async def run_pipeline(job_id: str) -> None:
