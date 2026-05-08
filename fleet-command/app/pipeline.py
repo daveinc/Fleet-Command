@@ -560,9 +560,7 @@ async def run_pipeline(job_id: str) -> None:
                         save_job(job)
                         return
                     job = load_job(job_id)
-                # Clear feedback after successful rerun
-                job["rejection_feedback"] = None
-                save_job(job)
+                # Keep rejection_feedback in job so manual reruns can still use it
                 prev_output = r.get("output")
             else:
                 job = load_job(job_id)
@@ -579,6 +577,7 @@ async def run_pipeline(job_id: str) -> None:
         job["final_output"] = prev_output[:600]
 
     job["status"] = STATUS_DONE
+    job["rejection_feedback"] = None
     append_log(job, "pipeline", "All stages complete")
     save_job(job)
 

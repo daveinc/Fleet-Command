@@ -1977,6 +1977,8 @@ function renderPipelineNodes() {{
   const sel = document.getElementById("pl-job-select");
   const canvas = document.getElementById("pl-canvas");
   if (!sel || !canvas) return;
+  // Don't collapse output panel if it's currently open
+  const outputOpen = document.getElementById("pl-output-panel") && document.getElementById("pl-output-panel").style.display !== "none";
   const job = _plJobs.find(j => j.id === sel.value);
   if (!job) {{ canvas.innerHTML = `<p style="color:#64748b">No job selected.</p>`; return; }}
 
@@ -2051,7 +2053,16 @@ function renderPipelineNodes() {{
     <pre id="pl-output-code" style="background:#0f172a;color:#94a3b8;padding:1rem;border-radius:8px;font-size:0.75rem;overflow:auto;max-height:400px;white-space:pre-wrap;border:1px solid #334155"></pre>
   </div>`;
 
+  // Preserve output panel if open
+  const prevPanel = document.getElementById("pl-output-panel");
+  const savedPanel = (prevPanel && outputOpen) ? prevPanel.outerHTML : null;
+
   canvas.innerHTML = html;
+
+  if (savedPanel) {{
+    const newPanel = document.getElementById("pl-output-panel");
+    if (newPanel) newPanel.outerHTML = savedPanel;
+  }}
 }}
 
 // D1 — Re-run from stage (supervisor rejection feedback auto-injected by backend)
