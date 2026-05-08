@@ -121,8 +121,20 @@ def _strip_fences(text: str) -> str:
     return text.strip()
 
 
+def _resolve_endpoint(harness: dict[str, Any]) -> str:
+    """Use a configured worker slot URL if one matches this harness model — more reliable than harness endpoint."""
+    from app.workers import configured_workers
+    model = harness.get("model", "")
+    for w in configured_workers():
+        if w.get("model") == model and w.get("base_url"):
+            api_path = harness.get("api_path") or w.get("api_path", "")
+            from app.workers import ensure_path
+            return w["base_url"].rstrip("/") + ensure_path(api_path)
+    return harness.get("endpoint", "").rstrip("/") + (harness.get("api_path") or "")
+
+
 async def _call_harness(harness: dict[str, Any], system: str, user: str) -> str:
-    endpoint = harness.get("endpoint", "").rstrip("/") + (harness.get("api_path") or "")
+    endpoint = _resolve_endpoint(harness)
     payload = _build_payload(harness, system, user)
     headers = {"Content-Type": "application/json", **_auth_headers(harness)}
     async with httpx.AsyncClient(timeout=120) as client:
