@@ -297,6 +297,26 @@ async def api_stage_instructions(job_id: str, payload: dict) -> dict:
     return {"ok": True}
 
 
+@app.get("/api/pipeline-prompts")
+async def api_prompts_get() -> dict:
+    from app.pipeline_prompts import load_prompts, DEFAULT_PROMPTS, PROMPT_VARIABLES
+    return {"prompts": load_prompts(), "defaults": DEFAULT_PROMPTS, "variables": PROMPT_VARIABLES}
+
+
+@app.post("/api/pipeline-prompts")
+async def api_prompts_save(payload: dict) -> dict:
+    from app.pipeline_prompts import save_prompts
+    save_prompts(payload.get("prompts", {}))
+    return {"ok": True}
+
+
+@app.post("/api/pipeline-prompts/reset")
+async def api_prompts_reset() -> dict:
+    from app.pipeline_prompts import save_prompts
+    save_prompts({})
+    return {"ok": True}
+
+
 @app.get("/api/pipeline-rules")
 async def api_pipeline_rules_get() -> dict:
     from app.pipeline_rules import load_rules
@@ -820,7 +840,7 @@ def _dashboard_html(root: str) -> str:  # noqa: C901
   <div class="tab" onclick="switchTab('staff', this)">Staff</div>
   <div class="tab" onclick="switchTab('jobs', this)">Projects</div>
   <div class="tab" onclick="switchTab('harnesses', this)">Harnesses</div>
-  <div class="tab" onclick="switchTab('templates', this)">Templates</div>
+  <div class="tab" onclick="switchTab('templates', this); loadMessageTemplates()">Templates</div>
   <div class="tab" onclick="switchTab('pipeline', this); loadPipelineTab()">Pipeline</div>
 </div>
 
@@ -935,6 +955,17 @@ def _dashboard_html(root: str) -> str:  # noqa: C901
     <button class="btn btn-ghost btn-sm" onclick="openAddTemplate()">+ New Template</button>
   </div>
   <div class="tmpl-grid" id="job-tmpl-grid" style="margin-top:0.75rem"></div>
+
+  <!-- Message Templates -->
+  <div style="margin-top:1.5rem;display:flex;justify-content:space-between;align-items:center">
+    <div class="section-title" style="margin:0">Message Templates — What Each Stage Is Told</div>
+    <div style="display:flex;gap:0.5rem">
+      <button class="btn btn-ghost btn-sm" onclick="loadMessageTemplates()">↺ Reload</button>
+      <button class="btn btn-ghost btn-sm" onclick="resetMessageTemplates()">Reset to Defaults</button>
+    </div>
+  </div>
+  <div id="msg-tmpl-grid" style="margin-top:0.75rem;display:grid;gap:0.75rem"></div>
+  <button class="btn btn-primary btn-sm" style="margin-top:0.75rem" onclick="saveMessageTemplates()">Save All Templates</button>
 </div>
 
 <!-- ── Modals ── -->
@@ -2343,6 +2374,80 @@ function workerConfigCard(w) {{
       ${{h.reasoning ? `<span style="font-size:0.68rem;color:#818cf8">reasoning ✓</span>` : ""}}
     </div>
   </div>`;
+}}
+
+// ── Message Templates ─────────────────────────────────────────────────────────
+
+let _msgPrompts = {{}};
+let _msgDefaults = {{}};
+let _msgVariables = {{}};
+
+const STAGE_ORDER = ["project_manager","manager","generator","generator_single","assembler","reviewer","supervisor"];
+const STAGE_DISPLAY = {{
+  project_manager:"Project Manager", manager:"Manager", generator:"Generator (task loop)",
+  generator_single:"Generator (single run)", assembler:"Assembler", reviewer:"Reviewer", supervisor:"Supervisor",
+}};
+
+async function loadMessageTemplates() {{
+  const res = await fetch(api("/api/pipeline-prompts")).then(r => r.json());
+  _msgPrompts = res.prompts || {{}};
+  _msgDefaults = res.defaults || {{}};
+  _msgVariables = res.variables || {{}};
+  renderMessageTemplates();
+}}
+
+function renderMessageTemplates() {{
+  const el = document.getElementById("msg-tmpl-grid");
+  if (!el) return;
+  el.innerHTML = STAGE_ORDER.map(stage => {{
+    const label = STAGE_DISPLAY[stage] || stage;
+    const current = _msgPrompts[stage] || _msgDefaults[stage] || "";
+    const isOverridden = !!_msgPrompts[stage] && _msgPrompts[stage] !== _msgDefaults[stage];
+    const vars = (_msgVariables[stage] || []).join("  ");
+    return `<div style="background:#1e293b;border:1px solid ${{isOverridden?"#f59e0b":"#334155"}};border-radius:8px;padding:0.75rem">
+      <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.4rem">
+        <span style="font-size:0.82rem;font-weight:600;color:#e2e8f0">${{label}}</span>
+        ${{isOverridden ? `<span style="font-size:0.7rem;color:#f59e0b">modified</span>` : ""}}
+        <span style="margin-left:auto;font-size:0.7rem;color:#475569">${{vars}}</span>
+        <button class="btn btn-ghost btn-sm" style="font-size:0.7rem;padding:0.1rem 0.4rem" onclick="resetOneTemplate('${{stage}}')">↺</button>
+      </div>
+      <textarea id="mtp-${{stage}}" rows="5"
+        style="width:100%;background:#0f172a;color:#94a3b8;border:1px solid #334155;border-radius:6px;font-size:0.72rem;padding:0.4rem;resize:vertical;font-family:monospace"
+      >${{escHtml(current)}}</textarea>
+    </div>`;
+  }}).join("");
+}}
+
+function escHtml(s) {{
+  return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+}}
+
+async function saveMessageTemplates() {{
+  const overrides = {{}};
+  STAGE_ORDER.forEach(stage => {{
+    const el = document.getElementById(`mtp-${{stage}}`);
+    if (el) {{
+      const val = el.value.trim();
+      if (val && val !== (_msgDefaults[stage]||"").trim()) overrides[stage] = val;
+    }}
+  }});
+  await fetch(api("/api/pipeline-prompts"), {{
+    method: "POST", headers: {{"Content-Type":"application/json"}},
+    body: JSON.stringify({{prompts: overrides}}),
+  }});
+  await loadMessageTemplates();
+  alert("Templates saved.");
+}}
+
+async function resetMessageTemplates() {{
+  if (!confirm("Reset ALL templates to defaults?")) return;
+  await fetch(api("/api/pipeline-prompts/reset"), {{method:"POST"}});
+  await loadMessageTemplates();
+}}
+
+function resetOneTemplate(stage) {{
+  const el = document.getElementById(`mtp-${{stage}}`);
+  if (el && _msgDefaults[stage]) el.value = _msgDefaults[stage];
 }}
 
 function renderWorkerConfigs() {{

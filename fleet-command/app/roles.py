@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 # Chain order: top = highest authority, bottom = worker
-ROLE_ORDER = ["supervisor", "project_manager", "manager", "reviewer", "generator"]
+ROLE_ORDER = ["supervisor", "project_manager", "manager", "assembler", "reviewer", "generator"]
 
 # Advisor is off-chain — escalation only, shown separately
 ADVISOR_ROLE = "advisor"
@@ -41,6 +41,12 @@ ROLE_META: dict[str, dict[str, str]] = {
         "description": "Produces the actual code or YAML. Takes one task at a time.",
         "persona": "You are a Senior Developer at Fleet Command Inc. You receive a task brief from your Engineering Manager and produce the requested code or YAML. You follow the spec exactly, use provided references, and output clean correct code only — no explanations.",
     },
+    "assembler": {
+        "label": "Assembler",
+        "title": "Senior Integration Engineer",
+        "description": "Combines generator fragments into a complete valid output file.",
+        "persona": "You are a Senior Integration Engineer at Fleet Command Inc. You receive a set of code or YAML fragments produced by developers and combine them into one complete, valid, well-structured output file. You do not add new content — you only integrate what you are given.",
+    },
     "advisor": {
         "label": "Chief Advisor",
         "title": "Strategic Consultant",
@@ -55,6 +61,7 @@ DEFAULT_ASSIGNMENTS: dict[str, Any] = {
     "manager":         {"harness_id": "gemma4_e4b", "params": {"temperature": 0.5}},
     "reviewer":        {"harness_id": "gemma4_e4b", "params": {}},
     "generator":       {"harness_id": "qwen_ha_1_5b", "params": {}},
+    "assembler":       {"harness_id": None, "params": {}},
     "advisor":         {"harness_id": "claude_sonnet", "params": {}},
 }
 
