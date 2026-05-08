@@ -603,6 +603,14 @@ async def run_pipeline(job_id: str) -> None:
                     job = load_job(job_id)
                 # Keep rejection_feedback in job so manual reruns can still use it
                 prev_output = r.get("output")
+                # If the rerun supervisor also rejected, fail — don't swallow it as done
+                if prev_output and prev_output.strip().upper().startswith("REJECTED"):
+                    job = load_job(job_id)
+                    job["rejection_feedback"] = prev_output
+                    append_log(job, "supervisor", "Second rejection after rerun — use ↺ Retry")
+                    job["status"] = STATUS_FAILED
+                    save_job(job)
+                    return
             else:
                 job = load_job(job_id)
                 job["rejection_feedback"] = prev_output
