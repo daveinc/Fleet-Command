@@ -18,6 +18,7 @@ from app.fleet import (
     add_block, update_block,
     add_task, update_task,
     fleet_counts,
+    load_templates, save_templates, add_template, remove_template,
 )
 from app.sensor_push import push_fleet_sensors
 
@@ -175,6 +176,29 @@ async def api_task_update(task_id: int, payload: dict) -> dict:
     save_fleet(fleet)
     await push_fleet_sensors(fleet)
     return {"ok": True, "record": record}
+
+
+@app.get("/api/fleet/templates")
+async def api_templates_get() -> dict:
+    return {"templates": load_templates()}
+
+
+@app.post("/api/fleet/templates")
+async def api_templates_add(payload: dict) -> dict:
+    templates = load_templates()
+    record = add_template(templates, payload)
+    save_templates(templates)
+    return {"ok": True, "record": record}
+
+
+@app.delete("/api/fleet/templates/{template_id}")
+async def api_templates_delete(template_id: str) -> dict:
+    templates = load_templates()
+    removed = remove_template(templates, template_id)
+    if not removed:
+        return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
+    save_templates(templates)
+    return {"ok": True}
 
 
 @app.post("/workers/{worker_id}/test")
@@ -515,6 +539,20 @@ def _dashboard_html(root: str) -> str:  # noqa: C901
       color: #6366f1;
     }}
 
+    /* ── Template cards ── */
+    .tmpl-grid {{ display: grid; grid-template-columns: repeat(auto-fill,minmax(260px,1fr)); gap: 0.75rem; }}
+    .tmpl-card {{
+      background: #1e2330; border: 1px solid #2d3748; border-radius: 10px;
+      padding: 0.85rem 1rem; display: flex; flex-direction: column; gap: 0.4rem;
+    }}
+    .tmpl-name {{ font-size: 0.9rem; font-weight: 600; color: #e2e8f0; }}
+    .tmpl-desc {{ font-size: 0.75rem; color: #475569; flex: 1; }}
+    .tmpl-foot {{ display: flex; align-items: center; gap: 0.5rem; margin-top: 0.4rem; }}
+    .tmpl-type {{
+      font-size: 0.66rem; padding: 0.15rem 0.45rem; border-radius: 3px;
+      background: #1e293b; color: #818cf8; font-weight: 500;
+    }}
+
     /* ── Staff cards ── */
     .staff-grid {{ display: flex; flex-direction: column; gap: 0.55rem; }}
     .staff-card {{
@@ -706,10 +744,11 @@ def _dashboard_html(root: str) -> str:  # noqa: C901
 
 <!-- ── Templates tab ── -->
 <div class="tab-panel" id="tab-templates">
-  <div class="section-title">Project Templates</div>
-  <div style="color:#475569;font-size:0.85rem;padding:1rem 0">
-    Template system coming soon. Drop a template zip here to install a new project type (HA dashboard, Python addon, Windows app, etc.).
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.75rem">
+    <div class="section-title" style="margin:0">Project Templates</div>
+    <button class="btn btn-ghost btn-sm" onclick="openAddTemplate()">+ New Template</button>
   </div>
+  <div class="tmpl-grid" id="tmpl-grid"></div>
 </div>
 
 <!-- ── Modals ── -->
@@ -730,6 +769,29 @@ def _dashboard_html(root: str) -> str:  # noqa: C901
     <div class="modal-actions">
       <button class="btn btn-ghost btn-sm" onclick="closeModal('modal-staff')">Cancel</button>
       <button class="btn btn-primary btn-sm" onclick="submitStaff()">Add</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="modal-template">
+  <div class="modal">
+    <h3>New Template</h3>
+    <div class="field"><label>Name</label><input id="tm-name" placeholder="e.g. HA Dashboard Builder"></div>
+    <div class="field">
+      <label>Type</label>
+      <select id="tm-type">
+        <option value="ha_dashboard">HA Dashboard</option>
+        <option value="python_addon">Python Addon</option>
+        <option value="yaml_config">YAML Config</option>
+        <option value="code_project">Code Project</option>
+        <option value="custom">Custom</option>
+      </select>
+    </div>
+    <div class="field"><label>Description</label><textarea id="tm-desc" rows="3" style="resize:vertical" placeholder="What does this template produce?"></textarea></div>
+    <div class="field"><label>Author</label><input id="tm-author" placeholder="e.g. claude, david"></div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost btn-sm" onclick="closeModal('modal-template')">Cancel</button>
+      <button class="btn btn-primary btn-sm" onclick="submitTemplate()">Create</button>
     </div>
   </div>
 </div>
@@ -787,6 +849,7 @@ async function load() {{
   renderHarnesses();
   renderStaff();
   renderProjects();
+  loadTemplates();
 }}
 
 function ctxLabel(h) {{
@@ -1025,13 +1088,19 @@ function staffCard(s) {{
 }}
 
 function workerToStaff(w) {{
+  const statusMap = {{
+    "Configured": "Available",
+    "Disabled": "On Vacation",
+    "Missing URL": "Unavailable",
+    "Missing API key": "Unavailable",
+  }};
   return {{
     id: "w" + w.id,
     type: "AR",
     name: w.name || ("Worker " + w.id),
     role: w.role || "worker",
     budget: w.provider || "—",
-    status: w.status === "Configured" ? "Available" : w.status,
+    status: statusMap[w.status] || w.status,
     score: "",
     profile: [w.model, w.request_format, w.endpoint].filter(Boolean).join(" · "),
     assigned_work: [],
@@ -1223,6 +1292,85 @@ async function submitProject() {{
     renderProjects();
     closeModal("modal-project");
   }}
+}}
+
+// ── Templates ──────────────────────────────────────────────────────────────
+
+let templates = [];
+
+const TYPE_LABELS = {{
+  ha_dashboard: "HA Dashboard",
+  python_addon: "Python Addon",
+  yaml_config: "YAML Config",
+  code_project: "Code Project",
+  custom: "Custom",
+}};
+
+function templateCard(t) {{
+  return `
+  <div class="tmpl-card">
+    <div class="tmpl-name">${{t.name || "Untitled"}}</div>
+    <div class="tmpl-desc">${{t.description || "No description."}}</div>
+    <div class="tmpl-foot">
+      <span class="tmpl-type">${{TYPE_LABELS[t.type] || t.type || "—"}}</span>
+      ${{t.author ? `<span style="font-size:0.68rem;color:#374151">by ${{t.author}}</span>` : ""}}
+      <button class="btn btn-ghost btn-sm" style="margin-left:auto"
+        onclick="useTemplate('${{t.id}}')">Use</button>
+      <button class="btn btn-ghost btn-sm" style="font-size:0.7rem;color:#374151"
+        onclick="deleteTemplate('${{t.id}}')">✕</button>
+    </div>
+  </div>`;
+}}
+
+async function loadTemplates() {{
+  const res = await fetch(api("/api/fleet/templates")).then(r => r.json());
+  templates = res.templates || [];
+  renderTemplates();
+}}
+
+function renderTemplates() {{
+  const el = document.getElementById("tmpl-grid");
+  if (!templates.length) {{
+    el.innerHTML = '<div style="color:#475569;font-size:0.85rem;padding:1rem 0;grid-column:1/-1">No templates yet. Create one to define a reusable job type.</div>';
+    return;
+  }}
+  el.innerHTML = templates.map(templateCard).join("");
+}}
+
+function openAddTemplate() {{
+  ["tm-name","tm-desc","tm-author"].forEach(id => document.getElementById(id).value = "");
+  document.getElementById("tm-type").value = "ha_dashboard";
+  document.getElementById("modal-template").classList.add("open");
+}}
+
+async function submitTemplate() {{
+  const record = {{
+    name: document.getElementById("tm-name").value.trim(),
+    type: document.getElementById("tm-type").value,
+    description: document.getElementById("tm-desc").value.trim(),
+    author: document.getElementById("tm-author").value.trim(),
+  }};
+  const res = await fetch(api("/api/fleet/templates"), {{
+    method: "POST", headers: {{"Content-Type":"application/json"}}, body: JSON.stringify(record),
+  }}).then(r => r.json());
+  if (res.ok) {{
+    templates.push(res.record);
+    renderTemplates();
+    closeModal("modal-template");
+  }}
+}}
+
+async function deleteTemplate(id) {{
+  if (!confirm("Delete this template?")) return;
+  const res = await fetch(api("/api/fleet/templates/" + id), {{ method: "DELETE" }}).then(r => r.json());
+  if (res.ok) {{
+    templates = templates.filter(t => t.id !== id);
+    renderTemplates();
+  }}
+}}
+
+function useTemplate(id) {{
+  alert("Template job launch coming in the next build.");
 }}
 
 // ── Modal helpers ──────────────────────────────────────────────────────────

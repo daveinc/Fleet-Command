@@ -104,6 +104,37 @@ def update_task(fleet: dict, task_id: int, updates: dict) -> dict | None:
     return None
 
 
+# ── Templates ────────────────────────────────────────────────────────────────
+
+_TEMPLATES_FILE = Path("/data/templates.json")
+
+
+def load_templates() -> list[dict]:
+    if _TEMPLATES_FILE.exists():
+        try:
+            return json.loads(_TEMPLATES_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return []
+
+
+def save_templates(templates: list[dict]) -> None:
+    _TEMPLATES_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _TEMPLATES_FILE.write_text(json.dumps(templates, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def add_template(templates: list[dict], record: dict) -> dict:
+    record["id"] = str(_next_id([{"id": int(t["id"])} for t in templates if str(t.get("id", "")).isdigit()]))
+    templates.append(record)
+    return record
+
+
+def remove_template(templates: list[dict], template_id: str) -> bool:
+    before = len(templates)
+    templates[:] = [t for t in templates if str(t.get("id")) != str(template_id)]
+    return len(templates) < before
+
+
 # ── Computed counts ───────────────────────────────────────────────────────────
 
 _INACTIVE_STATUSES = {"done", "halted", "pending", "on vacation", "unavailable", "disabled"}
