@@ -136,3 +136,10 @@ def load_harnesses() -> dict[str, dict[str, Any]]:
 
 def get_harness(harness_id: str) -> dict[str, Any] | None:
     return load_harnesses().get(harness_id)
+
+
+def save_user_harness(harness_id: str, data: dict[str, Any]) -> None:
+    _USER_HARNESS_DIR.mkdir(parents=True, exist_ok=True)
+    (_USER_HARNESS_DIR / f"{harness_id}.json").write_text(
+        json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
+    )

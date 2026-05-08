@@ -9,8 +9,11 @@ from fastapi.responses import HTMLResponse, JSONResponse
 
 from app.snapshot import capabilities, status
 from app.workers import configured_workers, test_worker
-from app.harnesses import load_harnesses
+from app.harnesses import load_harnesses, save_user_harness
 from app.roles import load_roles, save_roles, swap_roles, ROLE_ORDER, ROLE_LABELS, ROLE_META, ADVISOR_ROLE
+from fastapi import BackgroundTasks
+from app.jobs import create_job, load_job, list_jobs, read_stage_output
+from app.pipeline import run_pipeline, run_stage
 from app.fleet import (
     load_fleet, save_fleet,
     add_staff, update_staff, remove_staff,
@@ -38,6 +41,16 @@ async def ingress_root_path(request: Request, call_next):
 @app.get("/api/harnesses")
 async def api_harnesses() -> dict:
     return {"harnesses": load_harnesses()}
+
+
+@app.put("/api/harnesses/{harness_id}")
+async def api_harness_save(harness_id: str, payload: dict) -> dict:
+    existing = load_harnesses().get(harness_id)
+    if existing is None:
+        return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
+    updated = {**existing, **payload}
+    save_user_harness(harness_id, updated)
+    return {"ok": True, "harness": updated}
 
 
 @app.get("/api/roles")
@@ -176,6 +189,55 @@ async def api_task_update(task_id: int, payload: dict) -> dict:
     save_fleet(fleet)
     await push_fleet_sensors(fleet)
     return {"ok": True, "record": record}
+
+
+# ── Job API ──────────────────────────────────────────────────────────────────
+
+@app.get("/api/jobs")
+async def api_jobs_list() -> dict:
+    return {"jobs": list_jobs()}
+
+
+@app.post("/api/jobs")
+async def api_job_create(payload: dict, background_tasks: BackgroundTasks) -> dict:
+    job = create_job(payload)
+    if payload.get("autorun", True):
+        background_tasks.add_task(run_pipeline, job["id"])
+    return {"ok": True, "job": job}
+
+
+@app.get("/api/jobs/{job_id}")
+async def api_job_get(job_id: str) -> dict:
+    job = load_job(job_id)
+    if not job:
+        return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
+    return {"ok": True, "job": job}
+
+
+@app.post("/api/jobs/{job_id}/run")
+async def api_job_run(job_id: str, background_tasks: BackgroundTasks) -> dict:
+    job = load_job(job_id)
+    if not job:
+        return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
+    background_tasks.add_task(run_pipeline, job_id)
+    return {"ok": True, "job_id": job_id}
+
+
+@app.post("/api/jobs/{job_id}/run-stage/{stage}")
+async def api_job_run_stage(job_id: str, stage: str) -> dict:
+    job = load_job(job_id)
+    if not job:
+        return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
+    result = await run_stage(job_id, stage)
+    return result
+
+
+@app.get("/api/jobs/{job_id}/stage/{stage}")
+async def api_job_stage_output(job_id: str, stage: str) -> dict:
+    output = read_stage_output(job_id, stage)
+    if output is None:
+        return JSONResponse({"ok": False, "error": "no output yet"}, status_code=404)
+    return {"ok": True, "stage": stage, "output": output}
 
 
 @app.get("/api/fleet/templates")
@@ -742,11 +804,11 @@ def _dashboard_html(root: str) -> str:  # noqa: C901
 
 <!-- ── Jobs tab ── -->
 <div class="tab-panel" id="tab-jobs">
-  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.75rem">
-    <div class="section-title" style="margin:0">Projects</div>
-    <button class="btn btn-ghost btn-sm" onclick="openAddProject()">+ New Project</button>
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem">
+    <div class="section-title" style="margin:0">Job Queue</div>
+    <button class="btn btn-primary btn-sm" onclick="openNewJob()">+ New Job</button>
   </div>
-  <div id="projects-list"></div>
+  <div id="job-list"></div>
 </div>
 
 <!-- ── Harnesses tab ── -->
@@ -784,6 +846,95 @@ def _dashboard_html(root: str) -> str:  # noqa: C901
     <div class="modal-actions">
       <button class="btn btn-ghost btn-sm" onclick="closeModal('modal-staff')">Cancel</button>
       <button class="btn btn-primary btn-sm" onclick="submitStaff()">Add</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="modal-new-job">
+  <div class="modal" style="width:min(560px,94vw)">
+    <h3>New Job</h3>
+    <div class="field">
+      <label>Output Type</label>
+      <select id="nj-type">
+        <option value="ha_dashboard">HA Dashboard</option>
+        <option value="yaml_config">YAML Config</option>
+        <option value="python_code">Python Code</option>
+      </select>
+    </div>
+    <div class="field" style="margin-top:0.5rem">
+      <label>Job Specification — describe what to build</label>
+      <textarea id="nj-spec" rows="5" style="resize:vertical;font-family:monospace;font-size:0.82rem"
+        placeholder="e.g. Build a dashboard with a weather card, an energy card, and a button to toggle the living room light."></textarea>
+    </div>
+    <div class="field" style="margin-top:0.5rem">
+      <label>Target Dashboard Slug (HA)</label>
+      <input id="nj-target" placeholder="fleet_output" value="fleet_output">
+    </div>
+    <div class="field" style="margin-top:0.5rem">
+      <label>Pipeline Stages</label>
+      <div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin-top:0.3rem;font-size:0.82rem">
+        <label><input type="checkbox" id="nj-gen" checked> Generator</label>
+        <label><input type="checkbox" id="nj-rev"> Reviewer</label>
+        <label><input type="checkbox" id="nj-sup"> Supervisor</label>
+      </div>
+    </div>
+    <div class="modal-actions" style="margin-top:0.75rem">
+      <button class="btn btn-ghost btn-sm" onclick="closeModal('modal-new-job')">Cancel</button>
+      <button class="btn btn-ghost btn-sm" onclick="submitJob(false)">Create (no autorun)</button>
+      <button class="btn btn-primary btn-sm" onclick="submitJob(true)">Run Now</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="modal-harness">
+  <div class="modal" style="width:min(520px,92vw)">
+    <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.25rem">
+      <h3 id="mh-title" style="flex:1"></h3>
+      <span id="mh-cost"></span>
+    </div>
+    <div id="mh-caps" style="display:flex;gap:0.3rem;flex-wrap:wrap;margin-bottom:0.25rem"></div>
+    <div id="mh-notes" style="font-size:0.72rem;color:#475569;font-style:italic;margin-bottom:0.5rem"></div>
+    <div class="params-grid">
+      <div class="field">
+        <label>Request Format</label>
+        <select id="mh-fmt">
+          <option value="ollama_chat">ollama_chat</option>
+          <option value="ollama_generate">ollama_generate</option>
+          <option value="openai_responses">openai_responses</option>
+          <option value="openai_chat">openai_chat</option>
+          <option value="anthropic_messages">anthropic_messages</option>
+          <option value="raw_prompt_json">raw_prompt_json</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Auth Type</label>
+        <select id="mh-auth">
+          <option value="none">none</option>
+          <option value="bearer">bearer</option>
+          <option value="x_api_key">x_api_key</option>
+          <option value="custom_header">custom_header</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Temperature</label>
+        <input type="number" id="mh-temp" min="0" max="2" step="0.1">
+      </div>
+      <div class="field">
+        <label>Concurrency</label>
+        <input type="number" id="mh-conc" min="1" step="1">
+      </div>
+    </div>
+    <div class="field" style="margin-top:0.5rem">
+      <label>Endpoint</label>
+      <input type="text" id="mh-ep">
+    </div>
+    <div class="field" style="margin-top:0.5rem">
+      <label>API Path</label>
+      <input type="text" id="mh-path">
+    </div>
+    <div class="modal-actions" style="margin-top:0.75rem">
+      <button class="btn btn-ghost btn-sm" onclick="closeModal('modal-harness')">Close</button>
+      <button class="btn btn-primary btn-sm" onclick="saveHarnessFromModal()">Save</button>
     </div>
   </div>
 </div>
@@ -913,7 +1064,7 @@ function roleCard(role, idx, list) {{
         <option value="">— unassigned —</option>
         ${{options}}
       </select>
-      ${{costBadge(h)}}
+      <span style="cursor:pointer" onclick="if('${{hid}}') openHarnessDetail('${{hid}}')" title="View model config">${{costBadge(h)}}</span>
       <div class="card-actions">
         <button class="btn btn-ghost btn-sm" onclick="toggleParams('${{role}}')" title="Params">⚙</button>
         ${{upBtn}}${{downBtn}}
@@ -967,7 +1118,7 @@ function renderRoster() {{
 function renderPool() {{
   const el = document.getElementById("pool");
   const assignedIds = new Set(
-    roleOrder.map(r => roles[r]?.harness_id).filter(Boolean)
+    [...roleOrder, advisorRole].map(r => roles[r]?.harness_id).filter(Boolean)
   );
   const unassigned = Object.entries(harnesses).filter(([id]) => !assignedIds.has(id));
   if (unassigned.length === 0) {{
@@ -975,7 +1126,7 @@ function renderPool() {{
     return;
   }}
   el.innerHTML = unassigned.map(([id, h]) => `
-    <div class="pool-chip">
+    <div class="pool-chip" style="cursor:pointer" onclick="openHarnessDetail('${{id}}')" title="View / edit config">
       <span>${{h.display_name}}</span>
       <span class="chip-ctx">${{ctxLabel(h)}}</span>
       ${{costBadge(h)}}
@@ -1017,6 +1168,9 @@ async function saveChain() {{
     body: JSON.stringify({{ assignments: roles }}),
   }});
   originalRoles = JSON.parse(JSON.stringify(roles));
+  renderRoster();
+  renderPool();
+  renderStaff();
   const fb = document.getElementById("save-feedback");
   fb.classList.add("show");
   setTimeout(() => fb.classList.remove("show"), 2000);
@@ -1034,7 +1188,11 @@ function switchTab(name, el) {{
   el.classList.add("active");
   document.getElementById("tab-" + name).classList.add("active");
   if (name === "harnesses") renderHarnesses();
+  if (name === "jobs") loadJobs();
 }}
+
+const REQUEST_FORMATS = ["ollama_chat","ollama_generate","openai_responses","openai_chat","anthropic_messages","raw_prompt_json"];
+const AUTH_TYPES = ["none","bearer","x_api_key","custom_header"];
 
 function renderHarnesses() {{
   const el = document.getElementById("harness-grid");
@@ -1046,22 +1204,89 @@ function renderHarnesses() {{
       : h.cost_type === "cloud_metered"
         ? '<span class="cost-badge cloud">metered</span>'
         : '<span class="cost-badge cloud">cloud</span>';
+    const fmtOpts = REQUEST_FORMATS.map(f => `<option value="${{f}}" ${{f === h.request_format ? "selected" : ""}}>${{f}}</option>`).join("");
+    const authOpts = AUTH_TYPES.map(a => `<option value="${{a}}" ${{a === h.auth_type ? "selected" : ""}}>${{a}}</option>`).join("");
     return `
-    <div class="harness-card">
-      <div class="harness-info">
-        <div class="harness-name">${{h.display_name}}</div>
-        <div class="harness-meta">
-          ${{costBadgeHtml}}
-          <span>ctx ${{ctx}}</span>
-          <span>temp ${{h.params?.temperature ?? "?"}}</span>
-          <span>concurrency ${{h.concurrency ?? "?"}}</span>
-          ${{h.reasoning ? '<span style="color:#818cf8">reasoning ✓</span>' : ""}}
+    <div class="harness-card" style="flex-direction:column;gap:0">
+      <div style="display:flex;align-items:flex-start;gap:1rem">
+        <div class="harness-info" style="flex:1">
+          <div class="harness-name">${{h.display_name}}</div>
+          <div class="harness-meta">
+            ${{costBadgeHtml}}
+            <span>ctx ${{ctx}}</span>
+            <span>temp ${{h.params?.temperature ?? "?"}}</span>
+            <span>concurrency ${{h.concurrency ?? "?"}}</span>
+            ${{h.reasoning ? '<span style="color:#818cf8">reasoning ✓</span>' : ""}}
+          </div>
+          <div style="margin-top:0.35rem;display:flex;gap:0.3rem;flex-wrap:wrap">${{caps}}</div>
+          ${{h.notes ? `<div class="harness-notes">${{h.notes}}</div>` : ""}}
         </div>
-        <div style="margin-top:0.35rem;display:flex;gap:0.3rem;flex-wrap:wrap">${{caps}}</div>
-        ${{h.notes ? `<div class="harness-notes">${{h.notes}}</div>` : ""}}
+        <button class="btn btn-ghost btn-sm" onclick="toggleHarnessEdit('${{id}}')" title="Edit">⚙</button>
+      </div>
+      <div id="hedit-${{id}}" style="display:none;margin-top:0.75rem;border-top:1px solid #1e293b;padding-top:0.75rem">
+        <div class="params-grid" style="margin-bottom:0.6rem">
+          <div class="param-row">
+            <label>Request Format</label>
+            <select id="hf-fmt-${{id}}" style="background:#0f1117;border:1px solid #334155;border-radius:4px;color:#e2e8f0;font-size:0.82rem;padding:0.25rem 0.4rem;width:100%">${{fmtOpts}}</select>
+          </div>
+          <div class="param-row">
+            <label>Auth Type</label>
+            <select id="hf-auth-${{id}}" style="background:#0f1117;border:1px solid #334155;border-radius:4px;color:#e2e8f0;font-size:0.82rem;padding:0.25rem 0.4rem;width:100%">${{authOpts}}</select>
+          </div>
+          <div class="param-row">
+            <label>Temperature</label>
+            <input type="number" id="hf-temp-${{id}}" min="0" max="2" step="0.1" value="${{h.params?.temperature ?? 0}}"
+              style="background:#0f1117;border:1px solid #334155;border-radius:4px;color:#e2e8f0;font-size:0.82rem;padding:0.25rem 0.4rem;width:100%">
+          </div>
+          <div class="param-row">
+            <label>Concurrency</label>
+            <input type="number" id="hf-conc-${{id}}" min="1" step="1" value="${{h.concurrency ?? 1}}"
+              style="background:#0f1117;border:1px solid #334155;border-radius:4px;color:#e2e8f0;font-size:0.82rem;padding:0.25rem 0.4rem;width:100%">
+          </div>
+        </div>
+        <div class="param-row" style="margin-bottom:0.5rem">
+          <label>Endpoint</label>
+          <input type="text" id="hf-ep-${{id}}" value="${{h.endpoint || ""}}"
+            style="background:#0f1117;border:1px solid #334155;border-radius:4px;color:#e2e8f0;font-size:0.82rem;padding:0.25rem 0.4rem;width:100%">
+        </div>
+        <div class="param-row" style="margin-bottom:0.6rem">
+          <label>API Path</label>
+          <input type="text" id="hf-path-${{id}}" value="${{h.api_path || ""}}"
+            style="background:#0f1117;border:1px solid #334155;border-radius:4px;color:#e2e8f0;font-size:0.82rem;padding:0.25rem 0.4rem;width:100%">
+        </div>
+        <div style="display:flex;justify-content:flex-end;gap:0.5rem">
+          <button class="btn btn-ghost btn-sm" onclick="toggleHarnessEdit('${{id}}')">Cancel</button>
+          <button class="btn btn-primary btn-sm" onclick="saveHarness('${{id}}')">Save</button>
+        </div>
       </div>
     </div>`;
   }}).join("");
+}}
+
+function toggleHarnessEdit(id) {{
+  const el = document.getElementById("hedit-" + id);
+  el.style.display = el.style.display === "none" ? "block" : "none";
+}}
+
+async function saveHarness(id) {{
+  const h = harnesses[id];
+  const temp = parseFloat(document.getElementById("hf-temp-" + id).value);
+  const payload = {{
+    request_format: document.getElementById("hf-fmt-" + id).value,
+    auth_type: document.getElementById("hf-auth-" + id).value,
+    endpoint: document.getElementById("hf-ep-" + id).value.trim(),
+    api_path: document.getElementById("hf-path-" + id).value.trim(),
+    concurrency: parseInt(document.getElementById("hf-conc-" + id).value) || 1,
+    params: {{ ...h.params, temperature: isNaN(temp) ? 0 : temp }},
+  }};
+  const res = await fetch(api("/api/harnesses/" + id), {{
+    method: "PUT", headers: {{"Content-Type":"application/json"}}, body: JSON.stringify(payload),
+  }}).then(r => r.json());
+  if (res.ok) {{
+    harnesses[id] = res.harness;
+    renderHarnesses();
+    renderStaff();
+  }}
 }}
 
 // ── Staff ──────────────────────────────────────────────────────────────────
@@ -1087,17 +1312,18 @@ function staffCard(s) {{
     : "";
 
   const allRoles = [...roleOrder, advisorRole];
-  const currentRole = allRoles.find(r => roles[r]?.harness_id && s._harness_match &&
-    Object.entries(harnesses).find(([id, h]) => id === roles[r]?.harness_id && h.model === s._harness_match?.model)
-  ) || "";
+  const currentRole = s._harness_id
+    ? allRoles.find(r => roles[r]?.harness_id === s._harness_id) || ""
+    : "";
   const roleOpts = `<option value="">— no role —</option>` +
     allRoles.map(r => `<option value="${{r}}" ${{r === currentRole ? "selected" : ""}}>${{roleMeta[r]?.label || r}}</option>`).join("");
 
-  const roleAssign = s._worker_id ? `
+  const assignId = s._harness_id || s._worker_id;
+  const roleAssign = assignId ? `
     <div style="display:flex;align-items:center;gap:0.4rem;margin-top:0.5rem">
       <select style="flex:1;background:#0f1117;border:1px solid #334155;border-radius:5px;color:#e2e8f0;font-size:0.78rem;padding:0.25rem 0.4rem"
-        id="role-assign-${{s._worker_id}}">${{roleOpts}}</select>
-      <button class="btn btn-ghost btn-sm" onclick="assignWorkerRole(${{s._worker_id}})">Assign</button>
+        id="role-assign-${{assignId}}" data-harness-id="${{s._harness_id || ""}}">${{roleOpts}}</select>
+      <button class="btn btn-ghost btn-sm" onclick="assignWorkerRole('${{assignId}}')">Assign</button>
     </div>` : "";
 
   return `
@@ -1110,8 +1336,8 @@ function staffCard(s) {{
       </div>
       <div class="staff-role">${{s.role || "—"}}</div>
       <div class="staff-meta">
-        ${{s.score ? `<span>⭐ ${{s.score}}</span>` : ""}}
-        ${{s.budget ? `<span>💰 ${{s.budget}}</span>` : ""}}
+        ${{s.score ? `<span>${{s.score}}</span>` : ""}}
+        ${{s.budget ? `<span>${{s.budget}}</span>` : ""}}
         ${{s.hired ? `<span>📅 ${{s.hired}}</span>` : ""}}
       </div>
       ${{s.profile ? `<div style="font-size:0.72rem;color:#334155;margin-top:0.2rem;font-style:italic">${{s.profile}}</div>` : ""}}
@@ -1149,11 +1375,32 @@ function workerToStaff(w) {{
   }};
 }}
 
+function harnessToStaff(harnessId, h) {{
+  const matchedWorker = configuredWorkers.find(w => w.model === h.model);
+  const statusMap = {{ "Configured": "Available", "Disabled": "On Vacation", "Missing URL": "Unavailable", "Missing API key": "Unavailable" }};
+  const costLabel = h.cost_type === "local" ? "local" : h.cost_type === "cloud_metered" ? "metered" : h.cost_type === "cloud_shared" ? "cloud shared" : h.cost_type || "—";
+  return {{
+    id: "h_" + harnessId,
+    type: "AR",
+    name: h.display_name || h.model || harnessId,
+    role: costLabel,
+    budget: matchedWorker ? ("Slot " + matchedWorker.id + " — " + matchedWorker.name) : "unslotted",
+    status: matchedWorker ? (statusMap[matchedWorker.status] || matchedWorker.status) : "Available",
+    score: h.context_window ? ((h.context_window/1000).toFixed(0) + "k ctx") : "",
+    profile: h.notes || "",
+    capabilities: h.capabilities || [],
+    _harness_id: harnessId,
+    _harness_match: h,
+    _worker_id: matchedWorker ? matchedWorker.id : null,
+    _readonly: true,
+  }};
+}}
+
 function renderStaff() {{
   const hr = fleetData.staff.filter(s => s.type === "HR");
   const arManual = fleetData.staff.filter(s => s.type === "AR");
-  const arWorkers = configuredWorkers.map(workerToStaff);
-  const ar = [...arWorkers, ...arManual];
+  const arHarnesses = Object.entries(harnesses).map(([id, h]) => harnessToStaff(id, h));
+  const ar = [...arHarnesses, ...arManual];
 
   document.getElementById("staff-hr").innerHTML = hr.length
     ? hr.map(staffCard).join("") : '<div style="color:#374151;font-size:0.8rem;padding:0.5rem 0">No human staff yet.</div>';
@@ -1201,18 +1448,12 @@ async function deleteStaff(id) {{
   }}
 }}
 
-async function assignWorkerRole(workerId) {{
-  const sel = document.getElementById("role-assign-" + workerId);
+async function assignWorkerRole(staffId) {{
+  const sel = document.getElementById("role-assign-" + staffId);
   const role = sel?.value;
-  const worker = configuredWorkers.find(w => w.id === workerId);
-  if (!worker) return;
-  const matchedEntry = Object.entries(harnesses).find(([id, h]) => h.model === worker.model);
-  if (!matchedEntry && role) {{
-    alert("No harness found matching this worker's model (" + worker.model + "). Add it in the Harnesses tab first.");
-    return;
-  }}
-  const harnessId = matchedEntry ? matchedEntry[0] : null;
-  if (role) roles[role] = {{ harness_id: harnessId, params: {{}} }};
+  if (!role) return;
+  const harnessId = sel.dataset.harnessId;
+  roles[role] = {{ harness_id: harnessId || null, params: {{}} }};
   await fetch(api("/api/roles"), {{
     method: "POST", headers: {{"Content-Type":"application/json"}},
     body: JSON.stringify({{ assignments: roles }}),
@@ -1353,6 +1594,187 @@ async function submitProject() {{
     fleetData.projects.push(res.record);
     renderProjects();
     closeModal("modal-project");
+  }}
+}}
+
+// ── Jobs ───────────────────────────────────────────────────────────────────
+
+let _jobPollTimer = null;
+
+const STATUS_COLORS = {{
+  pending:   "#475569",
+  running:   "#fbbf24",
+  reviewing: "#818cf8",
+  done:      "#4ade80",
+  failed:    "#f87171",
+}};
+
+function jobStatusBadge(status) {{
+  const color = STATUS_COLORS[status] || "#475569";
+  return `<span style="font-size:0.68rem;padding:0.15rem 0.5rem;border-radius:3px;font-weight:500;background:#0f1117;color:${{color}};border:1px solid ${{color}}">${{status}}</span>`;
+}}
+
+function jobCard(j) {{
+  const stages = j.stages || {{}};
+  const stageHtml = Object.entries(stages).map(([name, s]) => `
+    <span style="font-size:0.7rem;color:${{s.status === "done" ? "#4ade80" : s.status === "error" ? "#f87171" : "#fbbf24"}}">
+      ${{name}}: ${{s.status}}
+    </span>`).join(" · ");
+
+  const logHtml = (j.log || []).slice(-6).map(l =>
+    `<div style="font-size:0.7rem;color:#334155"><span style="color:#1e293b">${{l.ts?.slice(11,19) || ""}}</span> <span style="color:#475569">[${{l.stage}}]</span> ${{l.msg}}</div>`
+  ).join("");
+
+  const hasFinal = j.status === "done" && j.final_output;
+
+  return `
+  <div style="background:#1e2330;border:1px solid #2d3748;border-radius:10px;margin-bottom:0.75rem;overflow:hidden">
+    <div style="padding:0.75rem 1rem;display:flex;align-items:center;gap:0.75rem;cursor:pointer"
+      onclick="toggleJobDetail('${{j.id}}')">
+      <div style="flex:1">
+        <div style="font-size:0.88rem;font-weight:600;color:#e2e8f0">#${{j.id}} — ${{j.type}}</div>
+        <div style="font-size:0.72rem;color:#475569;margin-top:0.15rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:60vw">${{j.spec?.slice(0,120) || "—"}}</div>
+      </div>
+      ${{jobStatusBadge(j.status)}}
+      <span style="color:#475569;font-size:0.8rem">▾</span>
+    </div>
+    <div id="jdetail-${{j.id}}" style="display:none;padding:0 1rem 0.75rem;border-top:1px solid #1e293b">
+      <div style="font-size:0.72rem;color:#475569;margin-bottom:0.4rem">${{stageHtml || "No stages run yet"}}</div>
+      <div style="font-family:monospace;background:#0f1117;border-radius:5px;padding:0.5rem;max-height:140px;overflow-y:auto;margin-bottom:0.5rem">${{logHtml || '<span style="color:#334155">No log entries.</span>'}}</div>
+      ${{hasFinal ? `<div style="margin-bottom:0.5rem"><label style="font-size:0.7rem;color:#475569">Final Output Preview</label><pre style="font-size:0.7rem;color:#94a3b8;background:#0f1117;padding:0.5rem;border-radius:5px;max-height:200px;overflow:auto;white-space:pre-wrap">${{j.final_output}}</pre></div>` : ""}}
+      <div style="display:flex;gap:0.4rem;flex-wrap:wrap">
+        ${{j.status === "pending" ? `<button class="btn btn-primary btn-sm" onclick="runJob('${{j.id}}')">▶ Run</button>` : ""}}
+        ${{j.status === "running" || j.status === "reviewing" ? `<span style="font-size:0.78rem;color:#fbbf24;align-self:center">Running…</span>` : ""}}
+        <button class="btn btn-ghost btn-sm" onclick="runJobStage('${{j.id}}','generator')">generator only</button>
+        <button class="btn btn-ghost btn-sm" onclick="runJobStage('${{j.id}}','reviewer')">reviewer only</button>
+        <button class="btn btn-ghost btn-sm" onclick="loadStageOutput('${{j.id}}','final')">view final</button>
+        <button class="btn btn-ghost btn-sm" onclick="refreshJobs()">↻</button>
+      </div>
+    </div>
+  </div>`;
+}}
+
+async function loadJobs() {{
+  const res = await fetch(api("/api/jobs")).then(r => r.json());
+  const jobs = res.jobs || [];
+  const el = document.getElementById("job-list");
+  if (!jobs.length) {{
+    el.innerHTML = '<div style="color:#475569;font-size:0.85rem;padding:1rem 0">No jobs yet. Click + New Job to start.</div>';
+    return;
+  }}
+  el.innerHTML = jobs.map(jobCard).join("");
+
+  // Auto-poll if any job is running
+  const hasActive = jobs.some(j => j.status === "running" || j.status === "reviewing");
+  if (hasActive && !_jobPollTimer) {{
+    _jobPollTimer = setTimeout(() => {{ _jobPollTimer = null; loadJobs(); }}, 3000);
+  }}
+}}
+
+function toggleJobDetail(id) {{
+  const el = document.getElementById("jdetail-" + id);
+  if (!el) return;
+  const open = el.style.display !== "none";
+  el.style.display = open ? "none" : "block";
+}}
+
+async function runJob(id) {{
+  await fetch(api("/api/jobs/" + id + "/run"), {{ method: "POST" }});
+  await loadJobs();
+  if (_jobPollTimer) clearTimeout(_jobPollTimer);
+  _jobPollTimer = setTimeout(() => {{ _jobPollTimer = null; loadJobs(); }}, 3000);
+}}
+
+async function runJobStage(id, stage) {{
+  const res = await fetch(api("/api/jobs/" + id + "/run-stage/" + stage), {{ method: "POST" }}).then(r => r.json());
+  await loadJobs();
+  alert(res.ok ? `Stage '${{stage}}' done.` : `Error: ${{res.error}}`);
+}}
+
+async function loadStageOutput(id, stage) {{
+  const res = await fetch(api("/api/jobs/" + id + "/stage/" + stage)).then(r => r.json());
+  if (res.ok) alert(res.output?.slice(0, 2000) || "(empty)");
+  else alert("No output yet for stage: " + stage);
+}}
+
+function openNewJob() {{
+  document.getElementById("nj-spec").value = "";
+  document.getElementById("nj-target").value = "fleet_output";
+  document.getElementById("modal-new-job").classList.add("open");
+}}
+
+async function submitJob(autorun) {{
+  const pipeline = [];
+  if (document.getElementById("nj-gen").checked) pipeline.push("generator");
+  if (document.getElementById("nj-rev").checked) pipeline.push("reviewer");
+  if (document.getElementById("nj-sup").checked) pipeline.push("supervisor");
+  if (!pipeline.length) {{ alert("Select at least one pipeline stage."); return; }}
+
+  const payload = {{
+    type: document.getElementById("nj-type").value,
+    spec: document.getElementById("nj-spec").value.trim(),
+    target_dashboard: document.getElementById("nj-target").value.trim() || "fleet_output",
+    pipeline,
+    autorun,
+  }};
+  if (!payload.spec) {{ alert("Job specification required."); return; }}
+
+  const res = await fetch(api("/api/jobs"), {{
+    method: "POST", headers: {{"Content-Type":"application/json"}}, body: JSON.stringify(payload),
+  }}).then(r => r.json());
+
+  if (res.ok) {{
+    closeModal("modal-new-job");
+    switchTab("jobs", document.querySelector(".tab:nth-child(3)"));
+    await loadJobs();
+  }}
+}}
+
+function refreshJobs() {{ loadJobs(); }}
+
+// ── Harness detail modal (from pool chips + harness tab) ───────────────────
+
+let _activeHarnessId = null;
+
+function openHarnessDetail(id) {{
+  const h = harnesses[id];
+  if (!h) return;
+  _activeHarnessId = id;
+  document.getElementById("mh-title").textContent = h.display_name || id;
+  document.getElementById("mh-notes").textContent = h.notes || "";
+  document.getElementById("mh-caps").innerHTML = (h.capabilities || []).map(c => `<span class="cap-tag">${{c}}</span>`).join(" ");
+  document.getElementById("mh-cost").innerHTML = costBadge(h);
+  document.getElementById("mh-fmt").value = h.request_format || "ollama_chat";
+  document.getElementById("mh-auth").value = h.auth_type || "none";
+  document.getElementById("mh-temp").value = h.params?.temperature ?? 0;
+  document.getElementById("mh-conc").value = h.concurrency ?? 1;
+  document.getElementById("mh-ep").value = h.endpoint || "";
+  document.getElementById("mh-path").value = h.api_path || "";
+  document.getElementById("modal-harness").classList.add("open");
+}}
+
+async function saveHarnessFromModal() {{
+  const id = _activeHarnessId;
+  if (!id) return;
+  const h = harnesses[id];
+  const temp = parseFloat(document.getElementById("mh-temp").value);
+  const payload = {{
+    request_format: document.getElementById("mh-fmt").value,
+    auth_type: document.getElementById("mh-auth").value,
+    endpoint: document.getElementById("mh-ep").value.trim(),
+    api_path: document.getElementById("mh-path").value.trim(),
+    concurrency: parseInt(document.getElementById("mh-conc").value) || 1,
+    params: {{ ...(h.params || {{}}), temperature: isNaN(temp) ? 0 : temp }},
+  }};
+  const res = await fetch(api("/api/harnesses/" + id), {{
+    method: "PUT", headers: {{"Content-Type":"application/json"}}, body: JSON.stringify(payload),
+  }}).then(r => r.json());
+  if (res.ok) {{
+    harnesses[id] = res.harness;
+    renderHarnesses();
+    renderPool();
+    renderStaff();
+    closeModal("modal-harness");
   }}
 }}
 
