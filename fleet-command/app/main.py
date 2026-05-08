@@ -10,7 +10,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from app.snapshot import capabilities, status
 from app.workers import configured_workers, test_worker
 from app.harnesses import load_harnesses
-from app.roles import load_roles, save_roles, swap_roles, ROLE_ORDER, ROLE_LABELS
+from app.roles import load_roles, save_roles, swap_roles, ROLE_ORDER, ROLE_LABELS, ROLE_META, ADVISOR_ROLE
 
 app = FastAPI(title="Fleet Command")
 
@@ -32,7 +32,7 @@ async def api_harnesses() -> dict:
 
 @app.get("/api/roles")
 async def api_roles_get() -> dict:
-    return {"roles": load_roles(), "order": ROLE_ORDER, "labels": ROLE_LABELS}
+    return {"roles": load_roles(), "order": ROLE_ORDER, "advisor": ADVISOR_ROLE, "meta": ROLE_META}
 
 
 @app.post("/api/roles")
@@ -159,13 +159,18 @@ def _dashboard_html(root: str) -> str:  # noqa: C901
       padding: 0.75rem 1rem;
     }}
 
+    .role-label-wrap {{ min-width: 130px; }}
     .role-label {{
       font-size: 0.65rem;
       font-weight: 700;
       letter-spacing: 0.08em;
       text-transform: uppercase;
       color: #6366f1;
-      min-width: 110px;
+    }}
+    .role-title {{
+      font-size: 0.68rem;
+      color: #475569;
+      margin-top: 0.1rem;
     }}
 
     .model-select {{
@@ -418,7 +423,12 @@ def _dashboard_html(root: str) -> str:  # noqa: C901
 
 <!-- ── Fleet tab ── -->
 <div class="tab-panel active" id="tab-fleet">
-  <div class="section-title">Fleet Roster</div>
+  <div class="section-title">Chief Advisor — On-Call Escalation</div>
+  <div id="advisor-card"></div>
+
+  <div style="text-align:center;color:#334155;font-size:0.7rem;padding:0.3rem 0 0.6rem">↕ escalation only</div>
+
+  <div class="section-title">Production Chain — Top Authority → Worker</div>
   <div class="roster" id="roster"></div>
 
   <div class="section-title">Available (unassigned)</div>
@@ -471,17 +481,11 @@ def _dashboard_html(root: str) -> str:  # noqa: C901
 const ROOT = "{root}";
 const api = path => ROOT + path;
 
-const ROLE_ORDER = ["project_manager", "manager", "generator", "reviewer", "supervisor"];
-const ROLE_LABELS = {{
-  project_manager: "Project Manager",
-  manager: "Manager",
-  generator: "Generator",
-  reviewer: "Reviewer",
-  supervisor: "Supervisor",
-}};
-
 let harnesses = {{}};
 let roles = {{}};
+let roleMeta = {{}};
+let roleOrder = [];
+let advisorRole = "advisor";
 let originalRoles = {{}};
 
 async function load() {{
@@ -491,9 +495,13 @@ async function load() {{
   ]);
   harnesses = hRes.harnesses || {{}};
   roles = rRes.roles || {{}};
+  roleMeta = rRes.meta || {{}};
+  roleOrder = rRes.order || [];
+  advisorRole = rRes.advisor || "advisor";
   originalRoles = JSON.parse(JSON.stringify(roles));
   renderRoster();
   renderPool();
+  renderHarnesses();
 }}
 
 function ctxLabel(h) {{
@@ -511,77 +519,86 @@ function costBadge(h) {{
   return '<span class="cost-badge cloud">cloud</span>';
 }}
 
+function roleCard(role, idx, list) {{
+  const assignment = roles[role] || {{}};
+  const hid = assignment.harness_id || "";
+  const h = harnesses[hid];
+  const meta = roleMeta[role] || {{}};
+  const params = assignment.params || {{}};
+  const temp = params.temperature ?? (h?.params?.temperature ?? 0);
+  const hasModel = !!hid;
+
+  const options = Object.entries(harnesses)
+    .map(([id, info]) => `<option value="${{id}}" ${{id === hid ? "selected" : ""}}>${{info.display_name}}</option>`)
+    .join("");
+
+  const upBtn = idx > 0
+    ? `<button class="btn btn-ghost btn-sm" onclick="swapRoles('${{role}}','${{list[idx-1]}}')" title="Promote">↑</button>`
+    : "";
+  const downBtn = idx < list.length - 1
+    ? `<button class="btn btn-ghost btn-sm" onclick="swapRoles('${{role}}','${{list[idx+1]}}')" title="Demote">↓</button>`
+    : "";
+
+  return `
+  <div class="role-card ${{hasModel ? "has-model" : "empty"}}" id="card-${{role}}">
+    <div class="card-header">
+      <div class="role-label-wrap">
+        <div class="role-label">${{meta.label || role}}</div>
+        <div class="role-title">${{meta.title || ""}}</div>
+      </div>
+      <select class="model-select" onchange="onModelChange('${{role}}', this.value)">
+        <option value="">— unassigned —</option>
+        ${{options}}
+      </select>
+      ${{costBadge(h)}}
+      <div class="card-actions">
+        <button class="btn btn-ghost btn-sm" onclick="toggleParams('${{role}}')" title="Params">⚙</button>
+        ${{upBtn}}${{downBtn}}
+      </div>
+    </div>
+    <div class="card-meta">
+      <span>${{ctxLabel(h)}}</span>
+      <span>temp <b>${{temp}}</b></span>
+      ${{meta.description ? `<span style="color:#374151;font-style:italic">${{meta.description}}</span>` : ""}}
+    </div>
+    <div class="params-panel" id="params-${{role}}">
+      <div class="params-grid">
+        <div class="param-row">
+          <label>temperature</label>
+          <input type="number" min="0" max="2" step="0.1" value="${{temp}}"
+            onchange="onParamChange('${{role}}', 'temperature', parseFloat(this.value))">
+        </div>
+        <div class="param-row">
+          <label>top_p</label>
+          <input type="number" min="0" max="1" step="0.05" value="${{params.top_p ?? ""}}" placeholder="default"
+            onchange="onParamChange('${{role}}', 'top_p', parseFloat(this.value) || null)">
+        </div>
+        <div class="param-row">
+          <label>top_k</label>
+          <input type="number" min="0" step="1" value="${{params.top_k ?? ""}}" placeholder="default"
+            onchange="onParamChange('${{role}}', 'top_k', parseInt(this.value) || null)">
+        </div>
+        <div class="param-row">
+          <label>num_predict</label>
+          <input type="number" min="0" step="64" value="${{params.num_predict ?? ""}}" placeholder="default"
+            onchange="onParamChange('${{role}}', 'num_predict', parseInt(this.value) || null)">
+        </div>
+      </div>
+    </div>
+  </div>`;
+}}
+
 function renderRoster() {{
   const el = document.getElementById("roster");
-  const assignedIds = new Set(
-    ROLE_ORDER.map(r => roles[r]?.harness_id).filter(Boolean)
+  const advisorEl = document.getElementById("advisor-card");
+
+  el.innerHTML = roleOrder.map((role, idx) => roleCard(role, idx, roleOrder)).join(
+    `<div style="text-align:center;color:#334155;font-size:0.7rem;padding:0.1rem 0">↓</div>`
   );
 
-  el.innerHTML = ROLE_ORDER.map((role, idx) => {{
-    const assignment = roles[role] || {{}};
-    const hid = assignment.harness_id || "";
-    const h = harnesses[hid];
-    const params = assignment.params || {{}};
-    const temp = params.temperature ?? (h?.params?.temperature ?? 0);
-    const hasModel = !!hid;
-
-    const options = Object.entries(harnesses)
-      .map(([id, info]) => `<option value="${{id}}" ${{id === hid ? "selected" : ""}}>${{info.display_name}}</option>`)
-      .join("");
-
-    const upBtn = idx > 0
-      ? `<button class="btn btn-ghost btn-sm" onclick="swapRoles('${{role}}','${{ROLE_ORDER[idx-1]}}')" title="Promote">↑</button>`
-      : "";
-    const downBtn = idx < ROLE_ORDER.length - 1
-      ? `<button class="btn btn-ghost btn-sm" onclick="swapRoles('${{role}}','${{ROLE_ORDER[idx+1]}}')" title="Demote">↓</button>`
-      : "";
-
-    return `
-    <div class="role-card ${{hasModel ? "has-model" : "empty"}}" id="card-${{role}}">
-      <div class="card-header">
-        <div class="role-label">${{ROLE_LABELS[role]}}</div>
-        <select class="model-select" onchange="onModelChange('${{role}}', this.value)">
-          <option value="">— unassigned —</option>
-          ${{options}}
-        </select>
-        ${{costBadge(h)}}
-        <div class="card-actions">
-          <button class="btn btn-ghost btn-sm" onclick="toggleParams('${{role}}')" title="Params">⚙</button>
-          ${{upBtn}}
-          ${{downBtn}}
-        </div>
-      </div>
-      <div class="card-meta">
-        <span>${{ctxLabel(h)}}</span>
-        <span>temp: <b>${{temp}}</b></span>
-        ${{h?.notes ? `<span style="color:#374151">${{h.notes.substring(0,60)}}${{h.notes.length>60?"…":""}}</span>` : ""}}
-      </div>
-      <div class="params-panel" id="params-${{role}}">
-        <div class="params-grid">
-          <div class="param-row">
-            <label>temperature</label>
-            <input type="number" min="0" max="2" step="0.1" value="${{temp}}"
-              onchange="onParamChange('${{role}}', 'temperature', parseFloat(this.value))">
-          </div>
-          <div class="param-row">
-            <label>top_p</label>
-            <input type="number" min="0" max="1" step="0.05" value="${{params.top_p ?? ""}}" placeholder="default"
-              onchange="onParamChange('${{role}}', 'top_p', parseFloat(this.value) || null)">
-          </div>
-          <div class="param-row">
-            <label>top_k</label>
-            <input type="number" min="0" step="1" value="${{params.top_k ?? ""}}" placeholder="default"
-              onchange="onParamChange('${{role}}', 'top_k', parseInt(this.value) || null)">
-          </div>
-          <div class="param-row">
-            <label>num_predict</label>
-            <input type="number" min="0" step="64" value="${{params.num_predict ?? ""}}" placeholder="default"
-              onchange="onParamChange('${{role}}', 'num_predict', parseInt(this.value) || null)">
-          </div>
-        </div>
-      </div>
-    </div>`;
-  }}).join("");
+  if (advisorEl) {{
+    advisorEl.innerHTML = roleCard(advisorRole, 0, [advisorRole]);
+  }}
 }}
 
 function renderPool() {{
