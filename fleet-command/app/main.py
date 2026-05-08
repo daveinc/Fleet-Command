@@ -1656,9 +1656,21 @@ function jobStatusBadge(status) {{
 
 function jobCard(j) {{
   const stages = j.stages || {{}};
-  const stageHtml = Object.entries(stages).map(([name, s]) =>
-    `<span style="font-size:0.7rem;color:${{s.status === "done" ? "#4ade80" : s.status === "error" ? "#f87171" : "#fbbf24"}}">${{name}}: ${{s.status}}</span>`
-  ).join(" · ");
+  const stageHtml = Object.entries(stages).map(([name, s]) => {{
+    const color = s.status === "done" ? "#4ade80" : s.status === "error" ? "#f87171" : "#fbbf24";
+    const isRejected = s.status === "done" && s.preview && s.preview.trim().toUpperCase().startsWith("REJECTED");
+    const badge = isRejected ? "#f87171" : color;
+    const label = isRejected ? name + ": rejected" : name + ": " + s.status;
+    return `<span style="font-size:0.7rem;color:${{badge}};cursor:pointer;text-decoration:underline dotted"
+      onclick="toggleStageOutput('${{j.id}}','${{name}}')">${{label}}</span>`;
+  }}).join(" · ");
+
+  const stageOutputPanels = Object.keys(stages).map(name =>
+    `<div id="so-${{j.id}}-${{name}}" style="display:none;margin-bottom:0.5rem">
+      <div style="font-size:0.65rem;color:#475569;margin-bottom:0.15rem;text-transform:uppercase;letter-spacing:0.05em">${{name}} output</div>
+      <pre id="so-pre-${{j.id}}-${{name}}" style="font-size:0.7rem;color:#94a3b8;background:#0a0d14;border:1px solid #1e293b;border-radius:5px;padding:0.5rem;max-height:200px;overflow:auto;white-space:pre-wrap;margin:0">Loading…</pre>
+    </div>`
+  ).join("");
 
   const logHtml = (j.log || []).map(l =>
     `<div><span style="color:#334155">${{l.ts?.slice(11,19) || ""}}</span> <span style="color:#475569">[${{l.stage}}]</span> <span style="color:#94a3b8">${{l.msg}}</span></div>`
@@ -1679,9 +1691,13 @@ function jobCard(j) {{
       <span style="color:#475569;font-size:0.8rem">▾</span>
     </div>
     <div id="jdetail-${{j.id}}" style="display:none;padding:0 1rem 0.75rem;border-top:1px solid #1e293b">
-      <div id="jstages-${{j.id}}" style="font-size:0.72rem;color:#475569;margin-bottom:0.5rem;min-height:1rem">${{stageHtml || "No stages run yet"}}</div>
+      <div id="jstages-${{j.id}}" style="font-size:0.72rem;margin-bottom:0.5rem;min-height:1rem;display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center">
+        ${{stageHtml || '<span style="color:#475569">No stages run yet</span>'}}
+        <span style="font-size:0.62rem;color:#334155">↑ click stage to inspect</span>
+      </div>
+      ${{stageOutputPanels}}
       <div style="font-size:0.68rem;color:#475569;margin-bottom:0.2rem">Log ${{isActive ? '— live' : ''}}</div>
-      <div id="jlog-${{j.id}}" style="font-family:monospace;font-size:0.72rem;background:#0f1117;border-radius:5px;padding:0.5rem;height:160px;overflow-y:auto;margin-bottom:0.6rem;line-height:1.6">${{logHtml}}</div>
+      <div id="jlog-${{j.id}}" style="font-family:monospace;font-size:0.72rem;background:#0f1117;border-radius:5px;padding:0.5rem;height:140px;overflow-y:auto;margin-bottom:0.6rem;line-height:1.6">${{logHtml}}</div>
       ${{hasFinal ? `<div style="margin-bottom:0.6rem"><div style="font-size:0.68rem;color:#475569;margin-bottom:0.2rem">Final Output</div><pre style="font-size:0.7rem;color:#94a3b8;background:#0f1117;padding:0.5rem;border-radius:5px;max-height:220px;overflow:auto;white-space:pre-wrap">${{j.final_output}}</pre></div>` : ""}}
       <div style="display:flex;gap:0.4rem;flex-wrap:wrap;align-items:center;margin-bottom:0.4rem">
         ${{j.status === "pending" ? `<button class="btn btn-primary btn-sm" onclick="runJob('${{j.id}}')">▶ Run</button>` : ""}}
@@ -1690,7 +1706,6 @@ function jobCard(j) {{
         ${{(j.status === "failed" || j.status === "done" || j.status === "cancelled") ? `<button class="btn btn-ghost btn-sm" style="color:#fbbf24" onclick="restartJob('${{j.id}}')">↺ Retry</button>` : ""}}
         <button class="btn btn-ghost btn-sm" onclick="runJobStage('${{j.id}}','generator')">gen only</button>
         <button class="btn btn-ghost btn-sm" onclick="runJobStage('${{j.id}}','reviewer')">review only</button>
-        <button class="btn btn-ghost btn-sm" onclick="loadStageOutput('${{j.id}}','final')">view output</button>
         <button class="btn btn-ghost btn-sm" style="margin-left:auto;color:#f87171" onclick="removeJob('${{j.id}}')">✕ Remove</button>
       </div>
       <div style="display:flex;gap:0.4rem;align-items:center;flex-wrap:wrap">
@@ -1792,10 +1807,18 @@ async function runJobStage(id, stage) {{
   alert(res.ok ? `Stage '${{stage}}' done.` : `Error: ${{res.error}}`);
 }}
 
-async function loadStageOutput(id, stage) {{
-  const res = await fetch(api("/api/jobs/" + id + "/stage/" + stage)).then(r => r.json());
-  if (res.ok) alert(res.output?.slice(0, 2000) || "(empty)");
-  else alert("No output yet for stage: " + stage);
+async function toggleStageOutput(jobId, stage) {{
+  const panel = document.getElementById("so-" + jobId + "-" + stage);
+  const pre = document.getElementById("so-pre-" + jobId + "-" + stage);
+  if (!panel) return;
+  const isOpen = panel.style.display !== "none";
+  panel.style.display = isOpen ? "none" : "block";
+  if (!isOpen && pre.textContent === "Loading…") {{
+    const res = await fetch(api("/api/jobs/" + jobId + "/stage/" + stage)).then(r => r.json());
+    pre.textContent = res.ok ? (res.output || "(empty)") : "No output for this stage yet.";
+    const isRejected = pre.textContent.trim().toUpperCase().startsWith("REJECTED");
+    pre.style.color = isRejected ? "#f87171" : "#94a3b8";
+  }}
 }}
 
 function openNewJob() {{
