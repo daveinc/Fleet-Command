@@ -2054,9 +2054,15 @@ function renderPipelineNodes() {{
   canvas.innerHTML = html;
 }}
 
-// D1 — Re-run from stage
+// D1 — Re-run from stage (supervisor rejection feedback auto-injected by backend)
 async function rerunFromStage(jobId, stage) {{
-  if (!confirm(`Re-run from "${{stage}}" and all downstream stages?`)) return;
+  const stageLabel = STAGE_LABELS[stage] || stage;
+  const job = _plJobs.find(j => j.id === jobId);
+  const hasFeedback = job && job.rejection_feedback;
+  const msg = hasFeedback
+    ? `Re-run from "${{stageLabel}}" with supervisor rejection feedback injected.`
+    : `Re-run from "${{stageLabel}}" — no rejection feedback found, will rerun as-is.`;
+  if (!confirm(msg)) return;
   await fetch(api(`/api/jobs/${{jobId}}/rerun-from/${{stage}}`), {{method: "POST"}});
   await loadPipelineTab();
 }}

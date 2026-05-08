@@ -565,6 +565,8 @@ async def run_pipeline(job_id: str) -> None:
                 save_job(job)
                 prev_output = r.get("output")
             else:
+                job = load_job(job_id)
+                job["rejection_feedback"] = prev_output
                 append_log(job, stage, "Rejected — use ↺ Retry to rerun with adjusted settings")
                 job["status"] = STATUS_FAILED
                 save_job(job)
