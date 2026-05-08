@@ -801,6 +801,7 @@ def _dashboard_html(root: str) -> str:  # noqa: C901
   <div class="tab" onclick="switchTab('jobs', this)">Projects</div>
   <div class="tab" onclick="switchTab('harnesses', this)">Harnesses</div>
   <div class="tab" onclick="switchTab('templates', this)">Templates</div>
+  <div class="tab" onclick="switchTab('pipeline', this); loadPipelineTab()">Pipeline</div>
 </div>
 
 <!-- ── Fleet tab ── -->
@@ -865,6 +866,17 @@ def _dashboard_html(root: str) -> str:  # noqa: C901
 <div class="tab-panel" id="tab-harnesses">
   <div class="section-title">Registered Models</div>
   <div class="harness-grid" id="harness-grid"></div>
+</div>
+
+<!-- ── Pipeline tab ── -->
+<div class="tab-panel" id="tab-pipeline">
+  <div class="section-title">Pipeline Visualizer</div>
+  <div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:1rem">
+    <label style="font-size:0.82rem;color:#94a3b8">Job</label>
+    <select id="pl-job-select" style="font-size:0.82rem;background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:6px;padding:0.25rem 0.5rem" onchange="renderPipelineNodes()"></select>
+    <button class="btn btn-ghost btn-sm" onclick="loadPipelineTab()">↺ Refresh</button>
+  </div>
+  <div id="pl-canvas" style="overflow-x:auto;padding:1rem 0"></div>
 </div>
 
 <!-- ── Templates tab ── -->
@@ -1882,6 +1894,90 @@ async function submitJob(autorun) {{
     switchTab("jobs", document.querySelector(".tab:nth-child(3)"));
     await loadJobs();
   }}
+}}
+
+// ── Pipeline tab ─────────────────────────────────────────────────────────────
+
+let _plJobs = [];
+
+async function loadPipelineTab() {{
+  const res = await fetch(api("/api/jobs")).then(r => r.json());
+  _plJobs = res.jobs || [];
+  const sel = document.getElementById("pl-job-select");
+  if (!sel) return;
+  sel.innerHTML = _plJobs.length
+    ? _plJobs.map(j => `<option value="${{j.id}}">${{j.id}} — ${{j.status}} (${{(j.spec||"").slice(0,40)}})</option>`).join("")
+    : `<option>No jobs yet</option>`;
+  renderPipelineNodes();
+}}
+
+function renderPipelineNodes() {{
+  const sel = document.getElementById("pl-job-select");
+  const canvas = document.getElementById("pl-canvas");
+  if (!sel || !canvas) return;
+  const job = _plJobs.find(j => j.id === sel.value);
+  if (!job) {{ canvas.innerHTML = `<p style="color:#64748b">No job selected.</p>`; return; }}
+
+  const pipeline = job.pipeline || ["generator"];
+  const stages = job.stages || {{}};
+  const STATUS_COLOR = {{
+    running: "#f59e0b", done: "#22c55e", error: "#ef4444",
+    pending: "#475569", reviewing: "#818cf8",
+  }};
+  const LABEL = {{
+    project_manager: "PM", manager: "Manager", generator: "Generator",
+    reviewer: "Reviewer", supervisor: "Supervisor", advisor: "Advisor",
+  }};
+  const EDGE_LABEL = {{
+    manager: "plan", generator: "brief", reviewer: "YAML", supervisor: "reviewed", advisor: "escalation",
+  }};
+
+  const nodeW = 140, nodeH = 90, gapX = 80, padY = 20;
+  const totalW = pipeline.length * nodeW + (pipeline.length - 1) * gapX + 40;
+  const totalH = nodeH + padY * 2 + 30;
+
+  let html = `<svg width="${{totalW}}" height="${{totalH}}" style="display:block;min-width:100%">`;
+
+  // Draw bezier connections first (behind nodes)
+  pipeline.forEach((stage, i) => {{
+    if (i === 0) return;
+    const x1 = 20 + (i - 1) * (nodeW + gapX) + nodeW;
+    const x2 = 20 + i * (nodeW + gapX);
+    const y = padY + nodeH / 2;
+    const cx = (x1 + x2) / 2;
+    const lbl = EDGE_LABEL[stage] || "";
+    html += `<path d="M${{x1}},${{y}} C${{cx}},${{y}} ${{cx}},${{y}} ${{x2}},${{y}}" stroke="#334155" stroke-width="2" fill="none"/>`;
+    html += `<text x="${{cx}}" y="${{y - 6}}" text-anchor="middle" font-size="9" fill="#64748b">${{lbl}}</text>`;
+    // Port dots
+    html += `<circle cx="${{x1}}" cy="${{y}}" r="4" fill="#334155"/>`;
+    html += `<circle cx="${{x2}}" cy="${{y}}" r="4" fill="#334155"/>`;
+  }});
+
+  // Draw nodes
+  pipeline.forEach((stage, i) => {{
+    const x = 20 + i * (nodeW + gapX);
+    const y = padY;
+    const s = stages[stage] || {{}};
+    const color = STATUS_COLOR[s.status] || STATUS_COLOR.pending;
+    const label = LABEL[stage] || stage;
+    const model = (s.handled_by && s.handled_by !== stage) ? `↑ ${{s.handled_by}}` : (s.model || "");
+    const chars = s.preview ? s.preview.length : 0;
+    const statusTxt = s.status || "pending";
+
+    html += `
+      <rect x="${{x}}" y="${{y}}" width="${{nodeW}}" height="${{nodeH}}" rx="8"
+            fill="#1e293b" stroke="${{color}}" stroke-width="2"/>
+      <rect x="${{x}}" y="${{y}}" width="${{nodeW}}" height="24" rx="8" fill="${{color}}22"/>
+      <rect x="${{x}}" y="${{y + 16}}" width="${{nodeW}}" height="8" fill="${{color}}22"/>
+      <text x="${{x + nodeW/2}}" y="${{y + 16}}" text-anchor="middle" font-size="11" font-weight="bold" fill="${{color}}">${{label}}</text>
+      <text x="${{x + nodeW/2}}" y="${{y + 34}}" text-anchor="middle" font-size="9" fill="#94a3b8">${{statusTxt}}</text>
+      <text x="${{x + nodeW/2}}" y="${{y + 48}}" text-anchor="middle" font-size="8" fill="#64748b">${{model}}</text>
+      <text x="${{x + nodeW/2}}" y="${{y + 62}}" text-anchor="middle" font-size="8" fill="#475569">${{chars ? chars+" chars" : ""}}</text>
+    `;
+  }});
+
+  html += `</svg>`;
+  canvas.innerHTML = html;
 }}
 
 async function cancelJob(id) {{
