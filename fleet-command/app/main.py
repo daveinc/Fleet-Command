@@ -1309,6 +1309,16 @@ function roleCard(role, idx, list) {{
   const temp = params.temperature ?? (h?.params?.temperature ?? 0);
   const hasModel = !!hid;
 
+  // Enrich from matching staff entry (harness match by id)
+  const staffMatch = hid
+    ? (fleetData.staff || []).find(s => s._harness_id === hid) ||
+      Object.entries(harnesses).map(([id,h]) => harnessToStaff(id,h)).find(s => s._harness_id === hid)
+    : null;
+  const enrichScore  = staffMatch?.score || (h?.context_window ? (h.context_window/1000).toFixed(0)+"k ctx" : "");
+  const enrichStatus = staffMatch?.status || "";
+  const enrichCaps   = h?.capabilities || staffMatch?.capabilities || [];
+  const enrichStatusCls = enrichStatus ? "staff-status " + staffStatusClass(enrichStatus) : "";
+
   const options = Object.entries(harnesses)
     .map(([id, info]) => `<option value="${{id}}" ${{id === hid ? "selected" : ""}}>${{info.display_name}}</option>`)
     .join("");
@@ -1340,6 +1350,9 @@ function roleCard(role, idx, list) {{
     <div class="card-meta">
       <span>${{ctxLabel(h)}}</span>
       <span>temp <b>${{temp}}</b></span>
+      ${{enrichScore ? `<span style="color:#64748b">${{enrichScore}}</span>` : ""}}
+      ${{enrichStatus ? `<span class="${{enrichStatusCls}}" style="font-size:0.66rem">${{enrichStatus}}</span>` : ""}}
+      ${{enrichCaps.map(c=>`<span class="cap-tag">${{c}}</span>`).join("")}}
       ${{meta.description ? `<span style="color:#374151;font-style:italic">${{meta.description}}</span>` : ""}}
     </div>
     <div class="params-panel" id="params-${{role}}">
@@ -1581,21 +1594,6 @@ function staffCard(s) {{
     ? `<div style="display:flex;gap:0.3rem;flex-wrap:wrap;margin-top:0.3rem">${{caps.map(c => `<span class="cap-tag">${{c}}</span>`).join("")}}</div>`
     : "";
 
-  const allRoles = [...roleOrder, advisorRole];
-  const currentRole = s._harness_id
-    ? allRoles.find(r => roles[r]?.harness_id === s._harness_id) || ""
-    : "";
-  const roleOpts = `<option value="">— no role —</option>` +
-    allRoles.map(r => `<option value="${{r}}" ${{r === currentRole ? "selected" : ""}}>${{roleMeta[r]?.label || r}}</option>`).join("");
-
-  const assignId = s._harness_id || s._worker_id;
-  const roleAssign = assignId ? `
-    <div style="display:flex;align-items:center;gap:0.4rem;margin-top:0.5rem">
-      <select style="flex:1;background:#0f1117;border:1px solid #334155;border-radius:5px;color:#e2e8f0;font-size:0.78rem;padding:0.25rem 0.4rem"
-        id="role-assign-${{assignId}}" data-harness-id="${{s._harness_id || ""}}">${{roleOpts}}</select>
-      <button class="btn btn-ghost btn-sm" onclick="assignWorkerRole('${{assignId}}')">Assign</button>
-    </div>` : "";
-
   return `
   <div class="staff-card ${{type}}" data-id="${{s.id}}">
     <div class="staff-avatar ${{type}}">${{icon}}</div>
@@ -1613,7 +1611,6 @@ function staffCard(s) {{
       ${{s.profile ? `<div style="font-size:0.72rem;color:#334155;margin-top:0.2rem;font-style:italic">${{s.profile}}</div>` : ""}}
       ${{capsHtml}}
       ${{taskHtml}}
-      ${{roleAssign}}
     </div>
     ${{!s._readonly ? `<button class="btn btn-ghost btn-sm" onclick="deleteStaff(${{s.id}})" title="Remove" style="font-size:0.7rem;color:#374151">✕</button>` : ""}}
   </div>`;

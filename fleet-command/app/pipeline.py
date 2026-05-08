@@ -646,26 +646,36 @@ async def _push_dashboard(job: dict[str, Any], yaml_content: str) -> None:
     try:
         dashboard_id = job.get("target_dashboard", "fleet_output")
 
-        # Try to parse to confirm it's valid YAML before pushing
+        # Validate YAML
         _yaml.safe_load(yaml_content)
 
-        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        auth = {"Authorization": f"Bearer {token}"}
+        base = "http://supervisor/core/api"
         async with httpx.AsyncClient(timeout=15) as client:
-            # Ensure dashboard exists (ignored if already present)
+            # Ensure dashboard exists (no-op if already present)
             await client.post(
-                "http://supervisor/core/api/lovelace/dashboards",
-                headers=headers,
-                json={"icon": "mdi:robot-industrial", "title": dashboard_id.replace("_", " ").title(),
+                f"{base}/lovelace/dashboards",
+                headers={**auth, "Content-Type": "application/json"},
+                json={"icon": "mdi:robot-industrial",
+                      "title": dashboard_id.replace("_", " ").title(),
                       "url_path": dashboard_id, "show_in_sidebar": True, "require_admin": False},
             )
-            # Push config — body is raw YAML string
+            # Try POST with text/plain (raw YAML body)
             resp = await client.post(
-                f"http://supervisor/core/api/lovelace/dashboards/{dashboard_id}/config",
-                headers={**headers, "Content-Type": "application/octet-stream"},
+                f"{base}/lovelace/dashboards/{dashboard_id}/config",
+                headers={**auth, "Content-Type": "text/plain"},
                 content=yaml_content.encode(),
             )
+            # Fall back to PUT if POST returned 4xx
+            if not resp.is_success:
+                resp = await client.put(
+                    f"{base}/lovelace/dashboards/{dashboard_id}/config",
+                    headers={**auth, "Content-Type": "text/plain"},
+                    content=yaml_content.encode(),
+                )
             ok = resp.is_success
-            append_log(job, "ha_push", f"Dashboard push {'OK' if ok else 'FAILED'} — {resp.status_code}")
+            detail = "" if ok else f" — {resp.text[:120]}"
+            append_log(job, "ha_push", f"Dashboard push {'OK' if ok else 'FAILED'} — {resp.status_code}{detail}")
 
     except Exception as exc:
         append_log(job, "ha_push", f"HA push error — {exc}")
