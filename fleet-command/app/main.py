@@ -219,6 +219,8 @@ async def api_job_run(job_id: str, background_tasks: BackgroundTasks) -> dict:
     job = load_job(job_id)
     if not job:
         return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
+    if job.get("status") == "running":
+        return JSONResponse({"ok": False, "error": "already running"}, status_code=409)
     background_tasks.add_task(run_pipeline, job_id)
     return {"ok": True, "job_id": job_id}
 
@@ -2309,9 +2311,21 @@ function renderFleetDetail(j) {{
 async function fleetShowStageOutput(jobId, stage, label) {{
   const res = await fetch(api(`/api/jobs/${{jobId}}/stage/${{stage}}`)).then(r => r.json());
   const txt = res.output || res.error || "No output";
-  _fleetDetailPanel = {{ key: stage, title: label + " output", content: txt }};
-  // Re-render current job to show panel
   const job = (_fleetJobs || []).find(j => j.id === jobId);
+  const stageData = job?.stages?.[stage] || {{}};
+  const reviewNotes = stageData.review_notes || "";
+  let content = txt;
+  if (stage === "reviewer") {{
+    if (reviewNotes) {{
+      content = "REVIEW NOTES:\n" + reviewNotes + "\n\n---\n\n" + txt;
+    }} else {{
+      // Show a note if reviewer passed output unchanged
+      const assemblerOut = await fetch(api(`/api/jobs/${{jobId}}/stage/assembler`)).then(r=>r.json()).then(r=>r.output||"");
+      const verdict = txt.trim() === assemblerOut.trim() ? "Passed unchanged." : "Modified output (see below).";
+      content = "REVIEW: " + verdict + "\n\n---\n\n" + txt;
+    }}
+  }}
+  _fleetDetailPanel = {{ key: stage, title: label + " output", content }};
   if (job) renderFleetDetail(job);
 }}
 
