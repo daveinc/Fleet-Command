@@ -7,7 +7,7 @@ from app.config import options
 
 
 PROVIDER_DEFAULT_PATHS = {
-    "ollama": "/api/generate",
+    "ollama": "/api/chat",
     "openai": "/v1/responses",
     "openai_compatible": "/v1/chat/completions",
     "anthropic": "/v1/messages",
@@ -15,7 +15,7 @@ PROVIDER_DEFAULT_PATHS = {
 }
 
 PROVIDER_DEFAULT_FORMATS = {
-    "ollama": "ollama_generate",
+    "ollama": "ollama_chat",
     "openai": "openai_responses",
     "openai_compatible": "openai_chat",
     "anthropic": "anthropic_messages",
@@ -116,6 +116,8 @@ def worker_headers(worker: dict[str, Any]) -> dict[str, str]:
 def worker_payload(worker: dict[str, Any], prompt: str) -> dict[str, Any]:
     model = worker.get("model") or ""
     request_format = worker.get("request_format")
+    if request_format == "ollama_chat":
+        return {"model": model, "messages": [{"role": "user", "content": prompt}], "stream": False}
     if request_format == "ollama_generate":
         return {"model": model, "prompt": prompt, "stream": False}
     if request_format == "openai_responses":
@@ -127,6 +129,24 @@ def worker_payload(worker: dict[str, Any], prompt: str) -> dict[str, Any]:
     return {"model": model, "prompt": prompt}
 
 
+def extract_content(response: Any, request_format: str) -> str:
+    try:
+        data = response.json()
+        if request_format in ("ollama_chat",):
+            return data.get("message", {}).get("content", response.text)
+        if request_format == "ollama_generate":
+            return data.get("response", response.text)
+        if request_format == "openai_responses":
+            return data.get("output", [{}])[0].get("content", [{}])[0].get("text", response.text)
+        if request_format in ("openai_chat", "anthropic_messages"):
+            choices = data.get("choices") or data.get("content")
+            if choices:
+                return choices[0].get("message", {}).get("content") or choices[0].get("text", response.text)
+    except Exception:
+        pass
+    return response.text
+
+
 async def test_worker(worker_id: int, prompt: str = "Reply with exactly: FLEET_COMMAND_WORKER_OK") -> dict[str, Any]:
     workers = {int(worker["id"]): worker for worker in configured_workers()}
     worker = workers.get(worker_id)
@@ -135,18 +155,18 @@ async def test_worker(worker_id: int, prompt: str = "Reply with exactly: FLEET_C
     if worker["status"] != "Configured":
         return {"ok": False, "worker": worker, "error": worker["status"]}
     try:
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=60) as client:
             response = await client.post(
                 worker["endpoint"],
                 headers=worker_headers(worker),
                 json=worker_payload(worker, prompt),
             )
-            text = response.text[:1000]
+            content = extract_content(response, worker.get("request_format", ""))
             return {
                 "ok": response.is_success,
                 "status_code": response.status_code,
                 "worker": worker,
-                "response_preview": text,
+                "response_preview": content[:1000],
             }
     except Exception as err:
         return {"ok": False, "worker": worker, "error": str(err)}
