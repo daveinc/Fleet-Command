@@ -910,9 +910,16 @@ def _dashboard_html(root: str) -> str:  # noqa: C901
     <div class="field" style="margin-top:0.5rem">
       <label>Pipeline Stages</label>
       <div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin-top:0.3rem;font-size:0.82rem">
+        <label><input type="checkbox" id="nj-pm"> PM</label>
+        <label><input type="checkbox" id="nj-mgr"> Manager</label>
         <label><input type="checkbox" id="nj-gen" checked> Generator</label>
         <label><input type="checkbox" id="nj-rev"> Reviewer</label>
         <label><input type="checkbox" id="nj-sup"> Supervisor</label>
+      </div>
+      <div style="margin-top:0.4rem;display:flex;gap:0.5rem">
+        <button class="btn btn-ghost btn-sm" style="font-size:0.72rem;padding:0.15rem 0.5rem" onclick="setChain('full')">Full chain</button>
+        <button class="btn btn-ghost btn-sm" style="font-size:0.72rem;padding:0.15rem 0.5rem" onclick="setChain('gen')">Generator only</button>
+        <button class="btn btn-ghost btn-sm" style="font-size:0.72rem;padding:0.15rem 0.5rem" onclick="setChain('genrev')">Gen + Review</button>
       </div>
     </div>
     <div class="modal-actions" style="margin-top:0.75rem">
@@ -1827,8 +1834,18 @@ function openNewJob() {{
   document.getElementById("modal-new-job").classList.add("open");
 }}
 
+function setChain(preset) {{
+  const ids = ["nj-pm","nj-mgr","nj-gen","nj-rev","nj-sup"];
+  const vals = preset === "full"   ? [true,true,true,true,true]
+             : preset === "genrev" ? [false,false,true,true,false]
+             :                       [false,false,true,false,false];
+  ids.forEach((id,i) => {{ document.getElementById(id).checked = vals[i]; }});
+}}
+
 async function submitJob(autorun) {{
   const pipeline = [];
+  if (document.getElementById("nj-pm").checked)  pipeline.push("project_manager");
+  if (document.getElementById("nj-mgr").checked) pipeline.push("manager");
   if (document.getElementById("nj-gen").checked) pipeline.push("generator");
   if (document.getElementById("nj-rev").checked) pipeline.push("reviewer");
   if (document.getElementById("nj-sup").checked) pipeline.push("supervisor");

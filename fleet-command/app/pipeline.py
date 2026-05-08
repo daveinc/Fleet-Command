@@ -235,19 +235,30 @@ async def _call_with_fallback(
     raise RuntimeError(f"All workers exhausted for stage '{stage}' — no available harness responded")
 
 
-def _user_prompt(stage: str, spec: str, prev: str | None, feedback: str | None = None) -> str:
+def _user_prompt(stage: str, spec: str, prev: str | None) -> str:
+    if stage == "project_manager":
+        return (
+            f"Job request: {spec}\n\n"
+            f"Produce a structured build plan. List:\n"
+            f"- Dashboard title\n"
+            f"- Views needed\n"
+            f"- Each card: type, entity/data source, purpose\n"
+            f"Plain text only. No YAML. Be specific."
+        )
+    if stage == "manager":
+        return (
+            f"Build plan:\n{prev}\n\n"
+            f"Write a developer task brief. Specify exactly:\n"
+            f"- Each card type to use (sensor, weather-forecast, markdown, etc.)\n"
+            f"- Each entity name (e.g. weather.home, sensor.temperature)\n"
+            f"- Layout (vertical-stack, grid, etc.) if needed\n"
+            f"Plain text only. No YAML. Be precise and complete."
+        )
     if stage == "generator":
-        if feedback:
-            return (
-                f"{HA_REFERENCE}\n"
-                f"Build this: {spec}\n\n"
-                f"Your previous attempt was rejected by the reviewer.\n"
-                f"Rejection feedback:\n{feedback}\n\n"
-                f"Fix every issue listed above. Output corrected YAML only."
-            )
+        brief = prev if prev else f"Build this: {spec}"
         return (
             f"{HA_REFERENCE}\n"
-            f"Build this: {spec}\n"
+            f"{brief}\n"
             f"Output YAML only."
         )
     if stage == "reviewer":
@@ -287,8 +298,13 @@ async def run_stage(job_id: str, stage: str) -> dict[str, Any]:
     persona = full_persona.split(".")[0] + "." if full_persona else "You are a helpful AI assistant."
     spec = job.get("spec", "")
 
-    # Previous stage output (reviewer/supervisor need generator output)
-    prev_stages = {"reviewer": "generator", "supervisor": "reviewer"}
+    # Each stage reads from its predecessor
+    prev_stages = {
+        "manager": "project_manager",
+        "generator": "manager",
+        "reviewer": "generator",
+        "supervisor": "reviewer",
+    }
     prev = read_stage_output(job_id, prev_stages.get(stage, "")) if stage in prev_stages else None
 
     user = _user_prompt(stage, spec, prev)
