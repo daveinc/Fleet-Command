@@ -390,6 +390,20 @@ async def run_stage(job_id: str, stage: str) -> dict[str, Any]:
         else:
             review_notes = None
 
+        # Reviewer: extract leading # REVIEW: comment as notes, pass clean YAML downstream
+        if stage == "reviewer" and not review_notes:
+            lines = output.splitlines()
+            comment_lines = []
+            yaml_lines = []
+            for line in lines:
+                if not yaml_lines and line.strip().startswith("#"):
+                    comment_lines.append(line)
+                else:
+                    yaml_lines.append(line)
+            if comment_lines:
+                review_notes = "\n".join(comment_lines).replace("# REVIEW:", "").replace("#", "").strip()
+                output = "\n".join(yaml_lines).strip()
+
         write_stage_output(job_id, stage, output)
         note = f" (handled by {handled_by})" if handled_by != stage else ""
         stage_data: dict = {"status": "done", "preview": output[:400], "handled_by": handled_by}
@@ -581,6 +595,47 @@ async def run_pipeline(job_id: str) -> None:
         prev_output = result.get("output")
         job = load_job(job_id)
 
+        # QUESTION: escalation — worker is stuck, route to advisor and retry once
+        if prev_output and prev_output.strip().upper().startswith("QUESTION:") and stage != "supervisor":
+            question_text = prev_output.strip()[9:].strip()
+            advisor_harness_id = load_roles().get("advisor", {}).get("harness_id")
+            advisor_harness = get_harness(advisor_harness_id) if advisor_harness_id else None
+            if advisor_harness:
+                advisor_persona = ROLE_META.get("advisor", {}).get("persona", "")
+                advisor_prompt = (
+                    f"A {stage} worker is stuck on this job and needs guidance.\n\n"
+                    f"Job spec: {job.get('spec','')}\n\n"
+                    f"Their question: {question_text}\n\n"
+                    "Provide a clear, specific answer. Be concise."
+                )
+                try:
+                    raw_answer, _ = await _call_with_fallback("advisor", advisor_harness, advisor_persona, advisor_prompt, load_roles(), job)
+                    answer = _strip_fences(raw_answer)
+                    append_log(job, "advisor", f"Q: {question_text[:80]} → answered ({len(answer)} chars)")
+                    job["stage_instructions"] = job.get("stage_instructions", {})
+                    job["stage_instructions"][stage] = f"Advisor guidance: {answer}"
+                    save_job(job)
+                    # Retry the stage with the advisor's answer
+                    result = await run_stage(job_id, stage)
+                    if not result["ok"]:
+                        job = load_job(job_id)
+                        job["status"] = STATUS_FAILED
+                        save_job(job)
+                        return
+                    prev_output = result.get("output")
+                    job = load_job(job_id)
+                except Exception as e:
+                    append_log(job, "advisor", f"Escalation failed: {e}")
+                    save_job(job)
+
+        # Supervisor empty output — treat as failed, don't silently pass
+        if stage == "supervisor" and not (prev_output or "").strip():
+            job = load_job(job_id)
+            append_log(job, "supervisor", "Empty output — treating as rejection, use ↺ Retry")
+            job["status"] = STATUS_FAILED
+            save_job(job)
+            return
+
         # Supervisor rejection — check for REJECTED_AT routing
         if stage == "supervisor" and prev_output and prev_output.strip().upper().startswith("REJECTED"):
             match = re.search(r'REJECTED_AT:\s*(\w+)', prev_output, re.IGNORECASE)
@@ -644,7 +699,9 @@ async def run_pipeline(job_id: str) -> None:
 
 async def _push_dashboard(job: dict[str, Any], yaml_content: str) -> None:
     import os
+    import json
     import yaml as _yaml
+    import websockets
 
     token = os.environ.get("SUPERVISOR_TOKEN", "")
     if not token:
@@ -654,37 +711,39 @@ async def _push_dashboard(job: dict[str, Any], yaml_content: str) -> None:
 
     try:
         dashboard_id = job.get("target_dashboard", "fleet_output")
+        config_dict = _yaml.safe_load(yaml_content)
 
-        # Validate YAML
-        _yaml.safe_load(yaml_content)
+        ws_url = "ws://supervisor/core/websocket"
+        async with websockets.connect(ws_url) as ws:
+            # Auth handshake
+            msg = json.loads(await ws.recv())
+            if msg.get("type") != "auth_required":
+                raise RuntimeError(f"Unexpected WS msg: {msg}")
+            await ws.send(json.dumps({"type": "auth", "access_token": token}))
+            auth_result = json.loads(await ws.recv())
+            if auth_result.get("type") != "auth_ok":
+                raise RuntimeError(f"WS auth failed: {auth_result}")
 
-        auth = {"Authorization": f"Bearer {token}"}
-        base = "http://supervisor/core/api"
-        async with httpx.AsyncClient(timeout=15) as client:
-            # Ensure dashboard exists (no-op if already present)
-            await client.post(
-                f"{base}/lovelace/dashboards",
-                headers={**auth, "Content-Type": "application/json"},
-                json={"icon": "mdi:robot-industrial",
-                      "title": dashboard_id.replace("_", " ").title(),
-                      "url_path": dashboard_id, "show_in_sidebar": True, "require_admin": False},
-            )
-            # Try POST with text/plain (raw YAML body)
-            resp = await client.post(
-                f"{base}/lovelace/dashboards/{dashboard_id}/config",
-                headers={**auth, "Content-Type": "text/plain"},
-                content=yaml_content.encode(),
-            )
-            # Fall back to PUT if POST returned 4xx
-            if not resp.is_success:
-                resp = await client.put(
-                    f"{base}/lovelace/dashboards/{dashboard_id}/config",
-                    headers={**auth, "Content-Type": "text/plain"},
-                    content=yaml_content.encode(),
-                )
-            ok = resp.is_success
-            detail = "" if ok else f" — {resp.text[:120]}"
-            append_log(job, "ha_push", f"Dashboard push {'OK' if ok else 'FAILED'} — {resp.status_code}{detail}")
+            # Ensure dashboard exists
+            await ws.send(json.dumps({
+                "id": 1, "type": "lovelace/dashboards/create",
+                "url_path": dashboard_id,
+                "title": dashboard_id.replace("_", " ").title(),
+                "icon": "mdi:robot-industrial",
+                "show_in_sidebar": True, "require_admin": False,
+            }))
+            await ws.recv()  # ok or error (ignore if already exists)
+
+            # Push config
+            await ws.send(json.dumps({
+                "id": 2, "type": "lovelace/config/save",
+                "url_path": dashboard_id,
+                "config": config_dict,
+            }))
+            result = json.loads(await ws.recv())
+            ok = result.get("success", False)
+            detail = "" if ok else f" — {result.get('error', {}).get('message', str(result))}"
+            append_log(job, "ha_push", f"Dashboard push {'OK' if ok else 'FAILED'}{detail}")
 
     except Exception as exc:
         append_log(job, "ha_push", f"HA push error — {exc}")

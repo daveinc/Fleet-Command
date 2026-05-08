@@ -980,35 +980,20 @@ def _dashboard_html(root: str) -> str:  # noqa: C901
 
 <!-- ── Staff tab ── -->
 <div class="tab-panel" id="tab-staff">
-  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.75rem">
-    <div class="section-title" style="margin:0">Human Resources</div>
-    <button class="btn btn-ghost btn-sm" onclick="openAddStaff('HR')">+ Add</button>
-  </div>
-  <div class="staff-grid" id="staff-hr"></div>
+  <div class="section-title">Chief Advisor — On-Call Escalation</div>
+  <div id="advisor-card"></div>
+  <div style="text-align:center;color:#334155;font-size:0.7rem;padding:0.25rem 0 0.5rem">↕ escalation only</div>
 
-  <div style="display:flex;justify-content:space-between;align-items:center;margin:1.25rem 0 0.75rem">
-    <div class="section-title" style="margin:0">AI Resources</div>
-    <button class="btn btn-ghost btn-sm" onclick="openAddStaff('AR')">+ Add</button>
-  </div>
-  <div class="staff-grid" id="staff-ar"></div>
+  <div class="section-title">Production Chain — Top Authority → Worker</div>
+  <div class="roster" id="roster"></div>
 
-  <!-- Production chain merged from fleet tab -->
-  <div style="margin-top:1.75rem">
-    <div class="section-title">Chief Advisor — On-Call Escalation</div>
-    <div id="advisor-card"></div>
-    <div style="text-align:center;color:#334155;font-size:0.7rem;padding:0.25rem 0 0.5rem">↕ escalation only</div>
+  <div class="section-title">Available (unassigned)</div>
+  <div class="pool" id="pool"></div>
 
-    <div class="section-title">Production Chain — Top Authority → Worker</div>
-    <div class="roster" id="roster"></div>
-
-    <div class="section-title">Available (unassigned)</div>
-    <div class="pool" id="pool"></div>
-
-    <div class="save-bar">
-      <span class="save-feedback" id="save-feedback">Chain saved</span>
-      <button class="btn btn-ghost btn-sm" onclick="resetRoleChain()">Reset</button>
-      <button class="btn btn-primary" onclick="saveRoleChain()">Save Chain</button>
-    </div>
+  <div class="save-bar">
+    <span class="save-feedback" id="save-feedback">Chain saved</span>
+    <button class="btn btn-ghost btn-sm" onclick="resetRoleChain()">Reset</button>
+    <button class="btn btn-primary" onclick="saveRoleChain()">Save Chain</button>
   </div>
 </div>
 
@@ -1664,15 +1649,7 @@ function harnessToStaff(harnessId, h) {{
 }}
 
 function renderStaff() {{
-  const hr = fleetData.staff.filter(s => s.type === "HR");
-  const arManual = fleetData.staff.filter(s => s.type === "AR");
-  const arHarnesses = Object.entries(harnesses).map(([id, h]) => harnessToStaff(id, h));
-  const ar = [...arHarnesses, ...arManual];
-
-  document.getElementById("staff-hr").innerHTML = hr.length
-    ? hr.map(staffCard).join("") : '<div style="color:#374151;font-size:0.8rem;padding:0.5rem 0">No human staff yet.</div>';
-  document.getElementById("staff-ar").innerHTML = ar.length
-    ? ar.map(staffCard).join("") : '<div style="color:#374151;font-size:0.8rem;padding:0.5rem 0">No AI staff yet.</div>';
+  // Staff grids removed from UI — Production Chain (roleCard) is the authoritative view
 }}
 
 let _addStaffType = "HR";

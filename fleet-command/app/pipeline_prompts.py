@@ -81,9 +81,11 @@ DEFAULT_PROMPTS: dict[str, str] = {
     "reviewer": (
         "Spec: {spec}\n\n"
         "YAML to review:\n{prev}\n\n"
-        "Check: valid Lovelace structure, correct card types, no sensor definitions inside views, markdown cards use 'content:' not 'entity:'.\n"
-        "If valid: return the YAML unchanged.\n"
-        "If invalid: return corrected YAML only. No explanations. No comments. YAML only."
+        "Check: valid Lovelace structure, correct card types, no sensor definitions inside views, markdown cards use 'content:' not 'entity:', spec requirements met.\n"
+        "First line MUST be: '# REVIEW: <one-sentence verdict>'\n"
+        "If valid: write '# REVIEW: Valid — no changes.' then the YAML unchanged.\n"
+        "If invalid: write '# REVIEW: Fixed — <brief summary of changes>.' then the corrected YAML.\n"
+        "YAML only after the review line. No other text."
     ),
     "supervisor": (
         "Job specification:\n{spec}\n\n"
