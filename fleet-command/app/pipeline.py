@@ -403,6 +403,10 @@ async def run_stage(job_id: str, stage: str) -> dict[str, Any]:
             if comment_lines:
                 review_notes = "\n".join(comment_lines).replace("# REVIEW:", "").replace("#", "").strip()
                 output = "\n".join(yaml_lines).strip()
+            # If output is empty after stripping (model wrote verdict only), use assembler input
+            if not output.strip() and prev:
+                output = prev
+                review_notes = (review_notes or "") + " (reviewer returned no YAML — using assembler output)"
 
         write_stage_output(job_id, stage, output)
         note = f" (handled by {handled_by})" if handled_by != stage else ""
@@ -724,15 +728,16 @@ async def _push_dashboard(job: dict[str, Any], yaml_content: str) -> None:
             if auth_result.get("type") != "auth_ok":
                 raise RuntimeError(f"WS auth failed: {auth_result}")
 
-            # Ensure dashboard exists
+            # Ensure dashboard exists in storage mode (no-op if already present)
             await ws.send(json.dumps({
                 "id": 1, "type": "lovelace/dashboards/create",
                 "url_path": dashboard_id,
                 "title": dashboard_id.replace("_", " ").title(),
                 "icon": "mdi:robot-industrial",
                 "show_in_sidebar": True, "require_admin": False,
+                "mode": "storage",
             }))
-            await ws.recv()  # ok or error (ignore if already exists)
+            await ws.recv()  # ok or already_exists error — both fine
 
             # Push config
             await ws.send(json.dumps({
