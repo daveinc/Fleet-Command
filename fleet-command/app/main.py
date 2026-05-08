@@ -965,7 +965,7 @@ def _dashboard_html(root: str) -> str:  # noqa: C901
     </div>
 
     <!-- Center: selected job detail -->
-    <div class="fleet-center" id="fleet-center">
+    <div class="fleet-center" id="fleet-center" onclick="if(event.target===this)hideFleetDetail()">
       <div style="color:#334155;font-size:0.8rem;text-align:center;padding-top:4rem;pointer-events:none">← select a project</div>
     </div>
 
@@ -2251,7 +2251,7 @@ function renderFleetDetail(j) {{
   const statusColor = STATUS_COLOR[j.status] || "#475569";
 
   center.innerHTML = `
-    <div class="fleet-detail-card" onclick="handleFleetDetailClick(event)">
+    <div class="fleet-detail-card">
       <div style="display:flex;align-items:center;gap:0.6rem;margin-bottom:0.2rem">
         <span style="font-size:0.75rem;font-weight:700;color:#94a3b8;font-family:monospace">#${{j.id}}</span>
         <span style="font-size:0.72rem;padding:0.15rem 0.5rem;border-radius:3px;font-weight:500;background:#0f1117;color:${{statusColor}};border:1px solid ${{statusColor}}">${{j.status}}</span>
@@ -2267,18 +2267,15 @@ function renderFleetDetail(j) {{
       <div class="section-title" style="font-size:0.65rem;margin:0.65rem 0 0.15rem">Log${{isActive?" · live":""}}</div>
       <div class="flog-mini" id="flog-mini">${{logLines||'<span style="color:#334155">No log yet.</span>'}}</div>
 
-      <div style="display:flex;gap:0.4rem;flex-wrap:wrap;margin-top:0.75rem" onclick="event.stopPropagation()">
+      <div style="display:flex;gap:0.4rem;flex-wrap:wrap;margin-top:0.75rem">
         ${{j.status === "pending" ? `<button class="btn btn-primary btn-sm" onclick="fleetRunJob('${{j.id}}')">▶ Run</button>` : ""}}
         ${{isActive ? `<button class="btn btn-ghost btn-sm" onclick="fleetCancelJob('${{j.id}}')">⏸ Cancel</button>` : ""}}
         ${{(j.status === "failed" || j.status === "done" || j.status === "cancelled") ? `<button class="btn btn-ghost btn-sm" style="color:#fbbf24" onclick="fleetRetryJob('${{j.id}}')">↺ Retry</button>` : ""}}
         <button class="btn btn-ghost btn-sm" style="margin-left:auto;color:#f87171" onclick="fleetRemoveJob('${{j.id}}')">✕</button>
       </div>
     </div>`;
-}}
-
-function handleFleetDetailClick(e) {{
-  if (e.target.closest("button,a,input,select")) return;
-  hideFleetDetail();
+  const logEl = document.getElementById("flog-mini");
+  if (logEl) logEl.scrollTop = logEl.scrollHeight;
 }}
 
 async function fleetRunJob(id) {{
