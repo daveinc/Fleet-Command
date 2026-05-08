@@ -235,26 +235,36 @@ async def _call_with_fallback(
     raise RuntimeError(f"All workers exhausted for stage '{stage}' — no available harness responded")
 
 
-def _user_prompt(stage: str, spec: str, prev: str | None) -> str:
+def _user_prompt(stage: str, spec: str, prev: str | None, task: str | None = None, block: str | None = None) -> str:
     if stage == "project_manager":
         return (
             f"Job request: {spec}\n\n"
             f"Produce a structured build plan. List:\n"
             f"- Dashboard title\n"
-            f"- Views needed\n"
-            f"- Each card: type, entity/data source, purpose\n"
+            f"- Major components (blocks) needed\n"
+            f"- For each block: what it contains and its purpose\n"
             f"Plain text only. No YAML. Be specific."
         )
     if stage == "manager":
         return (
             f"Build plan:\n{prev}\n\n"
-            f"Write a developer task brief. Specify exactly:\n"
-            f"- Each card type to use (sensor, weather-forecast, markdown, etc.)\n"
-            f"- Each entity name (e.g. weather.home, sensor.temperature)\n"
-            f"- Layout (vertical-stack, grid, etc.) if needed\n"
-            f"Plain text only. No YAML. Be precise and complete."
+            f"Break this into building blocks and tasks using this exact format:\n\n"
+            f"BLOCK 1: [component name]\n"
+            f"- Task 1: [card type, entity name, purpose]\n"
+            f"- Task 2: [card type, entity name, purpose]\n\n"
+            f"BLOCK 2: [component name]\n"
+            f"- Task 1: ...\n\n"
+            f"Rules: one task = one card. Include exact entity names. No YAML. No explanations."
         )
     if stage == "generator":
+        if task:
+            block_ctx = f"Block: {block}\n" if block else ""
+            return (
+                f"{HA_REFERENCE}\n"
+                f"{block_ctx}"
+                f"Task: {task}\n"
+                f"Output a single card YAML fragment only. No title. No views wrapper. Card definition only."
+            )
         brief = prev if prev else f"Build this: {spec}"
         return (
             f"{HA_REFERENCE}\n"
@@ -275,6 +285,56 @@ def _user_prompt(stage: str, spec: str, prev: str | None) -> str:
             f"If not, write REJECTED: with reasons."
         )
     return spec
+
+
+def _parse_blocks_and_tasks(text: str) -> list[dict[str, str]]:
+    """Parse manager output into [{block, task}] list."""
+    tasks = []
+    current_block = "Main"
+    for line in text.splitlines():
+        line = line.strip()
+        block_match = re.match(r'^BLOCK\s+\d+\s*:\s*(.+)', line, re.IGNORECASE)
+        if block_match:
+            current_block = block_match.group(1).strip()
+            continue
+        task_match = re.match(r'^-\s*Task\s*\d+\s*:\s*(.+)', line, re.IGNORECASE)
+        if not task_match:
+            task_match = re.match(r'^[\-\*]\s+(.+)', line)
+        if task_match:
+            task_text = task_match.group(1).strip()
+            if task_text:
+                tasks.append({"block": current_block, "task": task_text})
+    return tasks
+
+
+def _assemble_yaml_fragments(fragments: list[dict[str, str]]) -> str:
+    """
+    Assemble card fragments grouped by block into a complete Lovelace YAML.
+    Each fragment dict has keys: block, task, yaml.
+    """
+    import yaml as _yaml
+
+    blocks: dict[str, list[str]] = {}
+    for f in fragments:
+        blocks.setdefault(f["block"], []).append(f["yaml"])
+
+    views = []
+    for block_name, card_yamls in blocks.items():
+        cards = []
+        for raw in card_yamls:
+            try:
+                parsed = _yaml.safe_load(raw)
+                if isinstance(parsed, dict):
+                    cards.append(parsed)
+                elif isinstance(parsed, list):
+                    cards.extend(parsed)
+            except Exception:
+                # Keep raw string as markdown fallback
+                cards.append({"type": "markdown", "content": raw[:200]})
+        views.append({"title": block_name, "cards": cards})
+
+    dashboard = {"title": "Fleet Output", "views": views}
+    return _yaml.dump(dashboard, default_flow_style=False, allow_unicode=True, sort_keys=False)
 
 
 async def run_stage(job_id: str, stage: str) -> dict[str, Any]:
@@ -330,6 +390,64 @@ async def run_stage(job_id: str, stage: str) -> dict[str, Any]:
         return {"ok": False, "error": str(exc)}
 
 
+async def _run_generator_loop(job_id: str, roles: dict[str, Any], job: dict[str, Any]) -> dict[str, Any]:
+    """Run generator once per task from manager's block/task breakdown, then assemble."""
+    manager_output = read_stage_output(job_id, "manager")
+    task_list = _parse_blocks_and_tasks(manager_output) if manager_output else []
+
+    if len(task_list) < 2:
+        # No structured breakdown — fall back to single generator run
+        _flog(f"  generator: no task list found, falling back to single run")
+        return await run_stage(job_id, "generator")
+
+    assignment = roles.get("generator", {})
+    harness_id = assignment.get("harness_id")
+    harness = get_harness(harness_id) if harness_id else None
+    if not harness:
+        return {"ok": False, "error": "No model assigned to role: generator"}
+
+    persona = ROLE_META.get("generator", {}).get("persona", "You are a helpful AI assistant.")
+    persona = persona.split(".")[0] + "."
+    spec = job.get("spec", "")
+
+    _flog(f"  generator loop: {len(task_list)} tasks across {len(set(t['block'] for t in task_list))} blocks")
+    fragments: list[dict[str, str]] = []
+
+    for i, item in enumerate(task_list):
+        if is_cancelled(job_id):
+            return {"ok": False, "error": "cancelled"}
+
+        label = f"Task {i+1}/{len(task_list)} [{item['block']}]: {item['task'][:50]}"
+        append_log(job, "generator", label)
+        job["stages"]["generator"] = {"status": "running", "progress": f"{i+1}/{len(task_list)}"}
+        save_job(job)
+
+        user = _user_prompt("generator", spec, None, task=item["task"], block=item["block"])
+        try:
+            raw, _ = await _call_with_fallback("generator", harness, persona, user, roles, job)
+            fragment_yaml = _strip_fences(raw)
+            fragments.append({"block": item["block"], "task": item["task"], "yaml": fragment_yaml})
+            _flog(f"  task {i+1} done: {len(fragment_yaml)} chars")
+        except Exception as exc:
+            _flog(f"  task {i+1} failed: {exc}")
+            job["stages"]["generator"] = {"status": "error", "error": str(exc)}
+            append_log(job, "generator", f"ERROR on task {i+1}: {exc}")
+            save_job(job)
+            return {"ok": False, "error": str(exc)}
+
+    assembled = _assemble_yaml_fragments(fragments)
+    write_stage_output(job_id, "generator", assembled)
+    job["stages"]["generator"] = {
+        "status": "done",
+        "preview": assembled[:400],
+        "handled_by": "generator",
+        "tasks_completed": len(fragments),
+    }
+    append_log(job, "generator", f"Done — {len(fragments)} tasks assembled, {len(assembled)} chars total")
+    save_job(job)
+    return {"ok": True, "stage": "generator", "output": assembled, "handled_by": "generator"}
+
+
 async def run_pipeline(job_id: str) -> None:
     job = load_job(job_id)
     if not job:
@@ -339,6 +457,7 @@ async def run_pipeline(job_id: str) -> None:
     save_job(job)
     _flog(f"=== JOB {job_id} START pipeline={job.get('pipeline')} ===")
 
+    roles = load_roles()
     pipeline = job.get("pipeline", ["generator"])
     prev_output: str | None = None
 
@@ -349,7 +468,10 @@ async def run_pipeline(job_id: str) -> None:
             save_job(job)
             return
 
-        result = await run_stage(job_id, stage)
+        if stage == "generator" and "manager" in pipeline:
+            result = await _run_generator_loop(job_id, roles, job)
+        else:
+            result = await run_stage(job_id, stage)
         if not result["ok"]:
             job = load_job(job_id)
             job["status"] = STATUS_FAILED
