@@ -521,6 +521,10 @@ async def _fetch_ha_entities(spec: str) -> str:
                 label += f" ({friendly})"
             label += f" — {state}"
             lines.append(label)
+        # Cap to 120 entities to avoid overflowing small model context windows
+        if len(lines) > 120:
+            lines = lines[:120]
+            lines.append(f"... ({len(lines)} shown, list capped at 120)")
         return "\n".join(lines) if lines else "(no relevant entities found)"
     except Exception as exc:
         return f"(entity fetch failed: {exc})"
@@ -597,27 +601,30 @@ async def _run_reviewer_3pass(
     except Exception as exc:
         append_log(job, "reviewer", f"Pass 2 failed: {exc} — using pass 1 output")
 
-    # Pass 3 — card_mod / styles
-    pass3_prompt = (
-        f"Review this Home Assistant Lovelace dashboard YAML for card_mod and style issues:\n\n{yaml2}\n\n"
-        "Check: card_mod sections have valid CSS syntax, style targets correct elements (card, :host, ha-card), "
-        "no invalid card_mod fields, all style blocks are properly indented under card_mod. "
-        "If there are no card_mod sections, output the YAML unchanged. "
-        f"{_DASHBOARD_STRUCTURE_RULE} "
-        "Fix all issues. Output corrected YAML only. No fences. No explanation."
-    )
-    append_log(job, "reviewer", "Pass 3: card_mod/styles review...")
+    # Pass 3 — card_mod / styles (only if card_mod is actually present)
     yaml3 = yaml2
-    try:
-        raw3, last_handled, tok3 = await _call_with_fallback("reviewer", harness, persona, pass3_prompt, roles, job)
-        _accum_tokens(job, "reviewer", tok3)
-        candidate3 = _strip_all_fences(_strip_fences(raw3))
-        yaml3 = candidate3 if ("views:" in candidate3) else yaml2
-        if "views:" not in candidate3:
-            append_log(job, "reviewer", "Pass 3 dropped views: — keeping pass 2 output")
-        append_log(job, "reviewer", f"Pass 3 done ({len(yaml3)} chars)")
-    except Exception as exc:
-        append_log(job, "reviewer", f"Pass 3 failed: {exc} — using pass 2 output")
+    if "card_mod" not in yaml2 and "card_mod" not in spec.lower():
+        append_log(job, "reviewer", "Pass 3: no card_mod detected — skipping")
+    else:
+        pass3_prompt = (
+            f"Review this Home Assistant Lovelace dashboard YAML for card_mod and style issues:\n\n{yaml2}\n\n"
+            "Check: card_mod sections have valid CSS syntax, style targets correct elements (card, :host, ha-card), "
+            "no invalid card_mod fields, all style blocks are properly indented under card_mod. "
+            "If there are no card_mod sections, output the YAML unchanged. "
+            f"{_DASHBOARD_STRUCTURE_RULE} "
+            "Fix all issues. Output corrected YAML only. No fences. No explanation."
+        )
+        append_log(job, "reviewer", "Pass 3: card_mod/styles review...")
+        try:
+            raw3, last_handled, tok3 = await _call_with_fallback("reviewer", harness, persona, pass3_prompt, roles, job)
+            _accum_tokens(job, "reviewer", tok3)
+            candidate3 = _strip_all_fences(_strip_fences(raw3))
+            yaml3 = candidate3 if ("views:" in candidate3) else yaml2
+            if "views:" not in candidate3:
+                append_log(job, "reviewer", "Pass 3 dropped views: — keeping pass 2 output")
+            append_log(job, "reviewer", f"Pass 3 done ({len(yaml3)} chars)")
+        except Exception as exc:
+            append_log(job, "reviewer", f"Pass 3 failed: {exc} — using pass 2 output")
 
     if not yaml3.strip():
         yaml3 = yaml_input
