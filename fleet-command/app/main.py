@@ -875,7 +875,7 @@ def _dashboard_html(root: str) -> str:  # noqa: C901
     /* ── Fleet 3-column dashboard ── */
     .fleet-3col {{
       display: grid;
-      grid-template-columns: 220px 1fr 220px;
+      grid-template-columns: 30% 40% 30%;
       gap: 0;
       height: calc(100vh - 120px);
       overflow: hidden;
@@ -2207,10 +2207,11 @@ async function refreshJobDetail(id) {{
   const statusEl = document.getElementById("jstatus-" + id);
 
   if (logEl) {{
+    const wasAtBottom = logEl.scrollHeight - logEl.scrollTop <= logEl.clientHeight + 40;
     logEl.innerHTML = (j.log || []).map(l =>
       `<div><span style="color:#334155">${{l.ts?.slice(11,19) || ""}}</span> <span style="color:#475569">[${{l.stage}}]</span> <span style="color:#94a3b8">${{l.msg}}</span></div>`
     ).join("") || '<span style="color:#334155">No log yet.</span>';
-    logEl.scrollTop = logEl.scrollHeight;
+    if (wasAtBottom) logEl.scrollTop = logEl.scrollHeight;
   }}
 
   if (stageEl) {{
