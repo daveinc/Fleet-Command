@@ -1030,7 +1030,7 @@ async def _push_dashboard(job: dict[str, Any], yaml_content: str) -> None:
             if auth_result.get("type") != "auth_ok":
                 raise RuntimeError(f"WS auth failed: {auth_result}")
 
-            # Ensure dashboard exists in storage mode (no-op if already present)
+            # Ensure dashboard exists in storage mode
             await ws.send(json.dumps({
                 "id": 1, "type": "lovelace/dashboards/create",
                 "url_path": dashboard_id,
@@ -1039,7 +1039,14 @@ async def _push_dashboard(job: dict[str, Any], yaml_content: str) -> None:
                 "show_in_sidebar": True, "require_admin": False,
                 "mode": "storage",
             }))
-            await ws.recv()  # ok or already_exists error — both fine
+            create_result = json.loads(await ws.recv())
+            create_ok = create_result.get("success", False)
+            create_err = create_result.get("error", {}).get("code", "") if not create_ok else ""
+            if not create_ok and create_err not in ("already_exists", "unknown_command"):
+                _flog(f"  dashboard create failed: {create_result}")
+                append_log(job, "ha_push", f"Dashboard create failed — {create_err or create_result}")
+                save_job(job)
+                return
 
             # Push config
             await ws.send(json.dumps({
