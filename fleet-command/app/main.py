@@ -1287,7 +1287,7 @@ def _dashboard_html(root: str) -> str:  # noqa: C901
     </div>
     <div class="field" style="margin-top:0.5rem">
       <label>Target Dashboard Slug (HA)</label>
-      <input id="nj-target" placeholder="fleet_output" value="fleet_output">
+      <input id="nj-target" placeholder="fleet-output" value="fleet-output">
     </div>
     <div class="field" style="margin-top:0.5rem">
       <label>Pipeline Stages</label>
@@ -2259,7 +2259,7 @@ async function toggleStageOutput(jobId, stage) {{
 
 function openNewJob() {{
   document.getElementById("nj-spec").value = "";
-  document.getElementById("nj-target").value = "fleet_output";
+  document.getElementById("nj-target").value = "fleet-output";
   document.getElementById("modal-new-job").classList.add("open");
 }}
 
@@ -2283,7 +2283,7 @@ async function submitJob(autorun) {{
   const payload = {{
     type: document.getElementById("nj-type").value,
     spec: document.getElementById("nj-spec").value.trim(),
-    target_dashboard: document.getElementById("nj-target").value.trim() || "fleet_output",
+    target_dashboard: document.getElementById("nj-target").value.trim() || "fleet-output",
     pipeline,
     autorun,
   }};

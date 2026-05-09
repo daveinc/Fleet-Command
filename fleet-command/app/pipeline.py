@@ -1016,7 +1016,7 @@ async def _push_dashboard(job: dict[str, Any], yaml_content: str) -> None:
         return
 
     try:
-        dashboard_id = job.get("target_dashboard", "fleet_output")
+        dashboard_id = job.get("target_dashboard", "fleet-output")
         config_dict = _yaml.safe_load(yaml_content)
 
         ws_url = "ws://supervisor/core/websocket"

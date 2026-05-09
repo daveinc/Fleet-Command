@@ -25,7 +25,7 @@ def create_job(spec: dict[str, Any]) -> dict[str, Any]:
         "id": job_id,
         "type": spec.get("type", "ha_dashboard"),
         "spec": spec.get("spec", ""),
-        "target_dashboard": spec.get("target_dashboard", "fleet_output"),
+        "target_dashboard": spec.get("target_dashboard", "fleet-output"),
         "pipeline": spec.get("pipeline", ["generator"]),
         "status": STATUS_PENDING,
         "created_at": datetime.now(timezone.utc).isoformat(),
