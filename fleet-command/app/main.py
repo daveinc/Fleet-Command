@@ -972,6 +972,72 @@ def _dashboard_html(root: str) -> str:  # noqa: C901
     }}
     .fstat-num {{ font-size: 1.4rem; font-weight: 700; color: #e2e8f0; line-height: 1; }}
     .fstat-lbl {{ font-size: 0.68rem; color: #475569; margin-top: 0.15rem; }}
+
+    /* ── Mobile ── */
+    @media (max-width: 700px) {{
+      body {{ padding: 0.5rem 0.4rem; }}
+
+      /* Tabs: scroll horizontally, don't wrap */
+      .tabs {{ overflow-x: auto; flex-wrap: nowrap; -webkit-overflow-scrolling: touch;
+               scrollbar-width: none; padding-bottom: 2px; }}
+      .tabs::-webkit-scrollbar {{ display: none; }}
+      .tab {{ white-space: nowrap; padding: 0.45rem 0.85rem; font-size: 0.78rem; flex-shrink: 0; }}
+
+      /* Fleet 3-col → single column stack */
+      .fleet-3col {{
+        display: flex; flex-direction: column;
+        height: auto; overflow: visible; gap: 0;
+      }}
+      .fleet-left {{
+        border-right: none;
+        border-bottom: 1px solid #1e293b;
+        padding-right: 0; padding-bottom: 0.75rem; margin-bottom: 0.75rem;
+        overflow: visible;
+      }}
+      .fleet-job-list {{ max-height: 35vh; overflow-y: auto; }}
+      .fleet-center {{ padding: 0; overflow: visible; }}
+      .fleet-right {{ display: none; }} /* stats panel hidden on mobile — not worth the space */
+
+      /* Fleet detail: full width, readable */
+      .fstage-row {{ flex-wrap: wrap; gap: 0.3rem; }}
+      .fstage-name {{ min-width: 60px; }}
+      .fstage-model {{ max-width: 45vw; }}
+      .fleet-detail-card {{ padding: 0.75rem 0.6rem; }}
+      .fdetail-spec {{ font-size: 0.78rem; }}
+
+      /* Role cards: stack label above select */
+      .card-header {{ flex-wrap: wrap; gap: 0.5rem; }}
+      .role-label-wrap {{ min-width: 0; width: 100%; }}
+      .model-select {{ width: 100%; }}
+      .card-actions {{ margin-left: auto; }}
+      .card-meta {{ flex-wrap: wrap; gap: 0.6rem; }}
+
+      /* Harness cards: stack */
+      .harness-card {{ flex-direction: column; gap: 0.5rem; }}
+      .harness-meta {{ gap: 0.5rem; }}
+
+      /* Modals: full width on small screens */
+      .modal {{ width: min(96vw, 420px); padding: 1rem; }}
+
+      /* Job list: smaller spec preview */
+      .fjob-name {{ font-size: 0.75rem; }}
+
+      /* Pipeline canvas: horizontal scroll */
+      #pl-canvas {{ overflow-x: auto; -webkit-overflow-scrolling: touch; }}
+
+      /* Params grid: 1 col on mobile */
+      .params-grid {{ grid-template-columns: 1fr; }}
+
+      /* Staff: tighter */
+      .staff-card {{ flex-wrap: wrap; gap: 0.5rem; }}
+      .staff-body {{ min-width: 0; width: 100%; }}
+
+      /* Template grid: single column */
+      .tmpl-grid {{ grid-template-columns: 1fr; }}
+
+      /* Header: smaller */
+      .header h1 {{ font-size: 1.1rem; }}
+    }}
   </style>
 </head>
 <body>

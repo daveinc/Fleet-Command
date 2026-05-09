@@ -1,0 +1,61 @@
+{
+  "id": "groceries-dashboard",
+  "name": "Groceries Dashboard",
+  "description": "Full groceries management dashboard with tabbed navigation. Shows shopping list, stock, tasks, cart, and fridge categories via input_select nav. Uses Grocy todo entities and product image lookup. Based on production Grocy dashboard.",
+  "version": "1.0",
+  "keywords": ["groceries", "shopping", "stock", "grocy", "food", "recipe", "cart", "fridge", "todo", "pantry"],
+  "slots": [
+    {
+      "id": "NAV_ENTITY",
+      "description": "Navigation tab selector",
+      "domain": "input_select",
+      "keywords": ["groceries", "nav", "menu"],
+      "example": "input_select.groceries_nav"
+    },
+    {
+      "id": "SHOPPING_LIST_TODO",
+      "description": "Grocy shopping list todo entity",
+      "domain": "todo",
+      "keywords": ["shopping", "list", "grocy"],
+      "example": "todo.grocy_shopping_list"
+    },
+    {
+      "id": "STOCK_TODO",
+      "description": "Grocy stock todo entity (checking consumes product in Grocy)",
+      "domain": "todo",
+      "keywords": ["stock", "grocy", "inventory"],
+      "example": "todo.grocy_stock"
+    },
+    {
+      "id": "TASKS_TODO",
+      "description": "Grocy tasks todo entity",
+      "domain": "todo",
+      "keywords": ["tasks", "grocy", "todo"],
+      "example": "todo.grocy_tasks"
+    },
+    {
+      "id": "PRODUCT_PICTURES_SENSOR",
+      "description": "Sensor with product image lookup array (id, name, image). Built via Node-RED from Grocy /api/objects/products.",
+      "domain": "sensor",
+      "keywords": ["grocy", "pictures", "product", "images"],
+      "example": "sensor.grocy_product_pictures"
+    },
+    {
+      "id": "SHOPPING_LIST_SENSOR",
+      "description": "Sensor exposing Grocy shopping list as structured attribute",
+      "domain": "sensor",
+      "keywords": ["grocy", "shopping", "list", "sensor"],
+      "example": "sensor.grocy_shopping_list"
+    }
+  ],
+  "notes": [
+    "card_mod REQUIRED for background-image on button-cards inside auto-entities — styles.card silently ignored in template context",
+    "Jinja {{ must be on SAME LINE as {% for %} or red circle errors appear on all generated cards",
+    "All state_attr() calls in for loops MUST use 'or []' guard to prevent TypeError on unavailable sensors",
+    "display: block !important is mandatory on :host for scroll containment — without it scrollbar escapes to device level",
+    "Checking items in todo.grocy_stock CONSUMES the product in Grocy — this is destructive",
+    "Shadow DOM scoping required for todo-list input field styles: use ha-textfield: $: | scope, not .: level",
+    "Grocy image URLs use Base64 encoded filename via ingress path — direct /api/files/ URLs return 401 in HA browser"
+  ],
+  "skeleton": "views:\n  - title: Groceries\n    path: groceries\n    type: custom:grid-layout\n    layout:\n      grid-template-columns: repeat(10, 1fr)\n      grid-template-rows: 50px repeat(9, 1fr)\n      gap: 4px\n      padding: 4px\n    cards:\n\n      # ── NAV BAR ──────────────────────────────────────────────────────\n      - type: custom:button-card\n        entity: {{NAV_ENTITY}}\n        name: Shopping\n        tap_action:\n          action: call-service\n          service: input_select.select_option\n          target:\n            entity_id: {{NAV_ENTITY}}\n          data:\n            option: shopping\n        view_layout:\n          grid-column: 1 / 3\n          grid-row: 1\n\n      - type: custom:button-card\n        entity: {{NAV_ENTITY}}\n        name: Stock\n        tap_action:\n          action: call-service\n          service: input_select.select_option\n          target:\n            entity_id: {{NAV_ENTITY}}\n          data:\n            option: stock\n        view_layout:\n          grid-column: 3 / 5\n          grid-row: 1\n\n      - type: custom:button-card\n        entity: {{NAV_ENTITY}}\n        name: Tasks\n        tap_action:\n          action: call-service\n          service: input_select.select_option\n          target:\n            entity_id: {{NAV_ENTITY}}\n          data:\n            option: tasks\n        view_layout:\n          grid-column: 5 / 7\n          grid-row: 1\n\n      - type: custom:button-card\n        entity: {{NAV_ENTITY}}\n        name: Cart\n        tap_action:\n          action: call-service\n          service: input_select.select_option\n          target:\n            entity_id: {{NAV_ENTITY}}\n          data:\n            option: cart\n        view_layout:\n          grid-column: 7 / 9\n          grid-row: 1\n\n      # ── CONTENT AREA — conditional per nav state ──────────────────\n      - type: custom:layout-card\n        layout_type: custom:grid-layout\n        layout:\n          grid-template-columns: 1fr\n          grid-template-rows: 1fr\n        view_layout:\n          grid-column: 1 / 11\n          grid-row: 2 / 11\n        cards:\n\n          # Shopping List\n          - type: conditional\n            conditions:\n              - condition: state\n                entity: {{NAV_ENTITY}}\n                state: shopping\n            card:\n              type: custom:auto-entities\n              show_empty: false\n              card:\n                type: grid\n                square: false\n                columns: 4\n              card_param: cards\n              filter:\n                template: >\n                  {% set items = state_attr('{{SHOPPING_LIST_SENSOR}}', 'products') %}\n                  {% set pics = state_attr('{{PRODUCT_PICTURES_SENSOR}}', 'pictures') or [] %}\n                  {% if items is iterable and items | count > 0 %}\n                    {% for item in items if not item.done %} {% set pic = pics | selectattr('id','eq', item.product_id) | list | first | default(none) %} {% set img = pic.image if pic else '' %} {{\n                      {\n                        \"type\": \"custom:button-card\",\n                        \"name\": item.product.name,\n                        \"show_icon\": false,\n                        \"card_mod\": {\"style\": \"ha-card { background-image: url('\" + img + \"') !important; background-size: cover !important; background-position: center !important; border-radius: 10px; height: 80px; } \"}\n                      }\n                    }}, {% endfor %}\n                  {% endif %}\n\n          # Stock\n          - type: conditional\n            conditions:\n              - condition: state\n                entity: {{NAV_ENTITY}}\n                state: stock\n            card:\n              type: todo-list\n              entity: {{STOCK_TODO}}\n              display_order: duedate_asc\n              card_mod:\n                style:\n                  .: |\n                    ha-card.type-todo-list div.header { display: none; }\n                    ha-check-list-item.editRow.completed { display: none; }\n                    .divider { display: none; }\n                    ha-check-list-item { min-height: 28px !important; }\n                    ha-icon-button.reorderButton, ha-icon-button.addButton { margin-top: -35px !important; }\n                    :host {\n                      height: 580px !important;\n                      overflow-y: scroll !important;\n                      overflow-x: hidden !important;\n                      display: block !important;\n                    }\n                  ha-textfield:\n                    $: |\n                      .mdc-text-field { margin-top: -28px; height: 50px !important; }\n                      .mdc-text-field__input { color: white !important; }\n\n          # Tasks\n          - type: conditional\n            conditions:\n              - condition: state\n                entity: {{NAV_ENTITY}}\n                state: tasks\n            card:\n              type: todo-list\n              entity: {{TASKS_TODO}}\n              card_mod:\n                style:\n                  .: |\n                    ha-card.type-todo-list div.header { display: none; }\n                    ha-check-list-item.editRow.completed { display: none; }\n                    :host {\n                      height: 580px !important;\n                      overflow-y: scroll !important;\n                      overflow-x: hidden !important;\n                      display: block !important;\n                    }\n"
+}

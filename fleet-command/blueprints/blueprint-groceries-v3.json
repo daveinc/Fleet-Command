@@ -1,0 +1,154 @@
+{
+  "id": "groceries-dashboard",
+  "name": "Groceries Dashboard",
+  "version": "3.0",
+  "output_type": "ha_yaml",
+  "archetype": "info_dashboard",
+  "keywords": ["groceries", "shopping", "stock", "grocy", "food", "cart", "todo", "pantry", "inventory", "recipe"],
+  "description": "A tabbed groceries management dashboard. Shows shopping list with product images, stock items, and tasks. Tabs are driven by an input_select helper — no HA sidebar views.",
+
+  "audience": {
+    "leadership_brief": "PM + Reviewer + CEO",
+    "review_criteria": "Reviewer only",
+    "ceo_criteria": "CEO/Supervisor only",
+    "tasks[].generator_task": "Generator only — one task at a time, dispatched by PM"
+  },
+
+  "leadership_brief": "This dashboard is a single HA view. All navigation is internal — an input_select entity switches which content card is visible via conditional cards. There are no HA sidebar views for navigation. The container is a custom:layout-card (grid-layout) with a nav bar row and a content area. The content area holds three conditional cards, one per tab. PM is responsible for breaking this into three generator tasks (one per task block below) and assembling the outputs into the container shell. The final dashboard must be valid HA Lovelace YAML that loads without errors.",
+
+  "container": {
+    "type": "custom:layout-card",
+    "layout_type": "custom:grid-layout",
+    "role": "Outer shell — holds nav bar row and all content cards in a fixed pixel grid. Tab switching is handled by input_select state, not by HA views.",
+    "nav_mechanism": "input_select",
+    "nav_service": "input_select.select_option",
+    "slots": [
+      {
+        "id": "NAV_ENTITY",
+        "description": "input_select that drives which tab is visible",
+        "domain": "input_select",
+        "keywords": ["groceries", "nav", "menu"],
+        "example": "input_select.groceries_nav"
+      }
+    ],
+    "shell_skeleton": "type: custom:layout-card\nlayout_type: custom:grid-layout\nlayout:\n  grid-template-columns: 55px 55px 60px 65px 55px 55px 55px 55px 110px 110px\n  grid-template-rows: 50px 1fr 1fr 1fr 1fr 1fr 1fr 1fr 1fr 1fr\n  gap: 2px\n  padding: 0px\ncards:\n  [NAV_BUTTONS_HERE]\n  [TASK_CARDS_HERE — each wrapped in conditional checking NAV_ENTITY state]",
+    "assembly_rules": [
+      "Nav buttons go in row 1 as custom:button-card cards calling input_select.select_option",
+      "Each task card output goes inside a conditional card with: condition: state, entity: NAV_ENTITY, state: [tab_state]",
+      "Content area occupies rows 2-10 of the grid",
+      "PM assembles container shell + task outputs into one valid YAML document"
+    ]
+  },
+
+  "tasks": [
+    {
+      "id": "shopping_tab",
+      "name": "Shopping List with Product Images",
+      "tab_state": "shopping",
+      "card_type": "custom:auto-entities",
+      "role": "Shows active shopping list items as image cards. Each item is a button-card with its product image as background, looked up from a picture sensor by product_id.",
+      "slots": [
+        {
+          "id": "SHOPPING_LIST_SENSOR",
+          "description": "Sensor with Grocy shopping list as 'products' attribute array",
+          "domain": "sensor",
+          "keywords": ["grocy", "shopping", "list", "sensor"],
+          "example": "sensor.grocy_shopping_list"
+        },
+        {
+          "id": "PRODUCT_PICTURES_SENSOR",
+          "description": "Sensor with product image lookup array [{id, name, image}]",
+          "domain": "sensor",
+          "keywords": ["grocy", "product", "pictures", "images"],
+          "example": "sensor.grocy_product_pictures"
+        }
+      ],
+      "skeleton": "type: custom:auto-entities\nshow_empty: false\ncard:\n  type: grid\n  square: false\n  columns: 4\ncard_param: cards\nfilter:\n  template: >\n    {%- set items = state_attr('SHOPPING_LIST_SENSOR', 'products') -%}\n    {%- set pics = state_attr('PRODUCT_PICTURES_SENSOR', 'pictures') or [] -%}\n    {%- if items is iterable and items | count > 0 -%}\n      {%- for item in items if not item.done -%} {%- set pic = pics | selectattr('id','eq', item.product_id) | list | first | default(none) -%} {%- set img = pic.image if pic else '' -%} {{ { \"type\": \"custom:button-card\", \"name\": item.product.name, \"show_icon\": false, \"card_mod\": {\"style\": \"ha-card { background-image: url('\" + img + \"') !important; background-size: cover !important; background-position: center !important; border-radius: 10px; height: 80px; }\"} } }}, {%- endfor -%}\n    {%- endif -%}",
+      "rules": [
+        "CRITICAL: {{ must be on the SAME LINE as {% for %} — any newline between them causes red circles on every card",
+        "CRITICAL: Use card_mod style on ha-card for background-image — styles.card is silently ignored in auto-entities template context",
+        "Every state_attr() in the for loop must have 'or []' appended",
+        "Filter type is 'template:' not 'include:' — this is a Jinja generator, not an entity pattern filter",
+        "Image URL concatenation uses Python-style + not Jinja ~ tilde operator inside quoted strings"
+      ],
+      "banned_patterns": [
+        "styles.card with background-image (silently ignored in auto-entities template)",
+        "{{ on its own line after {% for %} (causes red circles on all cards)",
+        "state_attr() in for loop without 'or []'",
+        "filter.include (wrong filter type — must be filter.template)",
+        "Jinja ~ tilde for URL concatenation inside quoted strings"
+      ],
+      "generator_task": "Write a custom:auto-entities card that reads shopping list items from sensor SHOPPING_LIST_SENSOR (attribute: products) and renders each as a custom:button-card with the product image as background. Look up images from sensor PRODUCT_PICTURES_SENSOR (attribute: pictures — array of {id, name, image}) by matching product_id. Use a 4-column grid. Only show items where item.done is false. Output ONLY the card YAML, starting with 'type: custom:auto-entities'."
+    },
+    {
+      "id": "stock_tab",
+      "name": "Stock List",
+      "tab_state": "stock",
+      "card_type": "todo-list",
+      "role": "Compact dense list of stock items. WARNING: checking an item CONSUMES the product in Grocy.",
+      "slots": [
+        {
+          "id": "STOCK_TODO",
+          "description": "Grocy stock todo entity",
+          "domain": "todo",
+          "keywords": ["stock", "grocy", "inventory"],
+          "example": "todo.grocy_stock"
+        }
+      ],
+      "skeleton": "type: todo-list\nentity: STOCK_TODO\ndisplay_order: duedate_asc\ncard_mod:\n  style:\n    .: |\n      ha-card.type-todo-list div.header { display: none; }\n      ha-check-list-item.editRow.completed { display: none; }\n      .divider { display: none; }\n      ha-check-list-item { min-height: 28px !important; }\n      ha-icon-button.reorderButton, ha-icon-button.addButton { margin-top: -35px !important; }\n      :host {\n        height: 580px !important;\n        overflow-y: scroll !important;\n        overflow-x: hidden !important;\n        display: block !important;\n      }\n    ha-textfield:\n      $: |\n        .mdc-text-field { margin-top: -28px; height: 50px !important; }\n        .mdc-text-field__input { color: white !important; }",
+      "rules": [
+        "CRITICAL: :host must have 'display: block !important' — without it overflow-y: scroll is ignored",
+        "Input field styles require shadow DOM scoping: ha-textfield: $: | — not .: | level",
+        "Completed items hidden via ha-check-list-item.editRow.completed { display: none }"
+      ],
+      "banned_patterns": [
+        "Input field styles at .: | level (does not penetrate shadow DOM)"
+      ],
+      "generator_task": "Write a todo-list card for entity STOCK_TODO. Apply card_mod styling: hide header, hide completed items, dense row height (28px min), and make the list scrollable inside the card (height 580px). Add input field styling using shadow DOM scope. Output ONLY the card YAML, starting with 'type: todo-list'."
+    },
+    {
+      "id": "tasks_tab",
+      "name": "Tasks List",
+      "tab_state": "tasks",
+      "card_type": "todo-list",
+      "role": "Clean task list. Same scroll containment as stock but without consume warning.",
+      "slots": [
+        {
+          "id": "TASKS_TODO",
+          "description": "Grocy tasks todo entity",
+          "domain": "todo",
+          "keywords": ["tasks", "grocy"],
+          "example": "todo.grocy_tasks"
+        }
+      ],
+      "skeleton": "type: todo-list\nentity: TASKS_TODO\ncard_mod:\n  style:\n    .: |\n      ha-card.type-todo-list div.header { display: none; }\n      ha-check-list-item.editRow.completed { display: none; }\n      :host {\n        height: 580px !important;\n        overflow-y: scroll !important;\n        overflow-x: hidden !important;\n        display: block !important;\n      }",
+      "rules": [
+        "CRITICAL: :host must have 'display: block !important'",
+        "Same card_mod scoping rules as stock_tab"
+      ],
+      "banned_patterns": [],
+      "generator_task": "Write a todo-list card for entity TASKS_TODO. Apply card_mod styling: hide header, hide completed items, scrollable inside card (height 580px, display: block !important on :host). Output ONLY the card YAML, starting with 'type: todo-list'."
+    }
+  ],
+
+  "review_criteria": [
+    "Container is custom:layout-card with layout_type: custom:grid-layout",
+    "There is exactly ONE HA view — no sidebar view-per-tab navigation",
+    "Nav buttons call input_select.select_option on NAV_ENTITY — not navigate action",
+    "Each task card is wrapped in a conditional card checking NAV_ENTITY state",
+    "Shopping card is custom:auto-entities with filter.template (Jinja) — not filter.include",
+    "In the Jinja template: {{ appears on the SAME LINE as {% for %} — no newline between them",
+    "Every state_attr() in Jinja for loops has 'or []' appended",
+    "background-image on shopping list button-cards uses card_mod style — NOT styles.card",
+    "Stock card type is 'todo-list' with entity pointing to a todo domain entity",
+    "Tasks card type is 'todo-list' with entity pointing to a todo domain entity",
+    "todo-list card_mod :host has 'display: block !important; overflow-y: scroll !important'",
+    "todo-list input field styles use 'ha-textfield: $: |' scope — not '.: |' scope",
+    "No fabricated card types (custom:input-select-card, tab-card, grid-layout, etc.)",
+    "No code fences (```) in the YAML output",
+    "No markdown formatting (**, ##, ---) in the YAML output",
+    "All entity IDs use provided slot values — no guessed or invented entity IDs"
+  ],
+
+  "ceo_criteria": "PASS if: (1) YAML parses as valid HA Lovelace, (2) single view with input_select-driven conditional navigation, (3) shopping tab uses auto-entities Jinja with card_mod background-image lookup, (4) stock and tasks use todo-list with display:block scroll containment, (5) zero banned patterns. FAIL if: navigation uses HA views, any fabricated card type present, styles.card used for background-image, {{ on newline after {% for %}, or YAML structure is invalid."
+}
