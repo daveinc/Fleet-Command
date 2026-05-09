@@ -2294,9 +2294,20 @@ function renderFleetDetail(j) {{
 async function fleetShowStageOutput(jobId, stage, label) {{
   const res = await fetch(api(`/api/jobs/${{jobId}}/stage/${{stage}}`)).then(r => r.json());
   const txt = res.output || res.error || "No output";
-  _fleetDetailPanel = {{ key: stage, title: label + " output", content: txt }};
-  // Re-render current job to show panel
   const job = (_fleetJobs || []).find(j => j.id === jobId);
+  const reviewNotes = job?.stages?.[stage]?.review_notes || "";
+  let content = txt;
+  if (stage === "reviewer") {{
+    if (reviewNotes) {{
+      content = "REVIEW NOTES:\n" + reviewNotes + "\n\n---\n\n" + txt;
+    }} else {{
+      const asmRes = await fetch(api(`/api/jobs/${{jobId}}/stage/assembler`)).then(r => r.json());
+      const asmOut = asmRes.output || "";
+      const verdict = txt.trim() === asmOut.trim() ? "Passed unchanged." : "Modified — see output below.";
+      content = "REVIEW: " + verdict + "\n\n---\n\n" + txt;
+    }}
+  }}
+  _fleetDetailPanel = {{ key: stage, title: label + " output", content }};
   if (job) renderFleetDetail(job);
 }}
 
