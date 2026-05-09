@@ -541,6 +541,12 @@ async def _run_reviewer_3pass(
     job["stages"]["reviewer"] = {"status": "running"}
     save_job(job)
 
+    _DASHBOARD_STRUCTURE_RULE = (
+        "CRITICAL STRUCTURE RULE: A Lovelace dashboard root MUST have 'title:' and 'views:' keys. "
+        "NEVER output 'type:', 'cards:', or 'entities:' at root level — those belong inside a view's cards. "
+        "If the input has correct title+views structure, preserve it exactly."
+    )
+
     # Pass 1 — Entity ID resolution
     entity_list = await _fetch_ha_entities(spec)
     pass1_prompt = (
@@ -549,7 +555,9 @@ async def _run_reviewer_3pass(
         f"Dashboard YAML:\n{yaml_input}\n\n"
         "Replace ALL placeholder or incorrect entity IDs with real entity IDs from the list above. "
         "Match by domain and purpose. If unsure, pick the closest available entity. "
-        "Do NOT change card structure or layout. Output corrected YAML only. No fences. No explanation."
+        "Do NOT change card structure, layout, or the root dashboard structure. "
+        f"{_DASHBOARD_STRUCTURE_RULE} "
+        "Output corrected YAML only. No fences. No explanation."
     )
     write_stage_input(job_id, "reviewer", f"[Pass 1 — Entity IDs]\n{pass1_prompt}")
     append_log(job, "reviewer", "Pass 1: Entity ID resolution...")
@@ -558,7 +566,11 @@ async def _run_reviewer_3pass(
     try:
         raw1, last_handled, tok1 = await _call_with_fallback("reviewer", harness, persona, pass1_prompt, roles, job)
         _accum_tokens(job, "reviewer", tok1)
-        yaml1 = _strip_all_fences(_strip_fences(raw1)) or yaml_input
+        candidate1 = _strip_all_fences(_strip_fences(raw1))
+        # Safety: reject if root structure was destroyed
+        yaml1 = candidate1 if ("views:" in candidate1) else yaml_input
+        if "views:" not in candidate1:
+            append_log(job, "reviewer", "Pass 1 dropped views: — keeping assembler output")
         append_log(job, "reviewer", f"Pass 1 done ({len(yaml1)} chars)")
     except Exception as exc:
         append_log(job, "reviewer", f"Pass 1 failed: {exc} — using assembler output")
@@ -569,6 +581,7 @@ async def _run_reviewer_3pass(
         "Check: valid card types (sensor/entities/gauge/weather-forecast/history-graph/button/markdown/grid/vertical-stack), "
         "correct nesting (entities card uses list under 'entities:' key, not 'entity:'), "
         "no extra/invalid fields, proper view → cards hierarchy. "
+        f"{_DASHBOARD_STRUCTURE_RULE} "
         "Fix all issues. Output corrected YAML only. No fences. No explanation."
     )
     append_log(job, "reviewer", "Pass 2: Container/structure review...")
@@ -576,7 +589,10 @@ async def _run_reviewer_3pass(
     try:
         raw2, last_handled, tok2 = await _call_with_fallback("reviewer", harness, persona, pass2_prompt, roles, job)
         _accum_tokens(job, "reviewer", tok2)
-        yaml2 = _strip_all_fences(_strip_fences(raw2)) or yaml1
+        candidate2 = _strip_all_fences(_strip_fences(raw2))
+        yaml2 = candidate2 if ("views:" in candidate2) else yaml1
+        if "views:" not in candidate2:
+            append_log(job, "reviewer", "Pass 2 dropped views: — keeping pass 1 output")
         append_log(job, "reviewer", f"Pass 2 done ({len(yaml2)} chars)")
     except Exception as exc:
         append_log(job, "reviewer", f"Pass 2 failed: {exc} — using pass 1 output")
@@ -587,6 +603,7 @@ async def _run_reviewer_3pass(
         "Check: card_mod sections have valid CSS syntax, style targets correct elements (card, :host, ha-card), "
         "no invalid card_mod fields, all style blocks are properly indented under card_mod. "
         "If there are no card_mod sections, output the YAML unchanged. "
+        f"{_DASHBOARD_STRUCTURE_RULE} "
         "Fix all issues. Output corrected YAML only. No fences. No explanation."
     )
     append_log(job, "reviewer", "Pass 3: card_mod/styles review...")
@@ -594,7 +611,10 @@ async def _run_reviewer_3pass(
     try:
         raw3, last_handled, tok3 = await _call_with_fallback("reviewer", harness, persona, pass3_prompt, roles, job)
         _accum_tokens(job, "reviewer", tok3)
-        yaml3 = _strip_all_fences(_strip_fences(raw3)) or yaml2
+        candidate3 = _strip_all_fences(_strip_fences(raw3))
+        yaml3 = candidate3 if ("views:" in candidate3) else yaml2
+        if "views:" not in candidate3:
+            append_log(job, "reviewer", "Pass 3 dropped views: — keeping pass 2 output")
         append_log(job, "reviewer", f"Pass 3 done ({len(yaml3)} chars)")
     except Exception as exc:
         append_log(job, "reviewer", f"Pass 3 failed: {exc} — using pass 2 output")
