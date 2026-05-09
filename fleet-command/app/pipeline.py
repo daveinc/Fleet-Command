@@ -486,6 +486,139 @@ def _split_yaml_views(yaml_text: str) -> list[tuple[str, str]]:
     return views
 
 
+async def _fetch_ha_entities(spec: str) -> str:
+    """Fetch dashboard-relevant entities from HA Supervisor API."""
+    import os
+    DASHBOARD_DOMAINS = {
+        "sensor", "binary_sensor", "switch", "light", "media_player",
+        "weather", "climate", "camera", "automation", "script",
+        "input_boolean", "input_number", "input_select", "input_text",
+        "input_datetime", "person", "device_tracker", "cover",
+        "fan", "vacuum", "water_heater", "alarm_control_panel",
+    }
+    token = os.environ.get("SUPERVISOR_TOKEN", "")
+    if not token:
+        return "(HA entity list unavailable — no SUPERVISOR_TOKEN)"
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(
+                "http://supervisor/core/api/states",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            resp.raise_for_status()
+            states = resp.json()
+        lines = []
+        for s in states:
+            eid = s.get("entity_id", "")
+            domain = eid.split(".")[0] if "." in eid else ""
+            if domain not in DASHBOARD_DOMAINS:
+                continue
+            state = s.get("state", "")
+            attrs = s.get("attributes", {})
+            friendly = attrs.get("friendly_name", "")
+            label = eid
+            if friendly and friendly.lower() != eid.replace("_", " ").lower():
+                label += f" ({friendly})"
+            label += f" — {state}"
+            lines.append(label)
+        return "\n".join(lines) if lines else "(no relevant entities found)"
+    except Exception as exc:
+        return f"(entity fetch failed: {exc})"
+
+
+async def _run_reviewer_3pass(
+    job_id: str,
+    harness: dict[str, Any],
+    persona: str,
+    spec: str,
+    yaml_input: str,
+    roles: dict[str, Any],
+    job: dict[str, Any],
+) -> dict[str, Any]:
+    """3-pass reviewer: entity IDs → container/structure → card_mod/styles."""
+    harness_id = roles.get("reviewer", {}).get("harness_id", "reviewer")
+    append_log(job, "reviewer", "Starting 3-pass review...")
+    job["stages"]["reviewer"] = {"status": "running"}
+    save_job(job)
+
+    # Pass 1 — Entity ID resolution
+    entity_list = await _fetch_ha_entities(spec)
+    pass1_prompt = (
+        f"Spec: {spec}\n\n"
+        f"Available Home Assistant entities:\n{entity_list}\n\n"
+        f"Dashboard YAML:\n{yaml_input}\n\n"
+        "Replace ALL placeholder or incorrect entity IDs with real entity IDs from the list above. "
+        "Match by domain and purpose. If unsure, pick the closest available entity. "
+        "Do NOT change card structure or layout. Output corrected YAML only. No fences. No explanation."
+    )
+    write_stage_input(job_id, "reviewer", f"[Pass 1 — Entity IDs]\n{pass1_prompt}")
+    append_log(job, "reviewer", "Pass 1: Entity ID resolution...")
+    yaml1 = yaml_input
+    last_handled = "reviewer"
+    try:
+        raw1, last_handled, tok1 = await _call_with_fallback("reviewer", harness, persona, pass1_prompt, roles, job)
+        _accum_tokens(job, "reviewer", tok1)
+        yaml1 = _strip_all_fences(_strip_fences(raw1)) or yaml_input
+        append_log(job, "reviewer", f"Pass 1 done ({len(yaml1)} chars)")
+    except Exception as exc:
+        append_log(job, "reviewer", f"Pass 1 failed: {exc} — using assembler output")
+
+    # Pass 2 — Container / structure
+    pass2_prompt = (
+        f"Review this Home Assistant Lovelace dashboard YAML for container and assembly issues:\n\n{yaml1}\n\n"
+        "Check: valid card types (sensor/entities/gauge/weather-forecast/history-graph/button/markdown/grid/vertical-stack), "
+        "correct nesting (entities card uses list under 'entities:' key, not 'entity:'), "
+        "no extra/invalid fields, proper view → cards hierarchy. "
+        "Fix all issues. Output corrected YAML only. No fences. No explanation."
+    )
+    append_log(job, "reviewer", "Pass 2: Container/structure review...")
+    yaml2 = yaml1
+    try:
+        raw2, last_handled, tok2 = await _call_with_fallback("reviewer", harness, persona, pass2_prompt, roles, job)
+        _accum_tokens(job, "reviewer", tok2)
+        yaml2 = _strip_all_fences(_strip_fences(raw2)) or yaml1
+        append_log(job, "reviewer", f"Pass 2 done ({len(yaml2)} chars)")
+    except Exception as exc:
+        append_log(job, "reviewer", f"Pass 2 failed: {exc} — using pass 1 output")
+
+    # Pass 3 — card_mod / styles
+    pass3_prompt = (
+        f"Review this Home Assistant Lovelace dashboard YAML for card_mod and style issues:\n\n{yaml2}\n\n"
+        "Check: card_mod sections have valid CSS syntax, style targets correct elements (card, :host, ha-card), "
+        "no invalid card_mod fields, all style blocks are properly indented under card_mod. "
+        "If there are no card_mod sections, output the YAML unchanged. "
+        "Fix all issues. Output corrected YAML only. No fences. No explanation."
+    )
+    append_log(job, "reviewer", "Pass 3: card_mod/styles review...")
+    yaml3 = yaml2
+    try:
+        raw3, last_handled, tok3 = await _call_with_fallback("reviewer", harness, persona, pass3_prompt, roles, job)
+        _accum_tokens(job, "reviewer", tok3)
+        yaml3 = _strip_all_fences(_strip_fences(raw3)) or yaml2
+        append_log(job, "reviewer", f"Pass 3 done ({len(yaml3)} chars)")
+    except Exception as exc:
+        append_log(job, "reviewer", f"Pass 3 failed: {exc} — using pass 2 output")
+
+    if not yaml3.strip():
+        yaml3 = yaml_input
+
+    write_stage_output(job_id, "reviewer", yaml3)
+    note = f" (handled by {last_handled})" if last_handled != "reviewer" else ""
+    stage_data: dict = {
+        "status": "done",
+        "preview": yaml3[:400],
+        "handled_by": last_handled,
+        "model_name": harness.get("display_name", harness_id),
+        "ctx_window": harness.get("context_window"),
+    }
+    if job.get("stages", {}).get("reviewer", {}).get("tokens"):
+        stage_data["tokens"] = job["stages"]["reviewer"]["tokens"]
+    job["stages"]["reviewer"] = stage_data
+    append_log(job, "reviewer", f"3-pass review complete — {len(yaml3)} chars{note}")
+    save_job(job)
+    return {"ok": True, "stage": "reviewer", "output": yaml3, "handled_by": last_handled}
+
+
 async def run_stage(job_id: str, stage: str) -> dict[str, Any]:
     job = load_job(job_id)
     if not job:
@@ -533,98 +666,12 @@ async def run_stage(job_id: str, stage: str) -> dict[str, Any]:
     save_job(job)
 
     try:
-        # Reviewer: if input is large, review view-by-view to stay within context limits
-        if stage == "reviewer" and prev and len(prev) > _REVIEW_CHUNK_THRESHOLD:
-            view_pairs = _split_yaml_views(prev)
-            if len(view_pairs) > 1:
-                append_log(job, stage, f"Large output ({len(prev)} chars) — reviewing {len(view_pairs)} views separately")
-                reviewed_views: list[str] = []
-                all_notes: list[str] = []
-                for view_title, view_block in view_pairs:
-                    view_prompt = (
-                        f"Spec: {spec}\n\n"
-                        f"Review this Lovelace view section (title: {view_title}):\n{view_block}\n\n"
-                        "Check: valid card types, markdown cards use 'content:' not 'entity:', no sensor definitions.\n"
-                        "First line: '# REVIEW: <verdict>'\n"
-                        "Then output the corrected or unchanged cards YAML. YAML only after the review line."
-                    )
-                    raw_v, handled_by, tok_v = await _call_with_fallback(stage, harness, persona, view_prompt, roles, job)
-                    _accum_tokens(job, stage, tok_v)
-                    stripped_v = _strip_all_fences(_strip_fences(raw_v))
-                    lines_v = stripped_v.splitlines()
-                    note_lines = [l for l in lines_v if l.strip().startswith("#")]
-                    yaml_lines = [l for l in lines_v if not l.strip().startswith("#")]
-                    if note_lines:
-                        all_notes.append(f"{view_title}: " + " ".join(l.replace("#","").strip() for l in note_lines))
-                    cards = "\n".join(yaml_lines).strip() or view_block
-                    reviewed_views.append(f"  - title: {view_title}\n" + "\n".join(f"    {l}" for l in cards.splitlines()))
-                dashboard_title = prev.splitlines()[0].replace("title:", "").strip() if prev.startswith("title:") else "Dashboard"
-                output = f"title: {dashboard_title}\nviews:\n" + "\n".join(reviewed_views)
-                review_notes = "; ".join(all_notes) if all_notes else None
-                write_stage_input(job_id, stage, f"[view-by-view review of {len(view_pairs)} views]\n" + user)
-                write_stage_output(job_id, stage, output)
-                note = f" (handled by {handled_by})" if handled_by != stage else ""
-                stage_data: dict = {
-                    "status": "done", "preview": output[:400], "handled_by": handled_by,
-                    "model_name": harness.get("display_name", harness_id),
-                    "ctx_window": harness.get("context_window"),
-                }
-                if job.get("stages", {}).get(stage, {}).get("tokens"):
-                    stage_data["tokens"] = job["stages"][stage]["tokens"]
-                if review_notes:
-                    stage_data["review_notes"] = review_notes
-                    append_log(job, stage, f"Review: {review_notes[:300]}")
-                job["stages"][stage] = stage_data
-                append_log(job, stage, f"Done — {len(view_pairs)} views reviewed, {len(output)} chars{note}")
-                save_job(job)
-                return {"ok": True, "stage": stage, "output": output, "handled_by": handled_by}
+        if stage == "reviewer":
+            return await _run_reviewer_3pass(job_id, harness, persona, spec, prev or "", roles, job)
 
         raw, handled_by, tok = await _call_with_fallback(stage, harness, persona, user, roles, job)
         _accum_tokens(job, stage, tok)
         output = _strip_all_fences(_strip_fences(raw))
-
-        # Reviewer escalation: count issues, fix inline if within threshold
-        if stage == "reviewer" and output.strip().upper().startswith("REJECTED"):
-            from app.pipeline_rules import reviewer_threshold
-            issue_count = _count_rejection_issues(output)
-            threshold = reviewer_threshold()
-            if issue_count <= threshold:
-                review_notes = output
-                append_log(job, stage, f"Review notes ({issue_count} issues): {output[:600]}")
-                append_log(job, stage, f"Fixing {issue_count} issues inline")
-                fix_user = (
-                    f"Issues found:\n{output}\n\n"
-                    f"Original YAML:\n{prev}\n\n"
-                    f"Fix ALL listed issues. Output corrected YAML only. No explanations."
-                )
-                try:
-                    raw2, handled_by, tok2 = await _call_with_fallback(stage, harness, persona, fix_user, roles, job)
-                    _accum_tokens(job, stage, tok2)
-                    output = _strip_all_fences(_strip_fences(raw2))
-                except Exception:
-                    pass  # Keep rejection if fix attempt fails
-            else:
-                review_notes = None
-        else:
-            review_notes = None
-
-        # Reviewer: extract leading # REVIEW: comment as notes, pass clean YAML downstream
-        if stage == "reviewer" and not review_notes:
-            lines = output.splitlines()
-            comment_lines = []
-            yaml_lines = []
-            for line in lines:
-                if not yaml_lines and line.strip().startswith("#"):
-                    comment_lines.append(line)
-                else:
-                    yaml_lines.append(line)
-            if comment_lines:
-                review_notes = "\n".join(comment_lines).replace("# REVIEW:", "").replace("#", "").strip()
-                output = "\n".join(yaml_lines).strip()
-            # If output is empty after stripping (model wrote verdict only), use assembler input
-            if not output.strip() and prev:
-                output = prev
-                review_notes = (review_notes or "") + " (reviewer returned no YAML — using assembler output)"
 
         write_stage_output(job_id, stage, output)
         note = f" (handled by {handled_by})" if handled_by != stage else ""
@@ -633,12 +680,8 @@ async def run_stage(job_id: str, stage: str) -> dict[str, Any]:
             "model_name": harness.get("display_name", harness_id),
             "ctx_window": harness.get("context_window"),
         }
-        # carry over accumulated tokens from _accum_tokens calls above
         if job.get("stages", {}).get(stage, {}).get("tokens"):
             stage_data["tokens"] = job["stages"][stage]["tokens"]
-        if review_notes:
-            stage_data["review_notes"] = review_notes
-            append_log(job, stage, f"Review: {review_notes[:300]}")
         job["stages"][stage] = stage_data
         append_log(job, stage, f"Done — {len(output)} chars{note}")
         save_job(job)
