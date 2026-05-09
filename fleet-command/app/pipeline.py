@@ -733,12 +733,12 @@ async def run_pipeline(job_id: str) -> None:
     if not job:
         return
 
-    # Queue behind any currently running pipeline
-    if _PIPELINE_SEM.locked():
+    sem = _get_pipeline_sem()
+    if sem.locked():
         append_log(job, "pipeline", "Queued — waiting for current job to finish")
         save_job(job)
 
-    async with _get_pipeline_sem():
+    async with sem:
         await _run_pipeline_inner(job_id)
 
 
