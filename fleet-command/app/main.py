@@ -219,8 +219,6 @@ async def api_job_run(job_id: str, background_tasks: BackgroundTasks) -> dict:
     job = load_job(job_id)
     if not job:
         return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
-    if job.get("status") == "running":
-        return JSONResponse({"ok": False, "error": "already running"}, status_code=409)
     background_tasks.add_task(run_pipeline, job_id)
     return {"ok": True, "job_id": job_id}
 
@@ -922,20 +920,8 @@ def _dashboard_html(root: str) -> str:  # noqa: C901
     .flog-mini {{
       font-family: monospace; font-size: 0.68rem; color: #475569;
       background: #0f1117; border-radius: 5px; padding: 0.5rem;
-      max-height: 220px; overflow-y: auto; margin-top: 0.5rem; line-height: 1.7;
+      max-height: 100px; overflow-y: auto; margin-top: 0.5rem; line-height: 1.6;
     }}
-    .factivity-row {{
-      display: flex; align-items: flex-start; gap: 0.5rem;
-      padding: 0.18rem 0; border-bottom: 1px solid #0f1117;
-    }}
-    .factivity-dot {{
-      width: 7px; height: 7px; border-radius: 50%; margin-top: 0.3rem; flex-shrink: 0;
-    }}
-    .factivity-dot.pulse {{ animation: pulse 1.2s infinite; }}
-    @keyframes pulse {{ 0%,100%{{opacity:1}} 50%{{opacity:0.3}} }}
-    .factivity-ts {{ color: #334155; font-size: 0.65rem; flex-shrink: 0; width: 52px; }}
-    .factivity-stage {{ color: #64748b; font-size: 0.65rem; flex-shrink: 0; width: 64px; }}
-    .factivity-msg {{ color: #94a3b8; font-size: 0.68rem; flex: 1; word-break: break-word; }}
     .fstat-card {{
       background: #1e2330; border: 1px solid #2d3748; border-radius: 8px;
       padding: 0.65rem 0.75rem; margin-bottom: 0.5rem;
@@ -2240,28 +2226,8 @@ function renderFleetDetail(j) {{
       ${{tasks.map(t => `<div class="ftask-item" style="cursor:pointer" onclick="fleetShowTaskText('${{t.full.replace(/'/g,"&#39;")}}')">· ${{t.short}}${{t.full.length > 60 ? "…" : ""}}</div>`).join("")}}
     </div>`).join("");
 
-  // Activity timeline — all log entries + upcoming pending stages
-  const lastStage = j.log?.length ? j.log[j.log.length-1].stage : null;
-  const logRows = (j.log || []).map(l => {{
-    const stageStatus = (j.stages||{{}})[l.stage]?.status || "done";
-    const isPulsing = l.stage === lastStage && (j.status === "running");
-    const dotColor = STATUS_COLOR[stageStatus] || "#475569";
-    const pulse = isPulsing ? " pulse" : "";
-    return `<div class="factivity-row">
-      <span class="factivity-dot${{pulse}}" style="background:${{dotColor}}"></span>
-      <span class="factivity-ts">${{l.ts?.slice(11,19)||""}}</span>
-      <span class="factivity-stage">${{LABEL[l.stage]||l.stage}}</span>
-      <span class="factivity-msg">${{l.msg}}</span>
-    </div>`;
-  }}).join("");
-  const completedStages = new Set((j.log||[]).map(l => l.stage));
-  const upcomingRows = (j.pipeline||[]).filter(s => !completedStages.has(s)).map(s =>
-    `<div class="factivity-row">
-      <span class="factivity-dot" style="background:#1e293b;border:1px solid #334155"></span>
-      <span class="factivity-ts"></span>
-      <span class="factivity-stage" style="color:#334155">${{LABEL[s]||s}}</span>
-      <span class="factivity-msg" style="color:#334155">pending</span>
-    </div>`
+  const logLines = (j.log || []).slice(-8).map(l =>
+    `<div><span style="color:#334155">${{l.ts?.slice(11,19)||""}}</span> <span style="color:#475569">[${{l.stage}}]</span> ${{l.msg}}</div>`
   ).join("");
 
   const isActive = j.status === "running" || j.status === "pending";
@@ -2291,11 +2257,8 @@ function renderFleetDetail(j) {{
 
       ${{blockRows ? `<div class="section-title" style="font-size:0.65rem;margin:0.65rem 0 0.3rem">Blocks &amp; Tasks</div><div class="fblock-list">${{blockRows}}</div>` : ""}}
 
-      <div class="section-title" style="font-size:0.65rem;margin:0.65rem 0 0.15rem">Activity${{isActive?" · live":""}}</div>
-      <div class="flog-mini" id="flog-mini">
-        ${{logRows || '<div class="factivity-row"><span style="color:#334155">No activity yet.</span></div>'}}
-        ${{upcomingRows}}
-      </div>
+      <div class="section-title" style="font-size:0.65rem;margin:0.65rem 0 0.15rem">Log${{isActive?" · live":""}}</div>
+      <div class="flog-mini" id="flog-mini">${{logLines||'<span style="color:#334155">No log yet.</span>'}}</div>
 
       <div style="display:flex;gap:0.4rem;flex-wrap:wrap;margin-top:0.75rem">
         ${{j.status === "pending" ? `<button class="btn btn-primary btn-sm" onclick="fleetRunJob('${{j.id}}')">▶ Run</button>` : ""}}
@@ -2311,21 +2274,9 @@ function renderFleetDetail(j) {{
 async function fleetShowStageOutput(jobId, stage, label) {{
   const res = await fetch(api(`/api/jobs/${{jobId}}/stage/${{stage}}`)).then(r => r.json());
   const txt = res.output || res.error || "No output";
+  _fleetDetailPanel = {{ key: stage, title: label + " output", content: txt }};
+  // Re-render current job to show panel
   const job = (_fleetJobs || []).find(j => j.id === jobId);
-  const stageData = job?.stages?.[stage] || {{}};
-  const reviewNotes = stageData.review_notes || "";
-  let content = txt;
-  if (stage === "reviewer") {{
-    if (reviewNotes) {{
-      content = "REVIEW NOTES:\n" + reviewNotes + "\n\n---\n\n" + txt;
-    }} else {{
-      // Show a note if reviewer passed output unchanged
-      const assemblerOut = await fetch(api(`/api/jobs/${{jobId}}/stage/assembler`)).then(r=>r.json()).then(r=>r.output||"");
-      const verdict = txt.trim() === assemblerOut.trim() ? "Passed unchanged." : "Modified output (see below).";
-      content = "REVIEW: " + verdict + "\n\n---\n\n" + txt;
-    }}
-  }}
-  _fleetDetailPanel = {{ key: stage, title: label + " output", content }};
   if (job) renderFleetDetail(job);
 }}
 
