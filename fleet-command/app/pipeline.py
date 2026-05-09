@@ -1030,27 +1030,30 @@ async def _push_dashboard(job: dict[str, Any], yaml_content: str) -> None:
             if auth_result.get("type") != "auth_ok":
                 raise RuntimeError(f"WS auth failed: {auth_result}")
 
-            # Ensure dashboard exists in storage mode
-            await ws.send(json.dumps({
-                "id": 1, "type": "lovelace/dashboards/create",
-                "url_path": dashboard_id,
-                "title": dashboard_id.replace("_", " ").title(),
-                "icon": "mdi:robot-industrial",
-                "show_in_sidebar": True, "require_admin": False,
-                "mode": "storage",
-            }))
-            create_result = json.loads(await ws.recv())
-            create_ok = create_result.get("success", False)
-            create_err = create_result.get("error", {}).get("code", "") if not create_ok else ""
-            if not create_ok and create_err not in ("already_exists", "unknown_command"):
-                _flog(f"  dashboard create failed: {create_result}")
-                append_log(job, "ha_push", f"Dashboard create failed — {create_err or create_result}")
-                save_job(job)
-                return
+            # Check if dashboard already exists
+            await ws.send(json.dumps({"id": 1, "type": "lovelace/dashboards/list"}))
+            list_result = json.loads(await ws.recv())
+            existing = [d.get("url_path") for d in list_result.get("result", [])]
+            _flog(f"  existing dashboards: {existing}")
 
-            # Push config
+            if dashboard_id not in existing:
+                # Create it first
+                await ws.send(json.dumps({
+                    "id": 2, "type": "lovelace/dashboards/create",
+                    "url_path": dashboard_id,
+                    "title": dashboard_id.replace("-", " ").title(),
+                    "icon": "mdi:robot-industrial",
+                    "show_in_sidebar": True, "require_admin": False,
+                    "mode": "storage",
+                }))
+                create_result = json.loads(await ws.recv())
+                _flog(f"  dashboard create: {create_result}")
+                if not create_result.get("success"):
+                    raise RuntimeError(f"Dashboard create failed: {create_result.get('error', create_result)}")
+
+            # Save config
             await ws.send(json.dumps({
-                "id": 2, "type": "lovelace/config/save",
+                "id": 3, "type": "lovelace/config/save",
                 "url_path": dashboard_id,
                 "config": config_dict,
             }))
