@@ -2228,8 +2228,25 @@ function renderFleetDetail(j) {{
       ${{tasks.map(t => `<div class="ftask-item" style="cursor:pointer" onclick="fleetShowTaskText('${{t.full.replace(/'/g,"&#39;")}}')">· ${{t.short}}${{t.full.length > 60 ? "…" : ""}}</div>`).join("")}}
     </div>`).join("");
 
-  const logLines = (j.log || []).slice(-8).map(l =>
-    `<div><span style="color:#334155">${{l.ts?.slice(11,19)||""}}</span> <span style="color:#475569">[${{l.stage}}]</span> ${{l.msg}}</div>`
+  const jobIsRunning = j.status === "running";
+  const lastLogStage = (j.log && j.log.length) ? j.log[j.log.length-1].stage : null;
+  const logLines = (j.log || []).map(l => {{
+    const stStatus = (j.stages||{{}})[l.stage]?.status || "done";
+    const dotColor = STATUS_COLOR[stStatus] || "#475569";
+    const pulse = (jobIsRunning && l.stage === lastLogStage) ? "animation:_pulse 1.2s infinite;" : "";
+    return `<div style="display:flex;align-items:flex-start;gap:0.4rem;padding:0.12rem 0;border-bottom:1px solid #0a0f1a">
+      <span style="width:7px;height:7px;border-radius:50%;background:${{dotColor}};flex-shrink:0;margin-top:0.3rem;${{pulse}}"></span>
+      <span style="color:#334155;font-size:0.65rem;flex-shrink:0;width:50px">${{l.ts?.slice(11,19)||""}}</span>
+      <span style="color:#64748b;font-size:0.65rem;flex-shrink:0;width:60px">${{LABEL[l.stage]||l.stage}}</span>
+      <span style="color:#94a3b8;font-size:0.68rem;flex:1;word-break:break-word">${{l.msg}}</span>
+    </div>`;
+  }}).join("") + (j.pipeline||[]).filter(s => !new Set((j.log||[]).map(l=>l.stage)).has(s)).map(s =>
+    `<div style="display:flex;align-items:flex-start;gap:0.4rem;padding:0.12rem 0;border-bottom:1px solid #0a0f1a">
+      <span style="width:7px;height:7px;border-radius:50%;background:#1e293b;border:1px solid #334155;flex-shrink:0;margin-top:0.3rem"></span>
+      <span style="color:#1e293b;font-size:0.65rem;flex-shrink:0;width:50px"></span>
+      <span style="color:#334155;font-size:0.65rem;flex-shrink:0;width:60px">${{LABEL[s]||s}}</span>
+      <span style="color:#334155;font-size:0.68rem">pending</span>
+    </div>`
   ).join("");
 
   const isActive = j.status === "running" || j.status === "pending";
@@ -2259,8 +2276,9 @@ function renderFleetDetail(j) {{
 
       ${{blockRows ? `<div class="section-title" style="font-size:0.65rem;margin:0.65rem 0 0.3rem">Blocks &amp; Tasks</div><div class="fblock-list">${{blockRows}}</div>` : ""}}
 
-      <div class="section-title" style="font-size:0.65rem;margin:0.65rem 0 0.15rem">Log${{isActive?" · live":""}}</div>
-      <div class="flog-mini" id="flog-mini">${{logLines||'<span style="color:#334155">No log yet.</span>'}}</div>
+      <style>@keyframes _pulse{{0%,100%{{opacity:1}}50%{{opacity:0.25}}}}</style>
+      <div class="section-title" style="font-size:0.65rem;margin:0.65rem 0 0.15rem">Activity${{isActive?" · live":""}}</div>
+      <div class="flog-mini" id="flog-mini">${{logLines||'<span style="color:#334155">No activity yet.</span>'}}</div>
 
       <div style="display:flex;gap:0.4rem;flex-wrap:wrap;margin-top:0.75rem">
         ${{j.status === "pending" ? `<button class="btn btn-primary btn-sm" onclick="fleetRunJob('${{j.id}}')">▶ Run</button>` : ""}}
