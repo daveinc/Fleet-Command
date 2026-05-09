@@ -292,8 +292,9 @@ async def _call_with_fallback(
     On input overflow, prefers escalating to a harness with a larger context window before giving up."""
     from app.message_builder import overflow_info
 
-    primary_id = primary_harness.get("id") or primary_harness.get("harness_id")
-    tried_ids: set[str] = set()
+    # Use harness_id strings as identity — harness dicts have no "id" field
+    primary_harness_id = roles.get(stage, {}).get("harness_id", "") or ""
+    tried_harness_ids: set[str] = set()
 
     primary_info = overflow_info(system, user, primary_harness)
     primary_overflows = primary_info["overflows"]
@@ -313,50 +314,45 @@ async def _call_with_fallback(
         _flog(f"  OVERFLOW detected before call — skipping primary, seeking larger ctx window")
         append_log(job, stage, f"⚠ Input too large for primary worker (~{primary_info['pct']}% of {primary_info['ctx_window']} tokens) — routing up")
 
-    tried_ids.add(primary_id or "")
+    tried_harness_ids.add(primary_harness_id)
 
     # Build candidate list — on overflow, sort by context window descending to find best fit
     start_idx = _FALLBACK_ORDER.index(stage) + 1 if stage in _FALLBACK_ORDER else len(_FALLBACK_ORDER)
     candidates = _FALLBACK_ORDER[start_idx:] + _FALLBACK_ORDER[:start_idx]
 
-    fallback_harnesses: list[tuple[str, dict[str, Any]]] = []
+    fallback_harnesses: list[tuple[str, str, dict[str, Any]]] = []
     for fallback_role in candidates:
         if fallback_role == stage:
             continue
         assignment = roles.get(fallback_role, {})
-        fb_harness_id = assignment.get("harness_id")
-        if not fb_harness_id:
+        fb_harness_id = assignment.get("harness_id", "")
+        if not fb_harness_id or fb_harness_id in tried_harness_ids:
             continue
         fb_harness = get_harness(fb_harness_id)
         if not fb_harness:
             continue
-        fb_id = fb_harness.get("id") or fb_harness_id
-        if fb_id in tried_ids:
-            continue
-        fallback_harnesses.append((fallback_role, fb_harness))
+        fallback_harnesses.append((fallback_role, fb_harness_id, fb_harness))
 
     if primary_overflows:
-        # Sort by context window descending — largest window first
         fallback_harnesses.sort(
-            key=lambda x: x[1].get("context_window") or 0,
+            key=lambda x: x[2].get("context_window") or 0,
             reverse=True,
         )
 
-    for fallback_role, fb_harness in fallback_harnesses:
-        fb_id = fb_harness.get("id") or fb_harness.get("harness_id", "")
-        if fb_id in tried_ids:
+    for fallback_role, fb_harness_id, fb_harness in fallback_harnesses:
+        if fb_harness_id in tried_harness_ids:
             continue
-        tried_ids.add(fb_id)
+        tried_harness_ids.add(fb_harness_id)
 
         fb_ctx = fb_harness.get("context_window")
         fb_info = overflow_info(system, user, fb_harness)
         if fb_info["overflows"]:
-            _flog(f"  SKIP {fallback_role} ({fb_harness.get('model')}) — would also overflow ({fb_info['pct']}%)")
+            _flog(f"  SKIP {fallback_role}/{fb_harness_id} — would also overflow ({fb_info['pct']}%)")
             continue
 
         append_log(job, stage, f"Escalating to {fb_harness.get('display_name', fallback_role)} ({fallback_role})" +
                    (f" — larger ctx {fb_ctx}" if primary_overflows and fb_ctx else ""))
-        _flog(f"  ESCALATE → {fallback_role} ({fb_harness.get('model')})")
+        _flog(f"  ESCALATE → {fallback_role}/{fb_harness_id} ({fb_harness.get('model')})")
         try:
             text, tokens = await _call_harness(fb_harness, system, user, job, stage)
             return text, fallback_role, tokens
