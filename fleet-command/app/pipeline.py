@@ -428,6 +428,7 @@ async def run_stage(job_id: str, stage: str) -> dict[str, Any]:
                 stage_data: dict = {"status": "done", "preview": output[:400], "handled_by": handled_by}
                 if review_notes:
                     stage_data["review_notes"] = review_notes
+                    append_log(job, stage, f"Review: {review_notes[:300]}")
                 job["stages"][stage] = stage_data
                 append_log(job, stage, f"Done — {len(view_pairs)} views reviewed, {len(output)} chars{note}")
                 save_job(job)
@@ -483,6 +484,7 @@ async def run_stage(job_id: str, stage: str) -> dict[str, Any]:
         stage_data: dict = {"status": "done", "preview": output[:400], "handled_by": handled_by}
         if review_notes:
             stage_data["review_notes"] = review_notes
+            append_log(job, stage, f"Review: {review_notes[:300]}")
         job["stages"][stage] = stage_data
         append_log(job, stage, f"Done — {len(output)} chars{note}")
         save_job(job)
