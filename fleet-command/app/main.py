@@ -2241,12 +2241,12 @@ function renderFleetDetail(j) {{
     </div>`).join("");
 
   // Activity timeline — all log entries + upcoming pending stages
-  const SC = {{ running:"#f59e0b", done:"#22c55e", error:"#ef4444", pending:"#475569", reviewing:"#818cf8" }};
+  const lastStage = j.log?.length ? j.log[j.log.length-1].stage : null;
   const logRows = (j.log || []).map(l => {{
     const stageStatus = (j.stages||{{}})[l.stage]?.status || "done";
-    const isActive = l.stage === j.log[j.log.length-1]?.stage && isActive;
-    const dotColor = SC[stageStatus] || "#475569";
-    const pulse = stageStatus === "running" ? " pulse" : "";
+    const isPulsing = l.stage === lastStage && (j.status === "running");
+    const dotColor = STATUS_COLOR[stageStatus] || "#475569";
+    const pulse = isPulsing ? " pulse" : "";
     return `<div class="factivity-row">
       <span class="factivity-dot${{pulse}}" style="background:${{dotColor}}"></span>
       <span class="factivity-ts">${{l.ts?.slice(11,19)||""}}</span>
