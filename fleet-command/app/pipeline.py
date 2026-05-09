@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import re
 import time
 from datetime import datetime, timezone
@@ -7,6 +8,9 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+
+# Only one job pipeline runs at a time — prevents overwhelming local inference workers
+_PIPELINE_SEM = asyncio.Semaphore(1)
 
 _LOG_FILE = Path("/share/fleet_command.log")
 
@@ -672,6 +676,20 @@ async def _run_generator_loop(job_id: str, roles: dict[str, Any], job: dict[str,
 
 
 async def run_pipeline(job_id: str) -> None:
+    job = load_job(job_id)
+    if not job:
+        return
+
+    # Queue behind any currently running pipeline
+    if _PIPELINE_SEM.locked():
+        append_log(job, "pipeline", "Queued — waiting for current job to finish")
+        save_job(job)
+
+    async with _PIPELINE_SEM:
+        await _run_pipeline_inner(job_id)
+
+
+async def _run_pipeline_inner(job_id: str) -> None:
     job = load_job(job_id)
     if not job:
         return
