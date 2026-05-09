@@ -1079,10 +1079,11 @@ async def _push_dashboard(job: dict[str, Any], yaml_content: str) -> None:
             existing = [d.get("url_path") for d in list_result.get("result", [])]
             _flog(f"  existing dashboards: {existing}")
 
+            msg_id = 2
             if dashboard_id not in existing:
                 # Create it first
                 await ws.send(json.dumps({
-                    "id": 2, "type": "lovelace/dashboards/create",
+                    "id": msg_id, "type": "lovelace/dashboards/create",
                     "url_path": dashboard_id,
                     "title": dashboard_id.replace("-", " ").title(),
                     "icon": "mdi:robot-industrial",
@@ -1093,17 +1094,43 @@ async def _push_dashboard(job: dict[str, Any], yaml_content: str) -> None:
                 _flog(f"  dashboard create: {create_result}")
                 if not create_result.get("success"):
                     raise RuntimeError(f"Dashboard create failed: {create_result.get('error', create_result)}")
+                current_views: list = []
+                msg_id += 1
+            else:
+                # Fetch existing config to merge views
+                await ws.send(json.dumps({"id": msg_id, "type": "lovelace/config/get", "url_path": dashboard_id}))
+                get_result = json.loads(await ws.recv())
+                msg_id += 1
+                existing_config = get_result.get("result", {}) or {}
+                current_views = existing_config.get("views", [])
+                _flog(f"  existing views: {[v.get('title') for v in current_views]}")
 
-            # Save config
+            # Merge job's views into existing views — update by title, append if new
+            new_views = config_dict.get("views", [])
+            existing_titles = {v.get("title"): i for i, v in enumerate(current_views)}
+            for new_view in new_views:
+                title = new_view.get("title")
+                if title in existing_titles:
+                    current_views[existing_titles[title]] = new_view
+                    _flog(f"  updated view: {title!r}")
+                else:
+                    current_views.append(new_view)
+                    existing_titles[title] = len(current_views) - 1
+                    _flog(f"  appended view: {title!r}")
+
+            merged_config = {**config_dict, "views": current_views}
+
+            # Save merged config
             await ws.send(json.dumps({
-                "id": 3, "type": "lovelace/config/save",
+                "id": msg_id, "type": "lovelace/config/save",
                 "url_path": dashboard_id,
-                "config": config_dict,
+                "config": merged_config,
             }))
             result = json.loads(await ws.recv())
             ok = result.get("success", False)
             detail = "" if ok else f" — {result.get('error', {}).get('message', str(result))}"
-            append_log(job, "ha_push", f"Dashboard push {'OK' if ok else 'FAILED'}{detail}")
+            view_titles = [v.get("title") for v in new_views]
+            append_log(job, "ha_push", f"Dashboard push {'OK' if ok else 'FAILED'} — views: {view_titles}{detail}")
 
     except Exception as exc:
         append_log(job, "ha_push", f"HA push error — {exc}")
