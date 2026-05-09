@@ -973,6 +973,8 @@ async def _run_pipeline_inner(job_id: str) -> None:
                     append_log(job, "supervisor", "Second rejection after rerun — use ↺ Retry")
                     job["status"] = STATUS_FAILED
                     save_job(job)
+                    from app.sensor_push import push_pipeline_sensors
+                    await push_pipeline_sensors()
                     return
             else:
                 job = load_job(job_id)
@@ -980,6 +982,8 @@ async def _run_pipeline_inner(job_id: str) -> None:
                 append_log(job, stage, "Rejected — use ↺ Retry to rerun with adjusted settings")
                 job["status"] = STATUS_FAILED
                 save_job(job)
+                from app.sensor_push import push_pipeline_sensors
+                await push_pipeline_sensors()
                 return
 
     # All stages passed
@@ -991,6 +995,9 @@ async def _run_pipeline_inner(job_id: str) -> None:
     job["status"] = STATUS_DONE
     append_log(job, "pipeline", "All stages complete")
     save_job(job)
+
+    from app.sensor_push import push_pipeline_sensors
+    await push_pipeline_sensors()
 
     if job.get("type") == "ha_dashboard" and prev_output and not prev_output.strip().upper().startswith("REJECTED"):
         await _push_dashboard(job, prev_output)
