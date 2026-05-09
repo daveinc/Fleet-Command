@@ -163,3 +163,8 @@ async def push_pipeline_sensors() -> None:
         "unit_of_measurement": "stages",
         "blocks": blocks,
     })
+
+
+async def push_fleet_sensors(fleet: dict) -> None:
+    """Legacy stub — kept for import compatibility."""
+    pass
