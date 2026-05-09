@@ -219,6 +219,8 @@ async def api_job_run(job_id: str, background_tasks: BackgroundTasks) -> dict:
     job = load_job(job_id)
     if not job:
         return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
+    if job.get("status") == "running":
+        return JSONResponse({"ok": False, "error": "already running"}, status_code=409)
     background_tasks.add_task(run_pipeline, job_id)
     return {"ok": True, "job_id": job_id}
 
