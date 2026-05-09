@@ -9,8 +9,17 @@ from typing import Any
 
 import httpx
 
-# Only one job pipeline runs at a time — prevents overwhelming local inference workers
-_PIPELINE_SEM = asyncio.Semaphore(1)
+# Semaphore sized to number of enabled workers — computed lazily on first pipeline run
+_PIPELINE_SEM: asyncio.Semaphore | None = None
+
+def _get_pipeline_sem() -> asyncio.Semaphore:
+    global _PIPELINE_SEM
+    if _PIPELINE_SEM is None:
+        from app.config import options
+        opts = options()
+        enabled = sum(1 for i in range(1, 5) if opts.get(f"worker_{i}_enabled", False))
+        _PIPELINE_SEM = asyncio.Semaphore(max(1, enabled))
+    return _PIPELINE_SEM
 
 _LOG_FILE = Path("/share/fleet_command.log")
 
@@ -125,11 +134,18 @@ def _auth_headers(harness: dict[str, Any]) -> dict[str, str]:
 
 
 def _strip_fences(text: str) -> str:
+    """Strip outer markdown code fences."""
     text = text.strip()
     text = re.sub(r"^```ya?ml\s*", "", text, flags=re.IGNORECASE)
     text = re.sub(r"^```\s*", "", text)
     text = re.sub(r"\s*```$", "", text)
     return text.strip()
+
+
+def _strip_all_fences(text: str) -> str:
+    """Remove every markdown fence line from anywhere in the text."""
+    lines = [l for l in text.splitlines() if not re.match(r"^\s*```", l)]
+    return "\n".join(lines).strip()
 
 
 def _ollama_host() -> str:
@@ -415,7 +431,7 @@ async def run_stage(job_id: str, stage: str) -> dict[str, Any]:
                         "Then output the corrected or unchanged cards YAML. YAML only after the review line."
                     )
                     raw_v, handled_by = await _call_with_fallback(stage, harness, persona, view_prompt, roles, job)
-                    stripped_v = _strip_fences(raw_v)
+                    stripped_v = _strip_all_fences(_strip_fences(raw_v))
                     lines_v = stripped_v.splitlines()
                     note_lines = [l for l in lines_v if l.strip().startswith("#")]
                     yaml_lines = [l for l in lines_v if not l.strip().startswith("#")]
@@ -439,7 +455,7 @@ async def run_stage(job_id: str, stage: str) -> dict[str, Any]:
                 return {"ok": True, "stage": stage, "output": output, "handled_by": handled_by}
 
         raw, handled_by = await _call_with_fallback(stage, harness, persona, user, roles, job)
-        output = _strip_fences(raw)
+        output = _strip_all_fences(_strip_fences(raw))
 
         # Reviewer escalation: count issues, fix inline if within threshold
         if stage == "reviewer" and output.strip().upper().startswith("REJECTED"):
@@ -457,7 +473,7 @@ async def run_stage(job_id: str, stage: str) -> dict[str, Any]:
                 )
                 try:
                     raw2, handled_by = await _call_with_fallback(stage, harness, persona, fix_user, roles, job)
-                    output = _strip_fences(raw2)
+                    output = _strip_all_fences(_strip_fences(raw2))
                 except Exception:
                     pass  # Keep rejection if fix attempt fails
             else:
@@ -558,7 +574,7 @@ async def _call_assembler(job_id: str, fragments: list[dict[str, str]], roles: d
             save_job(job)
 
             raw, last_handled_by = await _call_with_fallback("assembler", harness, persona, block_prompt, roles, job)
-            cards_yaml = _strip_fences(raw).strip()
+            cards_yaml = _strip_all_fences(_strip_fences(raw)).strip()
             assembled_views.append((block_name, cards_yaml))
 
         # Save combined input for inspection
@@ -685,7 +701,7 @@ async def run_pipeline(job_id: str) -> None:
         append_log(job, "pipeline", "Queued — waiting for current job to finish")
         save_job(job)
 
-    async with _PIPELINE_SEM:
+    async with _get_pipeline_sem():
         await _run_pipeline_inner(job_id)
 
 
