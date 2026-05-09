@@ -43,6 +43,39 @@ async def api_harnesses() -> dict:
     return {"harnesses": load_harnesses()}
 
 
+@app.post("/api/harnesses")
+async def api_harness_create(payload: dict) -> dict:
+    import re
+    display_name = payload.get("display_name", "").strip()
+    if not display_name:
+        return JSONResponse({"ok": False, "error": "display_name required"}, status_code=400)
+    harness_id = re.sub(r"[^a-z0-9]+", "_", display_name.lower()).strip("_")
+    if not harness_id:
+        harness_id = "worker_" + str(int(__import__("time").time()))
+    existing = load_harnesses()
+    if harness_id in existing:
+        harness_id = harness_id + "_" + str(int(__import__("time").time()))[-4:]
+    defaults = {
+        "display_name": display_name,
+        "model": payload.get("model", ""),
+        "endpoint": payload.get("endpoint", ""),
+        "api_path": payload.get("api_path", "/api/chat"),
+        "request_format": payload.get("request_format", "ollama_chat"),
+        "auth_type": payload.get("auth_type", "none"),
+        "auth_header": payload.get("auth_header", ""),
+        "api_key": payload.get("api_key", ""),
+        "context_window": payload.get("context_window") or None,
+        "cost_type": payload.get("cost_type", "local"),
+        "capabilities": payload.get("capabilities", []),
+        "reasoning": payload.get("reasoning", False),
+        "concurrency": int(payload.get("concurrency") or 1),
+        "params": {"temperature": float(payload.get("temperature") or 0)},
+        "notes": payload.get("notes", ""),
+    }
+    save_user_harness(harness_id, defaults)
+    return {"ok": True, "id": harness_id, "harness": defaults}
+
+
 @app.put("/api/harnesses/{harness_id}")
 async def api_harness_save(harness_id: str, payload: dict) -> dict:
     existing = load_harnesses().get(harness_id)
@@ -949,9 +982,8 @@ def _dashboard_html(root: str) -> str:  # noqa: C901
 
 <div class="tabs">
   <div class="tab active" onclick="switchTab('fleet', this)">Fleet</div>
-  <div class="tab" onclick="switchTab('staff', this)">Staff</div>
+  <div class="tab" onclick="switchTab('staff', this); renderHarnesses()">Staff</div>
   <div class="tab" onclick="switchTab('jobs', this)">Projects</div>
-  <div class="tab" onclick="switchTab('harnesses', this)">Harnesses</div>
   <div class="tab" onclick="switchTab('templates', this); loadMessageTemplates()">Templates</div>
   <div class="tab" onclick="switchTab('pipeline', this); loadPipelineTab()">Pipeline</div>
 </div>
@@ -1006,6 +1038,12 @@ def _dashboard_html(root: str) -> str:  # noqa: C901
     <button class="btn btn-ghost btn-sm" onclick="resetRoleChain()">Reset</button>
     <button class="btn btn-primary" onclick="saveRoleChain()">Save Chain</button>
   </div>
+
+  <div style="display:flex;align-items:center;justify-content:space-between;margin:1.25rem 0 0.4rem">
+    <div class="section-title" style="margin:0">Model Registry</div>
+    <button class="btn btn-primary btn-sm" onclick="openNewWorker()">+ New Worker</button>
+  </div>
+  <div class="harness-grid" id="harness-grid"></div>
 </div>
 
 <!-- ── Jobs tab ── -->
@@ -1017,11 +1055,8 @@ def _dashboard_html(root: str) -> str:  # noqa: C901
   <div id="job-list"></div>
 </div>
 
-<!-- ── Harnesses tab ── -->
-<div class="tab-panel" id="tab-harnesses">
-  <div class="section-title">Registered Models</div>
-  <div class="harness-grid" id="harness-grid"></div>
-</div>
+<!-- ── Harnesses tab (hidden — content merged into Staff) ── -->
+<div class="tab-panel" id="tab-harnesses" style="display:none!important"></div>
 
 <!-- ── Pipeline tab ── -->
 <div class="tab-panel" id="tab-pipeline">
@@ -1101,6 +1136,69 @@ def _dashboard_html(root: str) -> str:  # noqa: C901
     <div class="modal-actions">
       <button class="btn btn-ghost btn-sm" onclick="closeModal('modal-staff')">Cancel</button>
       <button class="btn btn-primary btn-sm" onclick="submitStaff()">Add</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="modal-new-worker">
+  <div class="modal" style="width:min(540px,94vw)">
+    <h3>New Worker</h3>
+    <div class="params-grid" style="margin-bottom:0.5rem">
+      <div class="field"><label>Display Name</label><input id="nw-name" placeholder="e.g. My Ollama Model"></div>
+      <div class="field"><label>Model</label><input id="nw-model" placeholder="e.g. qwen2.5-coder:3b"></div>
+      <div class="field"><label>Endpoint (base URL)</label><input id="nw-endpoint" placeholder="http://host.docker.internal:11434"></div>
+      <div class="field"><label>API Path</label><input id="nw-apipath" placeholder="/api/chat" value="/api/chat"></div>
+      <div class="field">
+        <label>Request Format</label>
+        <select id="nw-fmt">
+          <option value="ollama_chat">ollama_chat</option>
+          <option value="ollama_generate">ollama_generate</option>
+          <option value="openai_responses">openai_responses</option>
+          <option value="openai_chat">openai_chat</option>
+          <option value="anthropic_messages">anthropic_messages</option>
+          <option value="raw_prompt_json">raw_prompt_json</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Auth Type</label>
+        <select id="nw-auth">
+          <option value="none">none</option>
+          <option value="bearer">bearer</option>
+          <option value="x_api_key">x_api_key</option>
+          <option value="custom_header">custom_header</option>
+        </select>
+      </div>
+      <div class="field"><label>Auth Header (if custom)</label><input id="nw-authheader" placeholder="e.g. X-Api-Key"></div>
+      <div class="field"><label>API Key / Token</label><input id="nw-apikey" type="password" placeholder="leave blank if none"></div>
+      <div class="field"><label>Temperature</label><input id="nw-temp" type="number" min="0" max="2" step="0.1" value="0"></div>
+      <div class="field"><label>Concurrency</label><input id="nw-conc" type="number" min="1" step="1" value="1"></div>
+      <div class="field">
+        <label>Cost Type</label>
+        <select id="nw-cost">
+          <option value="local">local</option>
+          <option value="cloud_metered">cloud_metered</option>
+          <option value="cloud_shared">cloud_shared</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Assign to Role (optional)</label>
+        <select id="nw-role"><option value="">— no assignment —</option></select>
+      </div>
+    </div>
+    <div class="field" style="margin-bottom:0.5rem">
+      <label>Capabilities</label>
+      <div style="display:flex;gap:0.5rem;flex-wrap:wrap;font-size:0.8rem;margin-top:0.25rem" id="nw-caps-row">
+        <label><input type="checkbox" value="generator"> generator</label>
+        <label><input type="checkbox" value="manager"> manager</label>
+        <label><input type="checkbox" value="reviewer"> reviewer</label>
+        <label><input type="checkbox" value="project_manager"> project_manager</label>
+        <label><input type="checkbox" value="supervisor"> supervisor</label>
+      </div>
+    </div>
+    <div class="field"><label>Notes (optional)</label><textarea id="nw-notes" rows="2" style="resize:vertical"></textarea></div>
+    <div class="modal-actions" style="margin-top:0.75rem">
+      <button class="btn btn-ghost btn-sm" onclick="closeModal('modal-new-worker')">Cancel</button>
+      <button class="btn btn-primary btn-sm" onclick="submitNewWorker()">Add Worker</button>
     </div>
   </div>
 </div>
@@ -1463,7 +1561,6 @@ function switchTab(name, el) {{
   document.querySelectorAll(".tab-panel").forEach(p => p.classList.remove("active"));
   el.classList.add("active");
   document.getElementById("tab-" + name).classList.add("active");
-  if (name === "harnesses") renderHarnesses();
   if (name === "jobs") loadJobs();
   if (name === "fleet") loadFleetTab();
   if (name !== "jobs") stopLivePoll();
@@ -1716,6 +1813,62 @@ async function assignWorkerRole(staffId) {{
   renderRoster();
   renderPool();
   renderStaff();
+}}
+
+// ── New Worker ─────────────────────────────────────────────────────────────
+
+function openNewWorker() {{
+  ["nw-name","nw-model","nw-endpoint","nw-apikey","nw-authheader","nw-notes"].forEach(id => {{
+    const el = document.getElementById(id); if (el) el.value = "";
+  }});
+  document.getElementById("nw-apipath").value = "/api/chat";
+  document.getElementById("nw-fmt").value = "ollama_chat";
+  document.getElementById("nw-auth").value = "none";
+  document.getElementById("nw-temp").value = "0";
+  document.getElementById("nw-conc").value = "1";
+  document.getElementById("nw-cost").value = "local";
+  document.querySelectorAll("#nw-caps-row input[type=checkbox]").forEach(cb => cb.checked = false);
+  const roleSel = document.getElementById("nw-role");
+  roleSel.innerHTML = '<option value="">— no assignment —</option>' +
+    [...roleOrder, advisorRole].map(r => `<option value="${{r}}">${{r}}</option>`).join("");
+  document.getElementById("modal-new-worker").classList.add("open");
+}}
+
+async function submitNewWorker() {{
+  const caps = [...document.querySelectorAll("#nw-caps-row input[type=checkbox]:checked")].map(cb => cb.value);
+  const payload = {{
+    display_name: document.getElementById("nw-name").value.trim(),
+    model: document.getElementById("nw-model").value.trim(),
+    endpoint: document.getElementById("nw-endpoint").value.trim(),
+    api_path: document.getElementById("nw-apipath").value.trim(),
+    request_format: document.getElementById("nw-fmt").value,
+    auth_type: document.getElementById("nw-auth").value,
+    auth_header: document.getElementById("nw-authheader").value.trim(),
+    api_key: document.getElementById("nw-apikey").value.trim(),
+    temperature: parseFloat(document.getElementById("nw-temp").value) || 0,
+    concurrency: parseInt(document.getElementById("nw-conc").value) || 1,
+    cost_type: document.getElementById("nw-cost").value,
+    capabilities: caps,
+    notes: document.getElementById("nw-notes").value.trim(),
+  }};
+  if (!payload.display_name) {{ alert("Display name is required."); return; }}
+  const res = await fetch(api("/api/harnesses"), {{
+    method: "POST", headers: {{"Content-Type":"application/json"}}, body: JSON.stringify(payload),
+  }}).then(r => r.json());
+  if (!res.ok) {{ alert("Error: " + (res.error || "unknown")); return; }}
+  harnesses[res.id] = res.harness;
+  const roleVal = document.getElementById("nw-role").value;
+  if (roleVal) {{
+    roles[roleVal] = {{ harness_id: res.id, params: {{}} }};
+    await fetch(api("/api/roles"), {{
+      method: "POST", headers: {{"Content-Type":"application/json"}},
+      body: JSON.stringify({{ assignments: roles }}),
+    }});
+    renderRoster();
+    renderPool();
+  }}
+  renderHarnesses();
+  closeModal("modal-new-worker");
 }}
 
 // ── Projects ───────────────────────────────────────────────────────────────
