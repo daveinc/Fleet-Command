@@ -2366,17 +2366,34 @@ function renderFleetDetail(j) {{
     const clickable = hasOutput ? `style="cursor:pointer" onclick="fleetShowStageOutput('${{j.id}}','${{stage}}','${{LABEL[stage]||stage}}')"` : "";
     const active = _fleetDetailPanel?.key === stage ? "background:#1e293b;border-radius:4px;" : "";
     const tok = s.tokens;
-    const tokBadge = tok ? `<span style="font-size:0.6rem;color:#475569;margin-left:0.3rem" title="tokens in/out">${{tok.input}}↑${{tok.output}}↓</span>` : "";
+    const ctx = s.ctx_window;
+    let ctxBar = "";
+    if (tok && ctx) {{
+      const inPct  = Math.min(100, Math.round(tok.input  / ctx * 100));
+      const outPct = Math.min(100, Math.round(tok.output / ctx * 100));
+      const totalPct = Math.min(100, inPct + outPct);
+      const barColor = totalPct > 80 ? "#ef4444" : totalPct > 50 ? "#f59e0b" : "#22c55e";
+      const overColor = totalPct > 80 ? "#ef4444" : "#334155";
+      ctxBar = `<div style="margin:0.15rem 0.75rem 0.3rem;display:flex;align-items:center;gap:0.4rem">
+        <div style="flex:1;height:4px;background:#1e293b;border-radius:2px;overflow:hidden;position:relative">
+          <div style="position:absolute;left:0;top:0;height:100%;width:${{inPct}}%;background:#3b82f6;border-radius:2px"></div>
+          <div style="position:absolute;left:${{inPct}}%;top:0;height:100%;width:${{outPct}}%;background:#f59e0b;border-radius:2px"></div>
+        </div>
+        <span style="font-size:0.6rem;color:${{overColor}};white-space:nowrap">${{totalPct}}% of ${{ctx>=1000?(ctx/1000).toFixed(0)+"k":ctx}} ctx</span>
+        <span style="font-size:0.58rem;color:#334155;white-space:nowrap">${{tok.input}}↑ ${{tok.output}}↓</span>
+      </div>`;
+    }} else if (tok) {{
+      ctxBar = `<div style="font-size:0.6rem;color:#475569;padding:0.1rem 0.75rem 0.25rem">${{tok.input}}↑ ${{tok.output}}↓ tokens</div>`;
+    }}
     const reviewNote = (stage === "reviewer" && s.review_notes)
       ? `<div style="font-size:0.65rem;color:#94a3b8;font-style:italic;padding:0.15rem 0.75rem 0.3rem;word-break:break-word">${{s.review_notes.slice(0,300)}}</div>`
       : "";
     return `<div class="fstage-row" ${{clickable}} style="${{active}}">
       <span class="fstage-dot" style="background:${{color}}"></span>
       <span class="fstage-name" style="color:${{hasOutput?"#e2e8f0":"#475569"}}">${{LABEL[stage]||stage}}</span>
-      <span class="fstage-model">${{model}}${{progress}}</span>
+      <span class="fstage-model">${{s.model_name||model}}${{progress}}</span>
       <span class="fstage-status" style="color:${{color}}">${{s.status||"pending"}}</span>
-      ${{tokBadge}}
-    </div>${{reviewNote}}`;
+    </div>${{ctxBar}}${{reviewNote}}`;
   }}).join("");
 
   // Parse blocks/tasks from generator log entries

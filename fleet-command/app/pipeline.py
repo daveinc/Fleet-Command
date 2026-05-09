@@ -59,11 +59,28 @@ Rules: every card needs type. entities card uses list under entities key.
 """
 
 
+def _estimate_input_tokens(system: str, user: str) -> int:
+    """Rough estimate: 1 token ≈ 4 chars."""
+    return (len(system) + len(user)) // 4
+
+
+def _safe_output_budget(harness: dict[str, Any], system: str, user: str, default: int = 1024) -> int:
+    """Return max output tokens that fits within the harness context window."""
+    ctx = harness.get("context_window")
+    if not ctx:
+        return default
+    estimated_input = _estimate_input_tokens(system, user)
+    # Leave 10% headroom for safety
+    remaining = int(ctx * 0.9) - estimated_input
+    return max(256, min(remaining, default))
+
+
 def _build_payload(harness: dict[str, Any], system: str, user: str) -> dict[str, Any]:
     model = harness.get("model", "")
     fmt = harness.get("request_format", "ollama_chat")
     params = harness.get("params", {})
     temp = params.get("temperature", 0)
+    out_budget = _safe_output_budget(harness, system, user)
 
     if fmt == "ollama_chat":
         return {
@@ -73,10 +90,11 @@ def _build_payload(harness: dict[str, Any], system: str, user: str) -> dict[str,
                 {"role": "user", "content": user},
             ],
             "stream": False,
-            "options": {"temperature": temp, "num_predict": 1024},
+            "options": {"temperature": temp, "num_predict": out_budget},
         }
     if fmt == "ollama_generate":
-        return {"model": model, "prompt": f"{system}\n\n{user}", "stream": False}
+        return {"model": model, "prompt": f"{system}\n\n{user}", "stream": False,
+                "options": {"num_predict": out_budget}}
     if fmt == "openai_chat":
         return {
             "model": model,
@@ -85,12 +103,14 @@ def _build_payload(harness: dict[str, Any], system: str, user: str) -> dict[str,
                 {"role": "user", "content": user},
             ],
             "temperature": temp,
+            "max_tokens": out_budget,
         }
     if fmt == "anthropic_messages":
+        explicit = params.get("max_tokens", 4096)
         return {
             "model": model,
             "system": system,
-            "max_tokens": params.get("max_tokens", 4096),
+            "max_tokens": min(explicit, out_budget) if harness.get("context_window") else explicit,
             "messages": [{"role": "user", "content": user}],
         }
     return {"model": model, "prompt": f"{system}\n\n{user}"}
@@ -477,7 +497,13 @@ async def run_stage(job_id: str, stage: str) -> dict[str, Any]:
                 write_stage_input(job_id, stage, f"[view-by-view review of {len(view_pairs)} views]\n" + user)
                 write_stage_output(job_id, stage, output)
                 note = f" (handled by {handled_by})" if handled_by != stage else ""
-                stage_data: dict = {"status": "done", "preview": output[:400], "handled_by": handled_by}
+                stage_data: dict = {
+                    "status": "done", "preview": output[:400], "handled_by": handled_by,
+                    "model_name": harness.get("display_name", harness_id),
+                    "ctx_window": harness.get("context_window"),
+                }
+                if job.get("stages", {}).get(stage, {}).get("tokens"):
+                    stage_data["tokens"] = job["stages"][stage]["tokens"]
                 if review_notes:
                     stage_data["review_notes"] = review_notes
                     append_log(job, stage, f"Review: {review_notes[:300]}")
@@ -535,7 +561,14 @@ async def run_stage(job_id: str, stage: str) -> dict[str, Any]:
 
         write_stage_output(job_id, stage, output)
         note = f" (handled by {handled_by})" if handled_by != stage else ""
-        stage_data: dict = {"status": "done", "preview": output[:400], "handled_by": handled_by}
+        stage_data: dict = {
+            "status": "done", "preview": output[:400], "handled_by": handled_by,
+            "model_name": harness.get("display_name", harness_id),
+            "ctx_window": harness.get("context_window"),
+        }
+        # carry over accumulated tokens from _accum_tokens calls above
+        if job.get("stages", {}).get(stage, {}).get("tokens"):
+            stage_data["tokens"] = job["stages"][stage]["tokens"]
         if review_notes:
             stage_data["review_notes"] = review_notes
             append_log(job, stage, f"Review: {review_notes[:300]}")
@@ -545,7 +578,9 @@ async def run_stage(job_id: str, stage: str) -> dict[str, Any]:
         return {"ok": True, "stage": stage, "output": output, "handled_by": handled_by}
 
     except Exception as exc:
-        job["stages"][stage] = {"status": "error", "error": str(exc)}
+        job["stages"][stage] = {"status": "error", "error": str(exc),
+                                "model_name": harness.get("display_name", harness_id),
+                                "ctx_window": harness.get("context_window")}
         append_log(job, stage, f"ERROR — all workers exhausted: {exc}")
         save_job(job)
         return {"ok": False, "error": str(exc)}
@@ -626,7 +661,14 @@ async def _call_assembler(job_id: str, fragments: list[dict[str, str]], roles: d
         output = f"title: {spec_title}\nviews:\n{views_yaml}"
 
         write_stage_output(job_id, "assembler", output)
-        job["stages"]["assembler"] = {"status": "done", "preview": output[:400], "handled_by": last_handled_by}
+        asm_stage: dict = {
+            "status": "done", "preview": output[:400], "handled_by": last_handled_by,
+            "model_name": harness.get("display_name", harness_id),
+            "ctx_window": harness.get("context_window"),
+        }
+        if job.get("stages", {}).get("assembler", {}).get("tokens"):
+            asm_stage["tokens"] = job["stages"]["assembler"]["tokens"]
+        job["stages"]["assembler"] = asm_stage
         append_log(job, "assembler", f"Done — {len(assembled_views)} views, {len(output)} chars")
         save_job(job)
         return {"ok": True, "output": output}
