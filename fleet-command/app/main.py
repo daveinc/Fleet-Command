@@ -2365,6 +2365,8 @@ function renderFleetDetail(j) {{
     const hasOutput = s.status === "done" || s.status === "error";
     const clickable = hasOutput ? `style="cursor:pointer" onclick="fleetShowStageOutput('${{j.id}}','${{stage}}','${{LABEL[stage]||stage}}')"` : "";
     const active = _fleetDetailPanel?.key === stage ? "background:#1e293b;border-radius:4px;" : "";
+    const tok = s.tokens;
+    const tokBadge = tok ? `<span style="font-size:0.6rem;color:#475569;margin-left:0.3rem" title="tokens in/out">${{tok.input}}↑${{tok.output}}↓</span>` : "";
     const reviewNote = (stage === "reviewer" && s.review_notes)
       ? `<div style="font-size:0.65rem;color:#94a3b8;font-style:italic;padding:0.15rem 0.75rem 0.3rem;word-break:break-word">${{s.review_notes.slice(0,300)}}</div>`
       : "";
@@ -2373,6 +2375,7 @@ function renderFleetDetail(j) {{
       <span class="fstage-name" style="color:${{hasOutput?"#e2e8f0":"#475569"}}">${{LABEL[stage]||stage}}</span>
       <span class="fstage-model">${{model}}${{progress}}</span>
       <span class="fstage-status" style="color:${{color}}">${{s.status||"pending"}}</span>
+      ${{tokBadge}}
     </div>${{reviewNote}}`;
   }}).join("");
 
@@ -2452,7 +2455,8 @@ function renderFleetDetail(j) {{
       <div class="section-title" style="font-size:0.65rem;margin:0.65rem 0 0.15rem">Activity${{isActive?" · live":""}}</div>
       <div class="flog-mini" id="flog-mini">${{logLines||'<span style="color:#334155">No activity yet.</span>'}}</div>
 
-      <div style="display:flex;gap:0.4rem;flex-wrap:wrap;margin-top:0.75rem">
+      ${{j.tokens_total ? `<div style="font-size:0.65rem;color:#475569;margin-top:0.5rem">Tokens — in: ${{j.tokens_total.input}} · out: ${{j.tokens_total.output}} · total: ${{j.tokens_total.input + j.tokens_total.output}}</div>` : ""}}
+      <div style="display:flex;gap:0.4rem;flex-wrap:wrap;margin-top:0.5rem">
         ${{j.status === "pending" ? `<button class="btn btn-primary btn-sm" onclick="fleetRunJob('${{j.id}}')">▶ Run</button>` : ""}}
         ${{isActive ? `<button class="btn btn-ghost btn-sm" onclick="fleetCancelJob('${{j.id}}')">⏸ Cancel</button>` : ""}}
         ${{(j.status === "failed" || j.status === "done" || j.status === "cancelled") ? `<button class="btn btn-ghost btn-sm" style="color:#fbbf24" onclick="fleetRetryJob('${{j.id}}')">↺ Retry</button>` : ""}}

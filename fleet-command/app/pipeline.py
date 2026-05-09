@@ -96,22 +96,41 @@ def _build_payload(harness: dict[str, Any], system: str, user: str) -> dict[str,
     return {"model": model, "prompt": f"{system}\n\n{user}"}
 
 
-def _extract(response: httpx.Response, fmt: str) -> str:
+def _extract(response: httpx.Response, fmt: str) -> tuple[str, dict[str, int]]:
+    """Returns (text, {"input": n, "output": n})."""
+    tok: dict[str, int] = {"input": 0, "output": 0}
     try:
         data = response.json()
         if fmt == "ollama_chat":
-            return data.get("message", {}).get("content", response.text)
+            tok["input"] = data.get("prompt_eval_count", 0)
+            tok["output"] = data.get("eval_count", 0)
+            return data.get("message", {}).get("content", response.text), tok
         if fmt == "ollama_generate":
-            return data.get("response", response.text)
-        if fmt in ("openai_chat",):
+            tok["input"] = data.get("prompt_eval_count", 0)
+            tok["output"] = data.get("eval_count", 0)
+            return data.get("response", response.text), tok
+        if fmt == "openai_chat":
+            usage = data.get("usage", {})
+            tok["input"] = usage.get("prompt_tokens", 0)
+            tok["output"] = usage.get("completion_tokens", 0)
             choices = data.get("choices", [])
-            return choices[0].get("message", {}).get("content", response.text) if choices else response.text
+            return (choices[0].get("message", {}).get("content", response.text) if choices else response.text), tok
+        if fmt == "openai_responses":
+            usage = data.get("usage", {})
+            tok["input"] = usage.get("input_tokens", 0)
+            tok["output"] = usage.get("output_tokens", 0)
+            output = data.get("output", [])
+            text = next((b.get("text","") for item in output for b in item.get("content",[]) if b.get("type")=="text"), response.text)
+            return text, tok
         if fmt == "anthropic_messages":
+            usage = data.get("usage", {})
+            tok["input"] = usage.get("input_tokens", 0)
+            tok["output"] = usage.get("output_tokens", 0)
             content = data.get("content", [])
-            return content[0].get("text", response.text) if content else response.text
+            return (content[0].get("text", response.text) if content else response.text), tok
     except Exception:
         pass
-    return response.text
+    return response.text, tok
 
 
 def _auth_headers(harness: dict[str, Any]) -> dict[str, str]:
@@ -173,7 +192,8 @@ def _resolve_endpoint(harness: dict[str, Any]) -> str:
     return harness.get("endpoint", "").rstrip("/") + api_path
 
 
-async def _call_harness(harness: dict[str, Any], system: str, user: str) -> str:
+async def _call_harness(harness: dict[str, Any], system: str, user: str) -> tuple[str, dict[str, int]]:
+    """Returns (text, token_counts)."""
     endpoint = _resolve_endpoint(harness)
     payload = _build_payload(harness, system, user)
     auth_headers = _auth_headers(harness)
@@ -194,9 +214,9 @@ async def _call_harness(harness: dict[str, Any], system: str, user: str) -> str:
             elapsed = time.monotonic() - t0
             _flog(f"  response status={resp.status_code} elapsed={elapsed:.1f}s size={len(resp.content)}b")
             resp.raise_for_status()
-            result = _extract(resp, fmt)
-            _flog(f"  extracted={len(result)} chars preview={result[:120].strip()!r}")
-            return result
+            result, tokens = _extract(resp, fmt)
+            _flog(f"  extracted={len(result)} chars tokens=in:{tokens['input']} out:{tokens['output']} preview={result[:120].strip()!r}")
+            return result, tokens
     except Exception as exc:
         elapsed = time.monotonic() - t0
         _flog(f"  ERROR after {elapsed:.1f}s: {exc}")
@@ -214,20 +234,19 @@ async def _call_with_fallback(
     user: str,
     roles: dict[str, Any],
     job: dict[str, Any],
-) -> tuple[str, str]:
-    """Try primary harness, escalate up the chain, then wrap to highest available. Returns (raw_output, actual_role_used)."""
+) -> tuple[str, str, dict[str, int]]:
+    """Try primary harness, escalate up the chain. Returns (raw_output, actual_role_used, token_counts)."""
     primary_id = primary_harness.get("id") or primary_harness.get("harness_id")
     tried_ids: set[str] = set()
 
     try:
-        return await _call_harness(primary_harness, system, user), stage
-    except Exception as primary_exc:
+        text, tokens = await _call_harness(primary_harness, system, user)
+        return text, stage, tokens
+    except Exception:
         _flog(f"  ESCALATE: {stage} primary failed — walking up chain")
         tried_ids.add(primary_id or "")
 
     start_idx = _FALLBACK_ORDER.index(stage) + 1 if stage in _FALLBACK_ORDER else len(_FALLBACK_ORDER)
-
-    # Walk up from current role toward the top
     candidates = _FALLBACK_ORDER[start_idx:] + _FALLBACK_ORDER[:start_idx]
 
     for fallback_role in candidates:
@@ -248,12 +267,24 @@ async def _call_with_fallback(
         append_log(job, stage, f"Escalating to {fb_harness.get('display_name', fallback_role)} ({fallback_role})")
         _flog(f"  ESCALATE → {fallback_role} ({fb_harness.get('model')})")
         try:
-            return await _call_harness(fb_harness, system, user), fallback_role
+            text, tokens = await _call_harness(fb_harness, system, user)
+            return text, fallback_role, tokens
         except Exception as fb_exc:
             _flog(f"  ESCALATE {fallback_role} also failed: {fb_exc}")
             continue
 
     raise RuntimeError(f"All workers exhausted for stage '{stage}' — no available harness responded")
+
+
+def _accum_tokens(job: dict[str, Any], stage: str, tokens: dict[str, int]) -> None:
+    """Add token counts to stage entry and job total."""
+    s = job.setdefault("stages", {}).setdefault(stage, {})
+    st = s.setdefault("tokens", {"input": 0, "output": 0})
+    st["input"] += tokens.get("input", 0)
+    st["output"] += tokens.get("output", 0)
+    jt = job.setdefault("tokens_total", {"input": 0, "output": 0})
+    jt["input"] += tokens.get("input", 0)
+    jt["output"] += tokens.get("output", 0)
 
 
 def _count_rejection_issues(text: str) -> int:
@@ -430,7 +461,8 @@ async def run_stage(job_id: str, stage: str) -> dict[str, Any]:
                         "First line: '# REVIEW: <verdict>'\n"
                         "Then output the corrected or unchanged cards YAML. YAML only after the review line."
                     )
-                    raw_v, handled_by = await _call_with_fallback(stage, harness, persona, view_prompt, roles, job)
+                    raw_v, handled_by, tok_v = await _call_with_fallback(stage, harness, persona, view_prompt, roles, job)
+                    _accum_tokens(job, stage, tok_v)
                     stripped_v = _strip_all_fences(_strip_fences(raw_v))
                     lines_v = stripped_v.splitlines()
                     note_lines = [l for l in lines_v if l.strip().startswith("#")]
@@ -454,7 +486,8 @@ async def run_stage(job_id: str, stage: str) -> dict[str, Any]:
                 save_job(job)
                 return {"ok": True, "stage": stage, "output": output, "handled_by": handled_by}
 
-        raw, handled_by = await _call_with_fallback(stage, harness, persona, user, roles, job)
+        raw, handled_by, tok = await _call_with_fallback(stage, harness, persona, user, roles, job)
+        _accum_tokens(job, stage, tok)
         output = _strip_all_fences(_strip_fences(raw))
 
         # Reviewer escalation: count issues, fix inline if within threshold
@@ -472,7 +505,8 @@ async def run_stage(job_id: str, stage: str) -> dict[str, Any]:
                     f"Fix ALL listed issues. Output corrected YAML only. No explanations."
                 )
                 try:
-                    raw2, handled_by = await _call_with_fallback(stage, harness, persona, fix_user, roles, job)
+                    raw2, handled_by, tok2 = await _call_with_fallback(stage, harness, persona, fix_user, roles, job)
+                    _accum_tokens(job, stage, tok2)
                     output = _strip_all_fences(_strip_fences(raw2))
                 except Exception:
                     pass  # Keep rejection if fix attempt fails
@@ -573,7 +607,8 @@ async def _call_assembler(job_id: str, fragments: list[dict[str, str]], roles: d
             job["stages"]["assembler"]["progress"] = f"{len(assembled_views)+1}/{len(blocks)} blocks"
             save_job(job)
 
-            raw, last_handled_by = await _call_with_fallback("assembler", harness, persona, block_prompt, roles, job)
+            raw, last_handled_by, tok_a = await _call_with_fallback("assembler", harness, persona, block_prompt, roles, job)
+            _accum_tokens(job, "assembler", tok_a)
             cards_yaml = _strip_all_fences(_strip_fences(raw)).strip()
             assembled_views.append((block_name, cards_yaml))
 
@@ -625,7 +660,8 @@ async def _run_generator_loop(job_id: str, roles: dict[str, Any], job: dict[str,
         job["stages"]["generator"] = {"status": "running"}
         save_job(job)
         try:
-            raw, handled_by = await _call_with_fallback("generator", harness, persona, user, roles, job)
+            raw, handled_by, tok_g = await _call_with_fallback("generator", harness, persona, user, roles, job)
+            _accum_tokens(job, "generator", tok_g)
             output = _strip_fences(raw)
             write_stage_output(job_id, "generator", output)
             job["stages"]["generator"] = {"status": "done", "preview": output[:400], "handled_by": handled_by}
@@ -664,7 +700,8 @@ async def _run_generator_loop(job_id: str, roles: dict[str, Any], job: dict[str,
 
         user = _user_prompt("generator", spec, None, task=item["task"], block=item["block"])
         try:
-            raw, _ = await _call_with_fallback("generator", harness, persona, user, roles, job)
+            raw, _, tok_g = await _call_with_fallback("generator", harness, persona, user, roles, job)
+            _accum_tokens(job, "generator", tok_g)
             fragment = _strip_fences(raw)
             fragments.append({"block": item["block"], "task": item["task"], "yaml": fragment})
             _flog(f"  task {i+1} done: {len(fragment)} chars")
@@ -761,7 +798,8 @@ async def _run_pipeline_inner(job_id: str) -> None:
                     "Provide a clear, specific answer. Be concise."
                 )
                 try:
-                    raw_answer, _ = await _call_with_fallback("advisor", advisor_harness, advisor_persona, advisor_prompt, load_roles(), job)
+                    raw_answer, _, tok_adv = await _call_with_fallback("advisor", advisor_harness, advisor_persona, advisor_prompt, load_roles(), job)
+                    _accum_tokens(job, "advisor", tok_adv)
                     answer = _strip_fences(raw_answer)
                     append_log(job, "advisor", f"Q: {question_text[:80]} → answered ({len(answer)} chars)")
                     job["stage_instructions"] = job.get("stage_instructions", {})
