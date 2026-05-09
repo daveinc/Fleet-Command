@@ -80,7 +80,9 @@ def append_log(job: dict[str, Any], stage: str, message: str) -> None:
 
 
 def write_stage_output(job_id: str, stage: str, content: str) -> None:
-    (_run_dir(job_id) / f"stage_{stage}.txt").write_text(content, encoding="utf-8")
+    p = _run_dir(job_id) / f"stage_{stage}.txt"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(content, encoding="utf-8")
 
 
 def read_stage_output(job_id: str, stage: str) -> str | None:
@@ -89,7 +91,9 @@ def read_stage_output(job_id: str, stage: str) -> str | None:
 
 
 def write_stage_input(job_id: str, stage: str, content: str) -> None:
-    (_run_dir(job_id) / f"stage_{stage}_input.txt").write_text(content, encoding="utf-8")
+    p = _run_dir(job_id) / f"stage_{stage}_input.txt"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(content, encoding="utf-8")
 
 
 def read_stage_input(job_id: str, stage: str) -> str | None:
