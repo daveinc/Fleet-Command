@@ -88,6 +88,15 @@ def read_stage_output(job_id: str, stage: str) -> str | None:
     return p.read_text(encoding="utf-8") if p.exists() else None
 
 
+def write_stage_input(job_id: str, stage: str, content: str) -> None:
+    (_run_dir(job_id) / f"stage_{stage}_input.txt").write_text(content, encoding="utf-8")
+
+
+def read_stage_input(job_id: str, stage: str) -> str | None:
+    p = _run_dir(job_id) / f"stage_{stage}_input.txt"
+    return p.read_text(encoding="utf-8") if p.exists() else None
+
+
 def cancel_job(job_id: str) -> bool:
     job = load_job(job_id)
     if not job:

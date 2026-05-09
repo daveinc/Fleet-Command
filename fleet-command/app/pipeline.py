@@ -23,6 +23,7 @@ def _flog(msg: str) -> None:
 from app.jobs import (
     load_job, save_job, append_log,
     write_stage_output, read_stage_output,
+    write_stage_input, read_stage_input,
     is_cancelled, rerun_from_stage,
     STATUS_RUNNING, STATUS_DONE, STATUS_FAILED,
 )
@@ -248,7 +249,8 @@ def _user_prompt(stage: str, spec: str, prev: str | None, task: str | None = Non
         prompt = render_prompt("generator_single", spec=spec, prev=prev or "")
         prompt = f"{HA_REFERENCE}\n{prompt}"
     elif stage == "manager":
-        prompt = render_prompt("manager", spec=spec, prev=(prev or "")[:600])
+        prompt = render_prompt("manager", spec=spec, prev=(prev or "")[:800])
+        prompt += "\n\nHard limit: maximum 12 tasks total across all blocks. If the spec requires more, group similar items into one task."
     else:
         prompt = render_prompt(stage, spec=spec, prev=prev or "")
     if extra:
@@ -317,6 +319,35 @@ def _assemble_yaml_fragments(fragments: list[dict[str, str]]) -> str:
     return _yaml.dump(dashboard, default_flow_style=False, allow_unicode=True, sort_keys=False)
 
 
+_REVIEW_CHUNK_THRESHOLD = 1200  # chars — above this, review view-by-view
+
+
+def _split_yaml_views(yaml_text: str) -> list[tuple[str, str]]:
+    """Split assembled dashboard YAML into (view_title, view_block) pairs."""
+    views = []
+    current_title = "View"
+    current_lines: list[str] = []
+    in_views = False
+    for line in yaml_text.splitlines():
+        if line.strip().startswith("views:"):
+            in_views = True
+            continue
+        if not in_views:
+            continue
+        # Detect new view entry
+        m = re.match(r'\s{2}-\s+title:\s*(.+)', line)
+        if m:
+            if current_lines:
+                views.append((current_title, "\n".join(current_lines)))
+            current_title = m.group(1).strip()
+            current_lines = []
+        else:
+            current_lines.append(line)
+    if current_lines:
+        views.append((current_title, "\n".join(current_lines)))
+    return views
+
+
 async def run_stage(job_id: str, stage: str) -> dict[str, Any]:
     job = load_job(job_id)
     if not job:
@@ -357,12 +388,51 @@ async def run_stage(job_id: str, stage: str) -> dict[str, Any]:
     prev = read_stage_output(job_id, prev_stages.get(stage, "")) if stage in prev_stages else None
 
     user = _user_prompt(stage, spec, prev, extra=extra)
+    write_stage_input(job_id, stage, user)
 
     append_log(job, stage, f"Calling {harness.get('display_name', harness_id)}...")
     job["stages"][stage] = {"status": "running"}
     save_job(job)
 
     try:
+        # Reviewer: if input is large, review view-by-view to stay within context limits
+        if stage == "reviewer" and prev and len(prev) > _REVIEW_CHUNK_THRESHOLD:
+            view_pairs = _split_yaml_views(prev)
+            if len(view_pairs) > 1:
+                append_log(job, stage, f"Large output ({len(prev)} chars) — reviewing {len(view_pairs)} views separately")
+                reviewed_views: list[str] = []
+                all_notes: list[str] = []
+                for view_title, view_block in view_pairs:
+                    view_prompt = (
+                        f"Spec: {spec}\n\n"
+                        f"Review this Lovelace view section (title: {view_title}):\n{view_block}\n\n"
+                        "Check: valid card types, markdown cards use 'content:' not 'entity:', no sensor definitions.\n"
+                        "First line: '# REVIEW: <verdict>'\n"
+                        "Then output the corrected or unchanged cards YAML. YAML only after the review line."
+                    )
+                    raw_v, handled_by = await _call_with_fallback(stage, harness, persona, view_prompt, roles, job)
+                    stripped_v = _strip_fences(raw_v)
+                    lines_v = stripped_v.splitlines()
+                    note_lines = [l for l in lines_v if l.strip().startswith("#")]
+                    yaml_lines = [l for l in lines_v if not l.strip().startswith("#")]
+                    if note_lines:
+                        all_notes.append(f"{view_title}: " + " ".join(l.replace("#","").strip() for l in note_lines))
+                    cards = "\n".join(yaml_lines).strip() or view_block
+                    reviewed_views.append(f"  - title: {view_title}\n" + "\n".join(f"    {l}" for l in cards.splitlines()))
+                dashboard_title = prev.splitlines()[0].replace("title:", "").strip() if prev.startswith("title:") else "Dashboard"
+                output = f"title: {dashboard_title}\nviews:\n" + "\n".join(reviewed_views)
+                review_notes = "; ".join(all_notes) if all_notes else None
+                write_stage_input(job_id, stage, f"[view-by-view review of {len(view_pairs)} views]\n" + user)
+                write_stage_output(job_id, stage, output)
+                note = f" (handled by {handled_by})" if handled_by != stage else ""
+                stage_data: dict = {"status": "done", "preview": output[:400], "handled_by": handled_by}
+                if review_notes:
+                    stage_data["review_notes"] = review_notes
+                job["stages"][stage] = stage_data
+                append_log(job, stage, f"Done — {len(view_pairs)} views reviewed, {len(output)} chars{note}")
+                save_job(job)
+                return {"ok": True, "stage": stage, "output": output, "handled_by": handled_by}
+
         raw, handled_by = await _call_with_fallback(stage, harness, persona, user, roles, job)
         output = _strip_fences(raw)
 
@@ -426,16 +496,13 @@ async def run_stage(job_id: str, stage: str) -> dict[str, Any]:
 
 
 async def _call_assembler(job_id: str, fragments: list[dict[str, str]], roles: dict[str, Any], job: dict[str, Any]) -> dict[str, Any]:
+    """Assemble block-by-block: one model call per block, then merge views in Python."""
     from app.pipeline_prompts import render_prompt
     assignment = roles.get("assembler", {})
     harness_id = assignment.get("harness_id")
     harness = get_harness(harness_id) if harness_id else None
 
     spec = job.get("spec", "")
-    fragments_text = "\n".join(
-        f"--- Fragment {i+1} (Block: {f['block']}, Task: {f['task']}) ---\n{f['yaml']}"
-        for i, f in enumerate(fragments)
-    )
 
     if not harness:
         _flog("  assembler: no harness assigned, using Python fallback")
@@ -448,20 +515,65 @@ async def _call_assembler(job_id: str, fragments: list[dict[str, str]], roles: d
 
     persona = ROLE_META.get("assembler", {}).get("persona", "You are an integration engineer.")
     persona = persona.split(".")[0] + "."
-    user = render_prompt("assembler", spec=spec, fragments=fragments_text)
+    model_name = harness.get("display_name", harness_id)
 
-    append_log(job, "assembler", f"Assembling {len(fragments)} fragments with {harness.get('display_name', harness_id)}...")
+    # Group fragments by block
+    blocks: dict[str, list[dict]] = {}
+    for f in fragments:
+        blocks.setdefault(f["block"], []).append(f)
+
+    append_log(job, "assembler", f"Assembling {len(blocks)} blocks ({len(fragments)} fragments) with {model_name}...")
     job["stages"]["assembler"] = {"status": "running"}
     save_job(job)
 
+    assembled_views: list[str] = []
+    all_inputs: list[str] = []
+    last_handled_by = harness_id
+
     try:
-        raw, handled_by = await _call_with_fallback("assembler", harness, persona, user, roles, job)
-        output = _strip_fences(raw)
+        for block_name, block_frags in blocks.items():
+            if is_cancelled(job_id):
+                return {"ok": False, "error": "cancelled"}
+
+            frags_text = "\n".join(
+                f"--- Card {i+1} (Task: {f['task']}) ---\n{f['yaml']}"
+                for i, f in enumerate(block_frags)
+            )
+            block_prompt = (
+                f"Block name: {block_name}\n\n"
+                f"Card fragments:\n{frags_text}\n\n"
+                "Combine these cards into a single Lovelace view section.\n"
+                "Output ONLY a YAML list of cards (starting with '- type:'), no views wrapper, no title, no dashboard structure.\n"
+                "Fix any invalid card fields. YAML only. No fences. No explanation."
+            )
+            all_inputs.append(f"=== Block: {block_name} ===\n{block_prompt}")
+            append_log(job, "assembler", f"Block: {block_name} ({len(block_frags)} cards)")
+            job["stages"]["assembler"]["progress"] = f"{len(assembled_views)+1}/{len(blocks)} blocks"
+            save_job(job)
+
+            raw, last_handled_by = await _call_with_fallback("assembler", harness, persona, block_prompt, roles, job)
+            cards_yaml = _strip_fences(raw).strip()
+            assembled_views.append((block_name, cards_yaml))
+
+        # Save combined input for inspection
+        write_stage_input(job_id, "assembler", "\n\n".join(all_inputs))
+
+        # Python-merge: build full dashboard structure
+        spec_title = spec.split("\n")[0][:60].strip() or "Dashboard"
+        views_yaml = "\n".join(
+            f"  - title: {name}\n    cards:\n" + "\n".join(
+                f"      {line}" for line in cards.splitlines()
+            )
+            for name, cards in assembled_views
+        )
+        output = f"title: {spec_title}\nviews:\n{views_yaml}"
+
         write_stage_output(job_id, "assembler", output)
-        job["stages"]["assembler"] = {"status": "done", "preview": output[:400], "handled_by": handled_by}
-        append_log(job, "assembler", f"Done — {len(output)} chars")
+        job["stages"]["assembler"] = {"status": "done", "preview": output[:400], "handled_by": last_handled_by}
+        append_log(job, "assembler", f"Done — {len(assembled_views)} views, {len(output)} chars")
         save_job(job)
         return {"ok": True, "output": output}
+
     except Exception as exc:
         job["stages"]["assembler"] = {"status": "error", "error": str(exc)}
         append_log(job, "assembler", f"ERROR: {exc}")

@@ -242,6 +242,15 @@ async def api_job_stage_output(job_id: str, stage: str) -> dict:
     return {"ok": True, "stage": stage, "output": output}
 
 
+@app.get("/api/jobs/{job_id}/stage/{stage}/input")
+async def api_job_stage_input(job_id: str, stage: str) -> dict:
+    from app.jobs import read_stage_input
+    inp = read_stage_input(job_id, stage)
+    if inp is None:
+        return JSONResponse({"ok": False, "error": "no input saved"}, status_code=404)
+    return {"ok": True, "stage": stage, "input": inp}
+
+
 @app.post("/api/jobs/{job_id}/cancel")
 async def api_job_cancel(job_id: str) -> dict:
     ok = cancel_job(job_id)
@@ -2251,13 +2260,20 @@ function renderFleetDetail(j) {{
 
   const isActive = j.status === "running" || j.status === "pending";
   const statusColor = STATUS_COLOR[j.status] || "#475569";
-  const panelHtml = _fleetDetailPanel ? `
+  const _pdp = _fleetDetailPanel;
+  const _pdpText = _pdp ? (_pdp.showInput ? (_pdp.input || "(no input recorded)") : (_pdp.content || "(empty)")) : "";
+  const _pdpHasInput = _pdp && _pdp.input;
+  const panelHtml = _pdp ? `
     <div id="fdetail-panel" style="margin:0.5rem 0;background:#0f172a;border:1px solid #334155;border-radius:6px;padding:0.6rem;font-size:0.72rem">
       <div style="display:flex;align-items:center;gap:0.4rem;margin-bottom:0.4rem">
-        <span style="color:#94a3b8;font-weight:600">${{_fleetDetailPanel.title}}</span>
+        <span style="color:#94a3b8;font-weight:600">${{_pdp.title}}</span>
+        ${{_pdpHasInput ? `
+          <button class="btn btn-ghost btn-sm" style="padding:0 0.4rem;font-size:0.62rem;${{_pdp.showInput?"background:#1e3a5f;color:#60a5fa":"color:#64748b"}}" onclick="_fleetDetailPanel.showInput=true;(function(){{const _j=(_fleetJobs||[]).find(j=>j.id===_fleetSelectedId);if(_j)renderFleetDetail(_j);}})()">Received</button>
+          <button class="btn btn-ghost btn-sm" style="padding:0 0.4rem;font-size:0.62rem;${{!_pdp.showInput?"background:#1e3a5f;color:#60a5fa":"color:#64748b"}}" onclick="_fleetDetailPanel.showInput=false;(function(){{const _j=(_fleetJobs||[]).find(j=>j.id===_fleetSelectedId);if(_j)renderFleetDetail(_j);}})()">Produced</button>
+        ` : ""}}
         <button class="btn btn-ghost btn-sm" style="margin-left:auto;padding:0 0.3rem;font-size:0.65rem" onclick="_fleetDetailPanel=null;document.getElementById('fdetail-panel')?.remove()">✕</button>
       </div>
-      <pre style="color:#94a3b8;white-space:pre-wrap;word-break:break-word;max-height:200px;overflow-y:auto;margin:0">${{_fleetDetailPanel.content}}</pre>
+      <pre style="color:#94a3b8;white-space:pre-wrap;word-break:break-word;max-height:200px;overflow-y:auto;margin:0">${{_pdpText}}</pre>
     </div>` : "";
 
   center.innerHTML = `
@@ -2292,22 +2308,34 @@ function renderFleetDetail(j) {{
 }}
 
 async function fleetShowStageOutput(jobId, stage, label) {{
-  const res = await fetch(api(`/api/jobs/${{jobId}}/stage/${{stage}}`)).then(r => r.json());
-  const txt = res.output || res.error || "No output";
+  const [outRes, inRes] = await Promise.all([
+    fetch(api(`/api/jobs/${{jobId}}/stage/${{stage}}`)).then(r => r.json()),
+    fetch(api(`/api/jobs/${{jobId}}/stage/${{stage}}/input`)).then(r => r.json()).catch(() => ({{}})),
+  ]);
+  const outputTxt = outRes.output || outRes.error || "No output";
+  const inputTxt  = inRes.input || null;
   const job = (_fleetJobs || []).find(j => j.id === jobId);
   const reviewNotes = job?.stages?.[stage]?.review_notes || "";
-  let content = txt;
+
+  let outputContent = outputTxt;
   if (stage === "reviewer") {{
     if (reviewNotes) {{
-      content = "REVIEW NOTES:\\n" + reviewNotes + "\\n\\n---\\n\\n" + txt;
+      outputContent = "REVIEW NOTES:\\n" + reviewNotes + "\\n\\n---\\n\\n" + outputTxt;
     }} else {{
-      const asmRes = await fetch(api(`/api/jobs/${{jobId}}/stage/assembler`)).then(r => r.json());
+      const asmRes = await fetch(api(`/api/jobs/${{jobId}}/stage/assembler`)).then(r => r.json()).catch(() => ({{}}));
       const asmOut = asmRes.output || "";
-      const verdict = txt.trim() === asmOut.trim() ? "Passed unchanged." : "Modified - see output below.";
-      content = "REVIEW: " + verdict + "\\n\\n---\\n\\n" + txt;
+      const verdict = outputTxt.trim() === asmOut.trim() ? "Passed unchanged." : "Modified - see output below.";
+      outputContent = "REVIEW: " + verdict + "\\n\\n---\\n\\n" + outputTxt;
     }}
   }}
-  _fleetDetailPanel = {{ key: stage, title: label + " output", content }};
+
+  _fleetDetailPanel = {{
+    key: stage,
+    title: label,
+    content: outputContent,
+    input: inputTxt,
+    showInput: false,
+  }};
   if (job) renderFleetDetail(job);
 }}
 
