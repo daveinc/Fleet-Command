@@ -28,6 +28,16 @@ from app.sensor_push import push_fleet_sensors
 app = FastAPI(title="Fleet Command")
 
 
+def _optional_int(value) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
 @app.middleware("http")
 async def ingress_root_path(request: Request, call_next):
     ingress_path = request.headers.get("X-Ingress-Path", "")
@@ -55,6 +65,8 @@ async def api_harness_create(payload: dict) -> dict:
     existing = load_harnesses()
     if harness_id in existing:
         harness_id = harness_id + "_" + str(int(__import__("time").time()))[-4:]
+    context_window = _optional_int(payload.get("context_window"))
+    token_allowance = _optional_int(payload.get("token_allowance"))
     defaults = {
         "display_name": display_name,
         "model": payload.get("model", ""),
@@ -64,7 +76,9 @@ async def api_harness_create(payload: dict) -> dict:
         "auth_type": payload.get("auth_type", "none"),
         "auth_header": payload.get("auth_header", ""),
         "api_key": payload.get("api_key", ""),
-        "context_window": payload.get("context_window") or None,
+        "context_window": context_window,
+        "context_window_source": "manual" if context_window else None,
+        "token_allowance": token_allowance,
         "cost_type": payload.get("cost_type", "local"),
         "capabilities": payload.get("capabilities", []),
         "reasoning": payload.get("reasoning", False),
@@ -81,6 +95,12 @@ async def api_harness_save(harness_id: str, payload: dict) -> dict:
     existing = load_harnesses().get(harness_id)
     if existing is None:
         return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
+    if "context_window" in payload:
+        context_window = _optional_int(payload.get("context_window"))
+        payload["context_window"] = context_window
+        payload["context_window_source"] = "manual" if context_window else None
+    if "token_allowance" in payload:
+        payload["token_allowance"] = _optional_int(payload.get("token_allowance"))
     updated = {**existing, **payload}
     save_user_harness(harness_id, updated)
     return {"ok": True, "harness": updated}
@@ -1238,6 +1258,8 @@ def _dashboard_html(root: str) -> str:  # noqa: C901
       <div class="field"><label>API Key / Token</label><input id="nw-apikey" type="password" placeholder="leave blank if none"></div>
       <div class="field"><label>Temperature</label><input id="nw-temp" type="number" min="0" max="2" step="0.1" value="0"></div>
       <div class="field"><label>Concurrency</label><input id="nw-conc" type="number" min="1" step="1" value="1"></div>
+      <div class="field"><label>Context Window</label><input id="nw-ctx" type="number" min="1" step="1" placeholder="e.g. 32768"></div>
+      <div class="field"><label>Token Allowance</label><input id="nw-token-allowance" type="number" min="1" step="1" placeholder="optional"></div>
       <div class="field">
         <label>Cost Type</label>
         <select id="nw-cost">
@@ -1348,6 +1370,14 @@ def _dashboard_html(root: str) -> str:  # noqa: C901
       <div class="field">
         <label>Concurrency</label>
         <input type="number" id="mh-conc" min="1" step="1">
+      </div>
+      <div class="field">
+        <label>Context Window</label>
+        <input type="number" id="mh-ctx" min="1" step="1" placeholder="optional">
+      </div>
+      <div class="field">
+        <label>Token Allowance</label>
+        <input type="number" id="mh-token-allowance" min="1" step="1" placeholder="optional">
       </div>
     </div>
     <div class="field" style="margin-top:0.5rem">
@@ -1636,10 +1666,23 @@ function switchTab(name, el) {{
 const REQUEST_FORMATS = ["ollama_chat","ollama_generate","openai_responses","openai_chat","anthropic_messages","raw_prompt_json"];
 const AUTH_TYPES = ["none","bearer","x_api_key","custom_header"];
 
+function parseOptionalInt(value) {{
+  const n = parseInt(value, 10);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}}
+
+function formatTokens(value) {{
+  const n = parseInt(value, 10);
+  if (!Number.isFinite(n) || n <= 0) return "?";
+  return n >= 1000 ? (n / 1000).toFixed(n >= 10000 ? 0 : 1) + "k" : String(n);
+}}
+
 function renderHarnesses() {{
   const el = document.getElementById("harness-grid");
   el.innerHTML = Object.entries(harnesses).map(([id, h]) => {{
-    const ctx = h.context_window ? (h.context_window >= 1000 ? (h.context_window/1000).toFixed(0)+"k" : h.context_window) : "?";
+    const ctx = formatTokens(h.context_window);
+    const allowance = formatTokens(h.token_allowance);
+    const ctxSource = h.context_window_source === "manual" ? "manual" : (h.context_window_source ? "auto" : "");
     const caps = (h.capabilities || []).map(c => `<span class="cap-tag">${{c}}</span>`).join(" ");
     const costBadgeHtml = h.cost_type === "local"
       ? '<span class="cost-badge local">local</span>'
@@ -1655,7 +1698,8 @@ function renderHarnesses() {{
           <div class="harness-name">${{h.display_name}}</div>
           <div class="harness-meta">
             ${{costBadgeHtml}}
-            <span>ctx ${{ctx}}</span>
+            <span>ctx ${{ctx}}${{ctxSource ? " " + ctxSource : ""}}</span>
+            <span>allow ${{allowance}}</span>
             <span>temp ${{h.params?.temperature ?? "?"}}</span>
             <span>concurrency ${{h.concurrency ?? "?"}}</span>
             ${{h.reasoning ? '<span style="color:#818cf8">reasoning ✓</span>' : ""}}
@@ -1683,6 +1727,16 @@ function renderHarnesses() {{
           <div class="param-row">
             <label>Concurrency</label>
             <input type="number" id="hf-conc-${{id}}" min="1" step="1" value="${{h.concurrency ?? 1}}"
+              style="background:#0f1117;border:1px solid #334155;border-radius:4px;color:#e2e8f0;font-size:0.82rem;padding:0.25rem 0.4rem;width:100%">
+          </div>
+          <div class="param-row">
+            <label>Context Window</label>
+            <input type="number" id="hf-ctx-${{id}}" min="1" step="1" value="${{h.context_window || ""}}" placeholder="optional"
+              style="background:#0f1117;border:1px solid #334155;border-radius:4px;color:#e2e8f0;font-size:0.82rem;padding:0.25rem 0.4rem;width:100%">
+          </div>
+          <div class="param-row">
+            <label>Token Allowance</label>
+            <input type="number" id="hf-token-allowance-${{id}}" min="1" step="1" value="${{h.token_allowance || ""}}" placeholder="optional"
               style="background:#0f1117;border:1px solid #334155;border-radius:4px;color:#e2e8f0;font-size:0.82rem;padding:0.25rem 0.4rem;width:100%">
           </div>
         </div>
@@ -1719,6 +1773,8 @@ async function saveHarness(id) {{
     endpoint: document.getElementById("hf-ep-" + id).value.trim(),
     api_path: document.getElementById("hf-path-" + id).value.trim(),
     concurrency: parseInt(document.getElementById("hf-conc-" + id).value) || 1,
+    context_window: parseOptionalInt(document.getElementById("hf-ctx-" + id).value),
+    token_allowance: parseOptionalInt(document.getElementById("hf-token-allowance-" + id).value),
     params: {{ ...h.params, temperature: isNaN(temp) ? 0 : temp }},
   }};
   const res = await fetch(api("/api/harnesses/" + id), {{
@@ -1892,6 +1948,8 @@ function openNewWorker() {{
   document.getElementById("nw-auth").value = "none";
   document.getElementById("nw-temp").value = "0";
   document.getElementById("nw-conc").value = "1";
+  document.getElementById("nw-ctx").value = "";
+  document.getElementById("nw-token-allowance").value = "";
   document.getElementById("nw-cost").value = "local";
   document.querySelectorAll("#nw-caps-row input[type=checkbox]").forEach(cb => cb.checked = false);
   const roleSel = document.getElementById("nw-role");
@@ -1913,6 +1971,8 @@ async function submitNewWorker() {{
     api_key: document.getElementById("nw-apikey").value.trim(),
     temperature: parseFloat(document.getElementById("nw-temp").value) || 0,
     concurrency: parseInt(document.getElementById("nw-conc").value) || 1,
+    context_window: parseOptionalInt(document.getElementById("nw-ctx").value),
+    token_allowance: parseOptionalInt(document.getElementById("nw-token-allowance").value),
     cost_type: document.getElementById("nw-cost").value,
     capabilities: caps,
     notes: document.getElementById("nw-notes").value.trim(),
@@ -2933,6 +2993,8 @@ function openHarnessDetail(id) {{
   document.getElementById("mh-auth").value = h.auth_type || "none";
   document.getElementById("mh-temp").value = h.params?.temperature ?? 0;
   document.getElementById("mh-conc").value = h.concurrency ?? 1;
+  document.getElementById("mh-ctx").value = h.context_window || "";
+  document.getElementById("mh-token-allowance").value = h.token_allowance || "";
   document.getElementById("mh-ep").value = h.endpoint || "";
   document.getElementById("mh-path").value = h.api_path || "";
   document.getElementById("modal-harness").classList.add("open");
@@ -2949,6 +3011,8 @@ async function saveHarnessFromModal() {{
     endpoint: document.getElementById("mh-ep").value.trim(),
     api_path: document.getElementById("mh-path").value.trim(),
     concurrency: parseInt(document.getElementById("mh-conc").value) || 1,
+    context_window: parseOptionalInt(document.getElementById("mh-ctx").value),
+    token_allowance: parseOptionalInt(document.getElementById("mh-token-allowance").value),
     params: {{ ...(h.params || {{}}), temperature: isNaN(temp) ? 0 : temp }},
   }};
   const res = await fetch(api("/api/harnesses/" + id), {{

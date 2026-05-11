@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+import httpx
+
 BUILTIN_HARNESSES: dict[str, dict[str, Any]] = {
     "qwen_ha_1_5b": {
         "display_name": "qwen-ha:1.5b",
@@ -120,6 +122,80 @@ BUILTIN_HARNESSES: dict[str, dict[str, Any]] = {
 }
 
 _USER_HARNESS_DIR = Path("/data/harnesses")
+_OLLAMA_CTX_CACHE: dict[tuple[str, str], int | None] = {}
+
+
+def _ollama_host(endpoint: str) -> str:
+    try:
+        from app.config import options
+
+        configured = str(options().get("ollama_host", "") or "").strip().rstrip("/")
+        if configured:
+            if not configured.startswith(("http://", "https://")):
+                configured = "http://" + configured
+            return configured
+    except Exception:
+        pass
+    return endpoint.rstrip("/")
+
+
+def _extract_context_window(model_info: dict[str, Any]) -> int | None:
+    for key, value in model_info.items():
+        if key.endswith(".context_length") or key.endswith(".context_window"):
+            try:
+                ctx = int(value)
+            except (TypeError, ValueError):
+                continue
+            if ctx > 0:
+                return ctx
+    return None
+
+
+def _fetch_ollama_ctx(model: str, endpoint: str) -> int | None:
+    if not model:
+        return None
+    host = _ollama_host(endpoint)
+    cache_key = (host, model)
+    if cache_key in _OLLAMA_CTX_CACHE:
+        return _OLLAMA_CTX_CACHE[cache_key]
+
+    hosts = [host]
+    if "host.docker.internal" in host:
+        hosts.append(host.replace("host.docker.internal", "localhost"))
+
+    ctx = None
+    for candidate in hosts:
+        try:
+            response = httpx.post(f"{candidate}/api/show", json={"model": model}, timeout=5)
+            response.raise_for_status()
+            data = response.json()
+            ctx = _extract_context_window(data.get("model_info", {}))
+            if ctx:
+                break
+        except Exception:
+            continue
+
+    _OLLAMA_CTX_CACHE[cache_key] = ctx
+    return ctx
+
+
+def _resolve_context_window(harness: dict[str, Any]) -> dict[str, Any]:
+    if harness.get("context_window") and harness.get("context_window_source") == "manual":
+        return harness
+    if harness.get("request_format") not in ("ollama_chat", "ollama_generate"):
+        return harness
+
+    resolved = _fetch_ollama_ctx(
+        str(harness.get("model", "") or ""),
+        str(harness.get("endpoint", "") or ""),
+    )
+    if not resolved:
+        return harness
+
+    enriched = dict(harness)
+    enriched["context_window"] = resolved
+    enriched["context_window_source"] = "ollama:/api/show"
+    return enriched
 
 
 def load_harnesses() -> dict[str, dict[str, Any]]:
@@ -131,7 +207,7 @@ def load_harnesses() -> dict[str, dict[str, Any]]:
                 harnesses[f.stem] = data
             except Exception:
                 pass
-    return harnesses
+    return {hid: _resolve_context_window(dict(harness)) for hid, harness in harnesses.items()}
 
 
 def get_harness(harness_id: str) -> dict[str, Any] | None:

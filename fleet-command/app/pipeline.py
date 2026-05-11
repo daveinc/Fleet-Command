@@ -66,13 +66,34 @@ def _estimate_input_tokens(system: str, user: str) -> int:
 
 def _safe_output_budget(harness: dict[str, Any], system: str, user: str, default: int = 1024) -> int:
     """Return max output tokens that fits within the harness context window."""
+    explicit = harness.get("token_allowance")
+    try:
+        explicit_allowance = int(explicit) if explicit else None
+    except (TypeError, ValueError):
+        explicit_allowance = None
+
     ctx = harness.get("context_window")
     if not ctx:
-        return default
+        return explicit_allowance or default
     estimated_input = _estimate_input_tokens(system, user)
     # Leave 10% headroom for safety
     remaining = int(ctx * 0.9) - estimated_input
-    return max(256, min(remaining, default))
+    limit = explicit_allowance or default
+    return max(256, min(remaining, limit))
+
+
+def _overflow_message(info: dict[str, Any], harness: dict[str, Any]) -> str:
+    model_name = harness.get("display_name", harness.get("model", "?"))
+    if info.get("reason") == "unknown_context_window":
+        return (
+            f"Input overflow guard cannot run because context window is unknown "
+            f"for {model_name}; estimated input is ~{info['estimated']} tokens"
+        )
+    return (
+        f"Input overflow: ~{info['estimated']} tokens estimated "
+        f"vs {info['ctx_window']} ctx window ({info['pct']}% used) "
+        f"on {model_name}"
+    )
 
 
 def _build_payload(harness: dict[str, Any], system: str, user: str) -> dict[str, Any]:
@@ -226,11 +247,7 @@ async def _call_harness(
     info = overflow_info(system, user, harness)
 
     if info["overflows"]:
-        msg = (
-            f"Input overflow: ~{info['estimated']} tokens estimated "
-            f"vs {info['ctx_window']} ctx window ({info['pct']}% used) "
-            f"on {harness.get('display_name', harness.get('model', '?'))}"
-        )
+        msg = _overflow_message(info, harness)
         _flog(f"  OVERFLOW: {msg}")
         if job and stage:
             append_log(job, stage, f"⚠ {msg}")
@@ -486,7 +503,14 @@ def _split_yaml_views(yaml_text: str) -> list[tuple[str, str]]:
     return views
 
 
-async def _fetch_ha_entities(spec: str) -> str:
+def _domains_in_text(text: str) -> set[str]:
+    return {
+        match.group(1)
+        for match in re.finditer(r"\b([a-zA-Z_][a-zA-Z0-9_]*)\.[a-zA-Z0-9_]+", text)
+    }
+
+
+async def _fetch_ha_entities(spec: str, yaml_input: str = "", token_budget: int | None = None) -> str:
     """Fetch dashboard-relevant entities from HA Supervisor API."""
     import os
     DASHBOARD_DOMAINS = {
@@ -496,6 +520,7 @@ async def _fetch_ha_entities(spec: str) -> str:
         "input_datetime", "person", "device_tracker", "cover",
         "fan", "vacuum", "water_heater", "alarm_control_panel",
     }
+    requested_domains = (_domains_in_text(yaml_input) | _domains_in_text(spec)) & DASHBOARD_DOMAINS
     token = os.environ.get("SUPERVISOR_TOKEN", "")
     if not token:
         return "(HA entity list unavailable — no SUPERVISOR_TOKEN)"
@@ -507,7 +532,8 @@ async def _fetch_ha_entities(spec: str) -> str:
             )
             resp.raise_for_status()
             states = resp.json()
-        lines = []
+        prioritized: list[str] = []
+        fallback: list[str] = []
         for s in states:
             eid = s.get("entity_id", "")
             domain = eid.split(".")[0] if "." in eid else ""
@@ -520,11 +546,24 @@ async def _fetch_ha_entities(spec: str) -> str:
             if friendly and friendly.lower() != eid.replace("_", " ").lower():
                 label += f" ({friendly})"
             label += f" — {state}"
-            lines.append(label)
-        # Cap to 120 entities to avoid overflowing small model context windows
-        if len(lines) > 120:
-            lines = lines[:120]
-            lines.append(f"... ({len(lines)} shown, list capped at 120)")
+            if not requested_domains or domain in requested_domains:
+                prioritized.append(label)
+            else:
+                fallback.append(label)
+        lines = prioritized or fallback
+        if token_budget is not None:
+            token_budget = max(0, token_budget)
+            used = 0
+            trimmed = []
+            for line in lines:
+                line_tokens = _estimate_input_tokens("", line + "\n")
+                if used + line_tokens > token_budget:
+                    break
+                trimmed.append(line)
+                used += line_tokens
+            if len(trimmed) < len(lines):
+                trimmed.append(f"... ({len(trimmed)} shown, trimmed to fit reviewer context budget)")
+            lines = trimmed
         return "\n".join(lines) if lines else "(no relevant entities found)"
     except Exception as exc:
         return f"(entity fetch failed: {exc})"
@@ -552,7 +591,20 @@ async def _run_reviewer_3pass(
     )
 
     # Pass 1 — Entity ID resolution
-    entity_list = await _fetch_ha_entities(spec)
+    from app.message_builder import remaining_input_budget
+
+    pass1_without_entities = (
+        f"Spec: {spec}\n\n"
+        "Available Home Assistant entities:\n\n\n"
+        f"Dashboard YAML:\n{yaml_input}\n\n"
+        "Replace ALL placeholder or incorrect entity IDs with real entity IDs from the list above. "
+        "Match by domain and purpose. If unsure, pick the closest available entity. "
+        "Do NOT change card structure, layout, or the root dashboard structure. "
+        f"{_DASHBOARD_STRUCTURE_RULE} "
+        "Output corrected YAML only. No fences. No explanation."
+    )
+    entity_budget = max(0, remaining_input_budget(persona, pass1_without_entities, harness) - 64)
+    entity_list = await _fetch_ha_entities(spec, yaml_input=yaml_input, token_budget=entity_budget)
     pass1_prompt = (
         f"Spec: {spec}\n\n"
         f"Available Home Assistant entities:\n{entity_list}\n\n"

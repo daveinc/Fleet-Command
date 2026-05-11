@@ -21,7 +21,7 @@ def _ctx_window(harness: dict[str, Any]) -> int | None:
 def fits_in_window(text_system: str, text_user: str, harness: dict[str, Any]) -> bool:
     ctx = _ctx_window(harness)
     if not ctx:
-        return True
+        return False
     return _estimate_tokens(text_system + text_user) <= int(ctx * _INPUT_HEADROOM)
 
 
@@ -30,7 +30,13 @@ def overflow_info(text_system: str, text_user: str, harness: dict[str, Any]) -> 
     ctx = _ctx_window(harness)
     est = _estimate_tokens(text_system + text_user)
     if not ctx:
-        return {"estimated": est, "ctx_window": None, "pct": 0, "overflows": False}
+        return {
+            "estimated": est,
+            "ctx_window": None,
+            "pct": None,
+            "overflows": True,
+            "reason": "unknown_context_window",
+        }
     pct = int(est / ctx * 100)
     return {
         "estimated": est,
@@ -38,6 +44,15 @@ def overflow_info(text_system: str, text_user: str, harness: dict[str, Any]) -> 
         "pct": pct,
         "overflows": est > int(ctx * _INPUT_HEADROOM),
     }
+
+
+def remaining_input_budget(text_system: str, text_user: str, harness: dict[str, Any]) -> int:
+    """Approximate tokens still available inside the input headroom."""
+    ctx = _ctx_window(harness)
+    if not ctx:
+        return 0
+    used = _estimate_tokens(text_system + text_user)
+    return max(0, int(ctx * _INPUT_HEADROOM) - used)
 
 
 def _trim_to_token_budget(text: str, budget: int) -> str:
