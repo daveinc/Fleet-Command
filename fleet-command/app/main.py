@@ -1512,6 +1512,7 @@ async function load() {{
   renderProjects();
   loadTemplates();
   loadFleetTab();
+  loadRoleMinimums();
 }}
 
 function ctxLabel(h) {{
@@ -1549,7 +1550,13 @@ function roleCard(role, idx, list) {{
   const enrichStatusCls = enrichStatus ? "staff-status " + staffStatusClass(enrichStatus) : "";
 
   const options = Object.entries(harnesses)
-    .map(([id, info]) => `<option value="${{id}}" ${{id === hid ? "selected" : ""}}>${{info.display_name}}</option>`)
+    .map(([id, info]) => {{
+      const caps = info.capabilities || [];
+      const qualified = caps.length === 0 || caps.includes(role);
+      const label = qualified ? info.display_name : `${{info.display_name}} (not in capabilities)`;
+      const style = qualified ? "" : 'style="color:#6b7280"';
+      return `<option value="${{id}}" ${{id === hid ? "selected" : ""}} ${{style}}>${{label}}</option>`;
+    }})
     .join("");
 
   const upBtn = idx > 0
