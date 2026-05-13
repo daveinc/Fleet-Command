@@ -8,11 +8,12 @@ from typing import Any
 
 _RUNS_DIR = Path("/data/runs")
 
-STATUS_PENDING  = "pending"
-STATUS_RUNNING  = "running"
+STATUS_PENDING   = "pending"
+STATUS_RUNNING   = "running"
 STATUS_REVIEWING = "reviewing"
-STATUS_DONE     = "done"
-STATUS_FAILED   = "failed"
+STATUS_DONE      = "done"
+STATUS_FAILED    = "failed"
+STATUS_SPLIT     = "split"
 
 
 def _run_dir(job_id: str) -> Path:
@@ -32,6 +33,8 @@ def create_job(spec: dict[str, Any]) -> dict[str, Any]:
         "stages": {},
         "log": [],
         "final_output": None,
+        "parent_job_id": spec.get("parent_job_id"),
+        "child_job_ids": [],
     }
     d = _run_dir(job_id)
     d.mkdir(parents=True, exist_ok=True)

@@ -19,8 +19,12 @@ PROMPT_VARIABLES: dict[str, list[str]] = {
 DEFAULT_PROMPTS: dict[str, str] = {
     "project_manager": (
         "Job request: {spec}\n\n"
-        "List the major UI components (blocks) needed. For each block name what cards it contains.\n"
-        "Be concise. Plain text only. No YAML. Under 100 words."
+        "Max tasks per run: {max_tasks}\n\n"
+        "If total card count fits within {max_tasks} tasks: list the major UI blocks and what cards each contains. Plain text only. No YAML. Under 100 words.\n"
+        "If total card count exceeds {max_tasks} tasks: split into sub-jobs, each under {max_tasks} tasks. Output only:\n"
+        "SUB-JOB 1: [self-contained scope description]\n"
+        "SUB-JOB 2: [self-contained scope description]\n"
+        "One line per sub-job. No extra text. No YAML."
     ),
     "manager": (
         "Original request: {spec}\n\n"
@@ -122,6 +126,9 @@ def save_prompts(overrides: dict[str, str]) -> None:
 def render_prompt(stage: str, **kwargs: Any) -> str:
     prompts = load_prompts()
     template = prompts.get(stage, "{spec}")
+    if stage == "project_manager" and "max_tasks" not in kwargs:
+        from app.pipeline_rules import get_max_tasks_per_run
+        kwargs["max_tasks"] = get_max_tasks_per_run()
     try:
         return template.format(**kwargs)
     except KeyError:
@@ -221,6 +228,10 @@ def _merge_modelfile(
                 in_system = False
             continue
 
+        # Strip LICENSE lines — noise from base model
+        if upper.startswith("LICENSE"):
+            continue
+
         # Replace our PARAMETER lines
         if upper.startswith("PARAMETER"):
             parts = stripped.split(None, 2)
@@ -297,42 +308,267 @@ _ROLE_STOPS: dict[str, list[str]] = {
 
 _ROLE_MESSAGES: dict[str, list[tuple[str, str]]] = {
     "generator": [
-        ("user", "Task: Add a weather card\nBlock: Weather"),
-        ("assistant", "type: weather-forecast\nentity: weather.home"),
-        ("user", "Task: Show current temperature\nBlock: Climate"),
-        ("assistant", "type: sensor\nentity: sensor.temperature\nname: Temperature"),
-        ("user", "Task: Summarize 40 sensors across 15 domains into one card with live updates for all of them"),
-        ("assistant", "ESCALATE: context too large — task requires 40+ sensors across 15 domains, exceeds single-card scope"),
-    ],
-    "reviewer": [
-        ("user", "Spec: Weather dashboard\n\nYAML to review:\n```yaml\ntype: weather-forecast\nentity: weather.home\n```"),
-        ("assistant", "# REVIEW: Fixed markdown fences.\ntype: weather-forecast\nentity: weather.home"),
-        ("user", "Spec: Climate view\n\nYAML to review:\ntype: markdown\nentity: sensor.temp"),
-        ("assistant", "# REVIEW: Fixed markdown card using entity instead of content.\ntype: markdown\ncontent: |\n  {{ states('sensor.temp') }}°C"),
-        ("user", "Spec: Full home dashboard\n\nYAML to review:\ntitle: Home\nviews:\n  - title: Main\n    cards: [... 800 cards ...]"),
-        ("assistant", "ESCALATE: context too large — received YAML with 800+ cards, cannot review in single pass"),
+        # Normal task with known entities → output YAML card only
+        (
+            "user",
+            "Task: entities card with toggle and brightness for living room lights\n"
+            "Block: Lighting",
+        ),
+        (
+            "assistant",
+            "type: entities\n"
+            "title: Living Room Lights\n"
+            "entities:\n"
+            "  - entity: light.living_room\n"
+            "    name: Living Room\n"
+            "    toggle: true",
+        ),
+        # Task with entity hint provided → use it in template
+        (
+            "user",
+            "Task: markdown card showing outdoor temperature and humidity\n"
+            "Block: Weather\n"
+            "Entities: sensor.outdoor_temperature, sensor.outdoor_humidity",
+        ),
+        (
+            "assistant",
+            "type: markdown\n"
+            "title: Outdoor Conditions\n"
+            "content: |\n"
+            "  ## Outdoor\n"
+            "  Temperature: {{ states('sensor.outdoor_temperature') }}°C\n"
+            "  Humidity: {{ states('sensor.outdoor_humidity') }}%",
+        ),
+        # Entity unknown → escalate to manager, not guess
+        (
+            "user",
+            "Task: gauge card showing solar panel current output\n"
+            "Block: Energy",
+        ),
+        (
+            "assistant",
+            "ESCALATE: missing entity — solar panel output entity ID not provided, cannot build gauge without it",
+        ),
+        # Task returned from reviewer with guidance injected → apply it
+        (
+            "user",
+            "Task: markdown card showing current time\n"
+            "Block: Overview\n"
+            "Guidance from supervisor: markdown cards must use content: field, not entity:",
+        ),
+        (
+            "assistant",
+            "type: markdown\n"
+            "title: Current Time\n"
+            "content: |\n"
+            "  {{ now().strftime('%H:%M') }}",
+        ),
     ],
     "manager": [
-        ("user", "Original request: Weather dashboard\n\nPlan:\nBuild a weather block with current conditions and forecast"),
-        ("assistant", "BLOCK 1: Weather\n- Task 1: weather-forecast current conditions\n- Task 2: markdown 5-day forecast"),
-        ("user", "Original request: Home overview\n\nPlan:\n[plan with 200 blocks and 1500 tasks across 40 domains]"),
-        ("assistant", "ESCALATE: context too large — plan contains 200 blocks/1500 tasks, exceeds single breakdown capacity"),
+        # PM plan → structured BLOCK/task breakdown
+        (
+            "user",
+            "Original request: Weather dashboard with current conditions and 5-day forecast\n\n"
+            "Plan:\n"
+            "Block 1: Weather\n"
+            "- weather-forecast card (current + 5-day)\n"
+            "- outdoor temperature sensor",
+        ),
+        (
+            "assistant",
+            "BLOCK 1: Weather\n"
+            "- Task 1: weather-forecast card showing current conditions and 5-day forecast\n"
+            "- Task 2: sensor card showing outdoor temperature (entity: sensor.outdoor_temperature)",
+        ),
+        # Generator escalated with missing entity → rewrite task with entity hint
+        (
+            "user",
+            "Original request: Energy dashboard\n\n"
+            "Generator escalation:\n"
+            "Task: gauge card showing solar panel current output\n"
+            "Reason: missing entity — solar panel output entity ID not provided\n\n"
+            "Rewrite the task with a specific entity, or escalate if you cannot resolve it.",
+        ),
+        (
+            "assistant",
+            "BLOCK 2: Energy\n"
+            "- Task 1: gauge card showing solar panel current output (entity: sensor.solaredge_current_power)",
+        ),
+        # Plan from PM is too large → escalate back to PM
+        (
+            "user",
+            "Original request: Full smart home dashboard\n\n"
+            "Plan:\n"
+            "[12 blocks, 80+ cards — lighting, climate, security, energy, media, presence, automations, cameras, network, weather, system health, irrigation]",
+        ),
+        (
+            "assistant",
+            "ESCALATE: plan too large — 12 blocks and 80+ tasks exceeds single breakdown pass, recommend PM splits into separate sub-jobs per domain",
+        ),
     ],
     "project_manager": [
-        ("user", "Job request: Build a simple weather dashboard with current conditions"),
-        ("assistant", "Block 1: Weather\n- weather-forecast card\n- temperature sensor card"),
-        ("user", "Job request: Full smart home dashboard covering all 47 rooms with live sensors, cameras, automation controls, energy monitoring, and security"),
-        ("assistant", "ESCALATE: scope too large for single planning pass — recommend splitting into sub-projects per floor or domain"),
+        # Normal spec that fits within threshold → block list
+        (
+            "user",
+            "Job request: Home overview dashboard with weather, lights for main rooms, and door sensors\n\nMax tasks per run: 25",
+        ),
+        (
+            "assistant",
+            "Block 1: Weather\n"
+            "- weather-forecast card\n"
+            "- outdoor temperature and humidity sensors\n\n"
+            "Block 2: Lighting\n"
+            "- toggle cards for living room, bedroom, kitchen lights\n\n"
+            "Block 3: Security\n"
+            "- binary sensor cards for front door, back door, motion sensor",
+        ),
+        # Scope exceeds threshold → split into sub-jobs, do NOT escalate
+        (
+            "user",
+            "Job request: Full smart home dashboard — weather, all lights across 15 rooms, security sensors, energy monitoring, climate per zone, media players, presence tracking\n\nMax tasks per run: 25",
+        ),
+        (
+            "assistant",
+            "SUB-JOB 1: Weather and outdoor environment dashboard — conditions, forecast, temperature, humidity sensors\n"
+            "SUB-JOB 2: Lighting control dashboard — room-by-room light toggles and brightness for all 15 rooms\n"
+            "SUB-JOB 3: Security and presence dashboard — door/window sensors, motion detectors, who is home\n"
+            "SUB-JOB 4: Energy and climate dashboard — solar, grid, battery, thermostat controls per zone",
+        ),
+        # Single domain is genuinely too large even after splitting → escalate
+        (
+            "user",
+            "Job request: Complete lighting dashboard for all 120 individually addressable lights across 40 rooms, each needing a separate brightness slider and color picker\n\nMax tasks per run: 25",
+        ),
+        (
+            "assistant",
+            "ESCALATE: single domain exceeds run limit — 120 lights cannot be split into sub-jobs each under 25 tasks without losing coherence, requires manual scoping",
+        ),
+    ],
+    "reviewer": [
+        # Valid YAML → # REVIEW header + return unchanged
+        (
+            "user",
+            "Spec: Weather dashboard\n\n"
+            "YAML to review:\n"
+            "type: weather-forecast\n"
+            "entity: weather.home\n"
+            "show_forecast: true",
+        ),
+        (
+            "assistant",
+            "# REVIEW: Valid — no changes needed.\n"
+            "type: weather-forecast\n"
+            "entity: weather.home\n"
+            "show_forecast: true",
+        ),
+        # Markdown card with wrong field → fix it, note it in header
+        (
+            "user",
+            "Spec: Outdoor temperature display\n\n"
+            "YAML to review:\n"
+            "type: markdown\n"
+            "entity: sensor.outdoor_temperature\n"
+            "title: Temperature",
+        ),
+        (
+            "assistant",
+            "# REVIEW: Fixed markdown card — replaced invalid 'entity:' with 'content:' using live template.\n"
+            "type: markdown\n"
+            "title: Temperature\n"
+            "content: |\n"
+            "  {{ states('sensor.outdoor_temperature') }}°C",
+        ),
+        # YAML too large for single pass → escalate
+        (
+            "user",
+            "Spec: Full home dashboard\n\n"
+            "YAML to review:\n"
+            "[assembled dashboard with 150+ cards across 8 views]",
+        ),
+        (
+            "assistant",
+            "ESCALATE: context too large — 150-card dashboard cannot be reviewed in a single pass, chunking required",
+        ),
     ],
     "supervisor": [
-        ("user", "Job specification:\nWeather dashboard\n\nFinal output:\ntitle: Weather\nviews:\n  - title: Main\n    cards:\n      - type: weather-forecast\n        entity: weather.home"),
-        ("assistant", "title: Weather\nviews:\n  - title: Main\n    cards:\n      - type: weather-forecast\n        entity: weather.home"),
-        ("user", "Job specification:\nWeather dashboard\n\nFinal output:\ntitle: Weather\nviews:\n  - title: Main\n    cards:\n      - type: weather-forecast\n        sensor: weather.home"),
-        ("assistant", "REJECTED_AT: generator\nREJECTED: weather-forecast card uses invalid field 'sensor' — must be 'entity'"),
+        # Valid output matching spec → return unchanged, no edits
+        (
+            "user",
+            "Job specification:\n"
+            "Weather dashboard with forecast and outdoor temperature\n\n"
+            "Final output for sign-off:\n"
+            "title: Weather\n"
+            "views:\n"
+            "  - title: Weather\n"
+            "    cards:\n"
+            "      - type: weather-forecast\n"
+            "        entity: weather.home\n"
+            "      - type: sensor\n"
+            "        entity: sensor.outdoor_temperature\n"
+            "        name: Temperature",
+        ),
+        (
+            "assistant",
+            "title: Weather\n"
+            "views:\n"
+            "  - title: Weather\n"
+            "    cards:\n"
+            "      - type: weather-forecast\n"
+            "        entity: weather.home\n"
+            "      - type: sensor\n"
+            "        entity: sensor.outdoor_temperature\n"
+            "        name: Temperature",
+        ),
+        # Output has wrong field → reject back to the stage that caused it
+        (
+            "user",
+            "Job specification:\n"
+            "Living room light toggle button\n\n"
+            "Final output for sign-off:\n"
+            "title: Lights\n"
+            "views:\n"
+            "  - title: Lights\n"
+            "    cards:\n"
+            "      - type: button\n"
+            "        sensor: light.living_room\n"
+            "        name: Living Room",
+        ),
+        (
+            "assistant",
+            "REJECTED_AT: generator\n"
+            "REJECTED: button card uses invalid field 'sensor' — correct field is 'entity'",
+        ),
     ],
     "advisor": [
-        ("user", "A generator worker is escalating to you — it cannot complete its task.\n\nReason: context too large — received task requiring 40 sensors\n\nTask context:\nBuild a unified sensor overview card"),
-        ("assistant", "Split into multiple cards — one per sensor domain. Generator should output one card per call. Manager should rewrite the task as: 'Task 1: climate sensors card, Task 2: energy sensors card' etc."),
+        # Generator stuck on missing entity → guide manager to rewrite the task
+        (
+            "user",
+            "Escalation from: generator\n"
+            "Reason: missing entity — solar panel output entity ID not provided\n\n"
+            "Task context:\n"
+            "Task: gauge card showing solar panel current output\n"
+            "Block: Energy",
+        ),
+        (
+            "assistant",
+            "Instruct manager to rewrite the task with a specific entity hint. "
+            "Common solar entities in HA: sensor.solaredge_current_power, sensor.solar_power, sensor.pv_production. "
+            "Manager should pick the most likely candidate or flag it for reviewer to resolve in entity-resolution pass.",
+        ),
+        # Manager escalating oversized plan → guide PM to split the job
+        (
+            "user",
+            "Escalation from: manager\n"
+            "Reason: plan too large — 12 blocks, 80+ tasks, exceeds single breakdown pass\n\n"
+            "Task context:\n"
+            "Original request: Full smart home dashboard",
+        ),
+        (
+            "assistant",
+            "Instruct project_manager to split into separate sub-jobs: one job per domain (lighting, security, energy, climate). "
+            "Each sub-job should cover at most 3-4 blocks and 20 tasks. "
+            "Assemble views separately then combine into one dashboard at the end.",
+        ),
     ],
 }
 

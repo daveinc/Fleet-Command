@@ -5,6 +5,11 @@ from pathlib import Path
 from typing import Any
 
 _RULES_FILE = Path("/data/pipeline_rules.json")
+_ESCALATION_CONFIG_FILE = Path("/data/escalation_config.json")
+
+DEFAULT_ESCALATION_CONFIG: dict[str, Any] = {
+    "max_tasks_per_run": 25,
+}
 
 # Who a stage escalates to when it cannot handle its task
 ESCALATION_CHAIN: dict[str, str] = {
@@ -52,6 +57,27 @@ def get_escalation_target(stage: str) -> str | None:
 
 def is_trigger_enabled(trigger: str) -> bool:
     return load_rules().get("escalation_triggers", ESCALATION_TRIGGERS).get(trigger, {}).get("enabled", True)
+
+
+def load_escalation_config() -> dict[str, Any]:
+    if _ESCALATION_CONFIG_FILE.exists():
+        try:
+            data = json.loads(_ESCALATION_CONFIG_FILE.read_text(encoding="utf-8"))
+            merged = dict(DEFAULT_ESCALATION_CONFIG)
+            merged.update(data)
+            return merged
+        except Exception:
+            pass
+    return dict(DEFAULT_ESCALATION_CONFIG)
+
+
+def save_escalation_config(config: dict[str, Any]) -> None:
+    _ESCALATION_CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _ESCALATION_CONFIG_FILE.write_text(json.dumps(config, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def get_max_tasks_per_run() -> int:
+    return int(load_escalation_config().get("max_tasks_per_run", 25))
 
 
 def is_worker_signal(output: str) -> tuple[bool, str]:

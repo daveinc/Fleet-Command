@@ -112,6 +112,19 @@ async def api_harness_probe(payload: dict) -> dict:
     return result
 
 
+@app.get("/api/escalation-config")
+async def api_escalation_config_get() -> dict:
+    from app.pipeline_rules import load_escalation_config, DEFAULT_ESCALATION_CONFIG
+    return {"config": load_escalation_config(), "defaults": DEFAULT_ESCALATION_CONFIG}
+
+
+@app.post("/api/escalation-config")
+async def api_escalation_config_save(payload: dict) -> dict:
+    from app.pipeline_rules import save_escalation_config
+    save_escalation_config(payload.get("config", {}))
+    return {"ok": True}
+
+
 @app.get("/api/role-minimums")
 async def api_role_minimums_get() -> dict:
     return {"minimums": load_role_minimums(), "defaults": DEFAULT_ROLE_MINIMUMS}
@@ -1131,7 +1144,7 @@ def _dashboard_html(root: str) -> str:  # noqa: C901
   <div class="tab active" onclick="switchTab('fleet', this)">Fleet</div>
   <div class="tab" onclick="switchTab('staff', this); renderHarnesses()">Staff</div>
   <div class="tab" onclick="switchTab('jobs', this)">Projects</div>
-  <div class="tab" onclick="switchTab('templates', this); loadMessageTemplates(); loadRoleMinimums()">Templates</div>
+  <div class="tab" onclick="switchTab('templates', this); loadMessageTemplates(); loadRoleMinimums(); loadEscalationConfig()">Templates</div>
   <div class="tab" onclick="switchTab('pipeline', this); loadPipelineTab()">Pipeline</div>
 </div>
 
@@ -1273,6 +1286,21 @@ def _dashboard_html(root: str) -> str:  # noqa: C901
     Harnesses below these values will be flagged on role cards. Not enforced — informational only.
   </div>
   <div id="role-minimums-grid" style="display:grid;gap:0.5rem"></div>
+
+  <!-- Pipeline Limits -->
+  <div style="margin-top:1.75rem;display:flex;justify-content:space-between;align-items:center">
+    <div class="section-title" style="margin:0">Pipeline Limits</div>
+    <button class="btn btn-ghost btn-sm" onclick="saveEscalationConfig()">Save</button>
+  </div>
+  <div style="margin-top:0.4rem;font-size:0.78rem;color:#475569;margin-bottom:0.75rem">
+    If a job exceeds Max tasks per run, the Project Manager will split it into sub-jobs that run automatically.
+  </div>
+  <div style="display:flex;align-items:center;gap:0.75rem">
+    <label style="font-size:0.82rem;color:#94a3b8;white-space:nowrap">Max tasks per run</label>
+    <input type="number" id="cfg-max-tasks" min="5" max="200" step="5" value="25"
+      style="width:72px;background:#0f1117;border:1px solid #334155;border-radius:4px;color:#e2e8f0;font-size:0.82rem;padding:0.25rem 0.5rem">
+    <span style="font-size:0.75rem;color:#475569">tasks — PM splits jobs larger than this automatically</span>
+  </div>
 </div>
 
 <!-- ── Modals ── -->
@@ -1566,6 +1594,7 @@ async function load() {{
   loadTemplates();
   loadFleetTab();
   loadRoleMinimums();
+  loadEscalationConfig();
 }}
 
 function ctxLabel(h) {{
@@ -2332,6 +2361,7 @@ const STATUS_COLORS = {{
   reviewing: "#818cf8",
   done:      "#4ade80",
   failed:    "#f87171",
+  split:     "#38bdf8",
 }};
 
 function jobStatusBadge(status) {{
@@ -2384,6 +2414,7 @@ function jobCard(j) {{
       <div style="font-size:0.68rem;color:#475569;margin-bottom:0.2rem">Log ${{isActive ? '— live' : ''}}</div>
       <div id="jlog-${{j.id}}" style="font-family:monospace;font-size:0.72rem;background:#0f1117;border-radius:5px;padding:0.5rem;height:140px;overflow-y:auto;margin-bottom:0.6rem;line-height:1.6">${{logHtml}}</div>
       ${{hasFinal ? `<div style="margin-bottom:0.6rem"><div style="font-size:0.68rem;color:#475569;margin-bottom:0.2rem">Final Output</div><pre style="font-size:0.7rem;color:#94a3b8;background:#0f1117;padding:0.5rem;border-radius:5px;max-height:220px;overflow:auto;white-space:pre-wrap">${{j.final_output}}</pre></div>` : ""}}
+      ${{j.status === "split" && j.child_job_ids?.length ? `<div style="font-size:0.72rem;color:#38bdf8;margin-bottom:0.5rem">↳ Split into ${{j.child_job_ids.length}} sub-jobs: ${{j.child_job_ids.join(", ")}}</div>` : ""}}
       <div style="display:flex;gap:0.4rem;flex-wrap:wrap;align-items:center;margin-bottom:0.4rem">
         ${{j.status === "pending" ? `<button class="btn btn-primary btn-sm" onclick="runJob('${{j.id}}')">▶ Run</button>` : ""}}
         ${{isActive ? `<span style="font-size:0.75rem;color:#fbbf24">● Running…</span>` : ""}}
@@ -2670,7 +2701,7 @@ function renderFleetDetail(j) {{
   const center = document.getElementById("fleet-center");
   if (!center) return;
 
-  const STATUS_COLOR = {{ running:"#f59e0b", done:"#22c55e", error:"#ef4444", pending:"#475569", reviewing:"#818cf8" }};
+  const STATUS_COLOR = {{ running:"#f59e0b", done:"#22c55e", error:"#ef4444", pending:"#475569", reviewing:"#818cf8", split:"#38bdf8", failed:"#f87171" }};
   const LABEL = {{ project_manager:"PM", manager:"Manager", generator:"Generator", assembler:"Assembler", reviewer:"Reviewer", supervisor:"Supervisor", advisor:"Advisor" }};
 
   const stageRows = (j.pipeline || Object.keys(j.stages || {{}})).map(stage => {{
@@ -2903,7 +2934,7 @@ function renderPipelineNodes() {{
   const stages = job.stages || {{}};
   const STATUS_COLOR = {{
     running: "#f59e0b", done: "#22c55e", error: "#ef4444",
-    pending: "#475569", reviewing: "#818cf8",
+    pending: "#475569", reviewing: "#818cf8", split: "#38bdf8", failed: "#f87171",
   }};
   const LABEL = {{
     project_manager: "PM", manager: "Manager", generator: "Generator",
@@ -3377,6 +3408,23 @@ function renderRoleMinimums() {{
         </div>`).join("")}}
     </div>`;
   }}).join("");
+}}
+
+async function loadEscalationConfig() {{
+  const res = await fetch(api("/api/escalation-config")).then(r => r.json());
+  const cfg = res.config || res.defaults || {{}};
+  const el = document.getElementById("cfg-max-tasks");
+  if (el) el.value = cfg.max_tasks_per_run ?? 25;
+}}
+
+async function saveEscalationConfig() {{
+  const el = document.getElementById("cfg-max-tasks");
+  const val = parseInt(el?.value) || 25;
+  await fetch(api("/api/escalation-config"), {{
+    method: "POST", headers: {{"Content-Type":"application/json"}},
+    body: JSON.stringify({{config: {{max_tasks_per_run: val}}}}),
+  }});
+  alert("Pipeline limits saved.");
 }}
 
 async function saveRoleMinimums() {{

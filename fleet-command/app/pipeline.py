@@ -1075,6 +1075,19 @@ async def _run_generator_loop(job_id: str, roles: dict[str, Any], job: dict[str,
     return {"ok": True, "stage": "generator", "output": assembled, "handled_by": "generator"}
 
 
+def _is_subjob_split(output: str) -> bool:
+    return bool(re.search(r'^SUB-JOB\s+\d+:', output.strip(), re.IGNORECASE | re.MULTILINE))
+
+
+def _parse_subjobs(output: str) -> list[str]:
+    specs = []
+    for m in re.finditer(r'SUB-JOB\s+\d+:\s*(.+?)(?=\nSUB-JOB\s+\d+:|\Z)', output.strip(), re.IGNORECASE | re.DOTALL):
+        spec = m.group(1).strip()
+        if spec:
+            specs.append(spec)
+    return specs
+
+
 async def run_pipeline(job_id: str) -> None:
     job = load_job(job_id)
     if not job:
@@ -1130,6 +1143,30 @@ async def _run_pipeline_inner(job_id: str) -> None:
             return
         prev_output = result.get("output")
         job = load_job(job_id)
+
+        # PM sub-job split — spawn child jobs and mark parent done
+        if stage == "project_manager" and prev_output and _is_subjob_split(prev_output):
+            from app.jobs import STATUS_SPLIT, create_job as _create_job
+            subjob_specs = _parse_subjobs(prev_output)
+            if subjob_specs:
+                child_ids = []
+                for spec_text in subjob_specs:
+                    child = _create_job({
+                        "spec": spec_text,
+                        "type": job.get("type", "ha_dashboard"),
+                        "target_dashboard": job.get("target_dashboard", "fleet-output"),
+                        "pipeline": job.get("pipeline", []),
+                        "parent_job_id": job_id,
+                    })
+                    child_ids.append(child["id"])
+                    asyncio.create_task(run_pipeline(child["id"]))
+                job = load_job(job_id)
+                job["status"] = STATUS_SPLIT
+                job["child_job_ids"] = child_ids
+                append_log(job, "project_manager", f"Split into {len(child_ids)} sub-jobs: {', '.join(child_ids)}")
+                save_job(job)
+                _flog(f"  JOB {job_id} split → {child_ids}")
+                return
 
         # Supervisor empty output — treat as failed, don't silently pass
         if stage == "supervisor" and not (prev_output or "").strip():
