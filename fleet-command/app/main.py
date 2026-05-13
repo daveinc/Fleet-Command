@@ -2616,7 +2616,7 @@ function renderFleetJobList() {{
     el.innerHTML = '<div style="color:#374151;font-size:0.78rem">No jobs yet.</div>';
     return;
   }}
-  const STATUS_DOT = {{ running:"#f59e0b", pending:"#475569", done:"#22c55e", failed:"#ef4444", cancelled:"#475569" }};
+  const STATUS_DOT = {{ running:"#f59e0b", pending:"#475569", done:"#22c55e", failed:"#ef4444", cancelled:"#475569", split:"#38bdf8", reviewing:"#818cf8" }};
   el.innerHTML = _fleetJobs.map(j => {{
     const dot = STATUS_DOT[j.status] || "#475569";
     const isActive = j.status === "running" || j.status === "pending";
@@ -2828,7 +2828,7 @@ function renderFleetDetail(j) {{
       </div>
     </div>`;
   const logEl = document.getElementById("flog-mini");
-  if (logEl) logEl.scrollTop = logEl.scrollHeight;
+  if (logEl) requestAnimationFrame(() => {{ logEl.scrollTop = logEl.scrollHeight; }});
 }}
 
 async function fleetShowStageOutput(jobId, stage, label) {{
@@ -2903,8 +2903,9 @@ async function loadPipelineTab() {{
   if (!sel) return;
   const prev = sel.value;
   sel.innerHTML = _plJobs.length
-    ? _plJobs.map(j => `<option value="${{j.id}}"${{j.id===prev?" selected":""}}>${{j.id}} — ${{j.status}} (${{(j.spec||"").slice(0,40)}})</option>`).join("")
+    ? _plJobs.map(j => `<option value="${{j.id}}">${{j.id}} — ${{j.status}} (${{(j.spec||"").slice(0,40)}})</option>`).join("")
     : `<option>No jobs yet</option>`;
+  if (prev) sel.value = prev;
   renderPipelineNodes();
   loadStageInstructions();
   loadRulesPanel();
@@ -2913,10 +2914,8 @@ async function loadPipelineTab() {{
 
 function _plSchedulePoll() {{
   clearTimeout(_plPollTimer);
-  const sel = document.getElementById("pl-job-select");
-  if (!sel) return;
-  const job = _plJobs.find(j => j.id === sel.value);
-  if (job && (job.status === "running" || job.status === "pending")) {{
+  const anyActive = _plJobs.some(j => j.status === "running" || j.status === "pending");
+  if (anyActive) {{
     _plPollTimer = setTimeout(loadPipelineTab, 2000);
   }}
 }}

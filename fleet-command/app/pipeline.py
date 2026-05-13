@@ -531,8 +531,8 @@ def _split_yaml_views(yaml_text: str) -> list[tuple[str, str]]:
             continue
         if not in_views:
             continue
-        # Detect new view entry
-        m = re.match(r'\s{2}-\s+title:\s*(.+)', line)
+        # Detect new view entry — handle 0 or 2 space indent (assembler uses 0)
+        m = re.match(r'^\s{0,2}-\s+title:\s*(.+)', line)
         if m:
             if current_lines:
                 views.append((current_title, "\n".join(current_lines)))
@@ -636,7 +636,12 @@ async def _run_reviewer_3pass(
     )
 
     def _safe(candidate: str, fallback: str) -> str:
-        return candidate if "views:" in candidate else fallback
+        if "views:" not in candidate:
+            return fallback
+        # Reject truncated output — if candidate is less than 40% of fallback, treat as bad
+        if fallback and len(candidate) < len(fallback) * 0.4:
+            return fallback
+        return candidate
 
     def _reassemble(chunks: list[str], title: str) -> str:
         all_views: list = []
