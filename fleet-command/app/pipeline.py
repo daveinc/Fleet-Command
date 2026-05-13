@@ -59,6 +59,47 @@ Rules: every card needs type. entities card uses list under entities key.
 """
 
 
+# Known aliases for invalid REJECTED_AT stage names the supervisor sometimes invents
+_REJECTION_ALIASES: dict[str, str] = {
+    "final_output":    "reviewer",
+    "final":           "reviewer",
+    "output":          "reviewer",
+    "assembly":        "assembler",
+    "assembling":      "assembler",
+    "generation":      "generator",
+    "generating":      "generator",
+    "dev":             "generator",
+    "developer":       "generator",
+    "planning":        "manager",
+    "plan":            "manager",
+    "breakdown":       "manager",
+    "pm":              "project_manager",
+    "project":         "project_manager",
+    "scoping":         "project_manager",
+    "review":          "reviewer",
+    "reviewing":       "reviewer",
+    "qa":              "reviewer",
+}
+
+_PIPELINE_VALID_STAGES = {"project_manager", "manager", "generator", "assembler", "reviewer"}
+
+
+def _remap_rejection_target(raw: str, pipeline: list[str]) -> str | None:
+    """Map an invalid REJECTED_AT value to the nearest valid pipeline stage."""
+    raw = raw.lower().strip()
+    # Direct alias lookup
+    if raw in _REJECTION_ALIASES:
+        candidate = _REJECTION_ALIASES[raw]
+        if candidate in pipeline:
+            return candidate
+    # Substring match — e.g. "generator_stage" → "generator"
+    for stage in pipeline:
+        if stage in raw or raw in stage:
+            return stage
+    # Default: generator is the most common root cause
+    return "generator" if "generator" in pipeline else pipeline[0] if pipeline else None
+
+
 def _estimate_input_tokens(system: str, user: str) -> int:
     """Rough estimate: 1 token ≈ 4 chars."""
     return (len(system) + len(user)) // 4
@@ -954,7 +995,15 @@ async def run_stage(job_id: str, stage: str) -> dict[str, Any]:
                 job["stage_instructions"] = instr
                 save_job(job)
                 # Rebuild user prompt with guidance and retry once
-                retry_extra = guidance
+                # Supervisor must never rewrite — guidance is decision context only
+                if stage == "supervisor":
+                    retry_extra = (
+                        "Decision context from advisor — use this only to decide PASS or REJECT. "
+                        "Do NOT modify or rewrite the YAML. Either return it unchanged or write REJECTED_AT:\n\n"
+                        + guidance
+                    )
+                else:
+                    retry_extra = guidance
                 retry_user = _user_prompt(stage, spec, prev, extra=retry_extra)
                 write_stage_input(job_id, stage, retry_user)
                 append_log(job, stage, "Retrying with escalation guidance...")
@@ -1184,10 +1233,22 @@ async def _run_pipeline_inner(job_id: str) -> None:
         # Supervisor rejection — check for REJECTED_AT routing
         if stage == "supervisor" and prev_output and re.search(r'REJECTED_AT:', prev_output, re.IGNORECASE):
             match = re.search(r'REJECTED_AT:\s*(\w+)', prev_output, re.IGNORECASE)
-            target = match.group(1).strip() if match else None
+            target = match.group(1).strip().lower() if match else None
+            if target and target not in pipeline:
+                target = _remap_rejection_target(target, pipeline)
+                if target:
+                    append_log(job, "supervisor", f"Remapped invalid REJECTED_AT to: {target}")
             if target and target in pipeline:
                 job = load_job(job_id)
                 job["rejection_feedback"] = prev_output
+                # Extract CORRECTIVE_BRIEF and inject as stage_instructions for the target
+                brief_match = re.search(r'CORRECTIVE_BRIEF:\s*(.+)', prev_output, re.IGNORECASE | re.DOTALL)
+                if brief_match:
+                    corrective_brief = brief_match.group(1).strip()
+                    instr = job.get("stage_instructions", {})
+                    instr[target] = corrective_brief
+                    job["stage_instructions"] = instr
+                    append_log(job, "supervisor", f"Corrective brief → {target} ({len(corrective_brief)} chars)")
                 save_job(job)
                 rerun_from_stage(job_id, target)
                 _flog(f"  REJECTED_AT={target} — re-running from {target}")

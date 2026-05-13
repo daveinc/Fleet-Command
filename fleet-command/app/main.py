@@ -428,12 +428,46 @@ async def api_modelfile_get(harness_id: str) -> dict:
     return {"ok": True, "entry": entry}
 
 
+@app.get("/api/modelfiles/output-types")
+async def api_modelfile_output_types() -> dict:
+    from app.pipeline_prompts import get_output_types
+    return {"ok": True, "types": get_output_types()}
+
+
 @app.post("/api/harnesses/{harness_id}/modelfile/generate")
-async def api_modelfile_generate(harness_id: str) -> dict:
+async def api_modelfile_generate(harness_id: str, payload: dict = {}) -> dict:
     from app.pipeline_prompts import generate_modelfile
     from app.config import options
     ollama_host = str(options().get("ollama_host", "http://host.docker.internal:11434") or "").rstrip("/")
-    return await generate_modelfile(harness_id, ollama_host)
+    output_type = payload.get("output_type", "yaml") if payload else "yaml"
+    return await generate_modelfile(harness_id, ollama_host, output_type)
+
+
+@app.post("/api/modelfiles/push-all")
+async def api_modelfile_push_all(payload: dict) -> dict:
+    from app.pipeline_prompts import generate_modelfile, save_modelfile, push_modelfile_to_ollama
+    from app.harnesses import list_harnesses
+    from app.roles import load_roles
+    from app.config import options
+    ollama_host = str(options().get("ollama_host", "http://host.docker.internal:11434") or "").rstrip("/")
+    output_type = payload.get("output_type", "yaml")
+    roles = load_roles()
+    assigned = {cfg.get("harness_id") for cfg in roles.values() if cfg.get("harness_id")}
+    harnesses = list_harnesses()
+    results = []
+    for h in harnesses:
+        hid = h.get("_id")
+        if hid not in assigned:
+            results.append({"harness_id": hid, "name": h.get("display_name"), "skipped": True, "reason": "no role assigned"})
+            continue
+        gen = await generate_modelfile(hid, ollama_host, output_type)
+        if not gen.get("ok"):
+            results.append({"harness_id": hid, "name": h.get("display_name"), "ok": False, "message": gen.get("error")})
+            continue
+        save_modelfile(hid, gen["content"])
+        ok, msg = await push_modelfile_to_ollama(hid, ollama_host)
+        results.append({"harness_id": hid, "name": h.get("display_name"), "ok": ok, "message": msg})
+    return {"ok": True, "output_type": output_type, "results": results}
 
 
 @app.post("/api/harnesses/{harness_id}/modelfile/save")
@@ -1204,6 +1238,18 @@ def _dashboard_html(root: str) -> str:  # noqa: C901
     <button class="btn btn-primary btn-sm" onclick="openNewWorker()">+ New Worker</button>
   </div>
   <div class="harness-grid" id="harness-grid"></div>
+
+  <div style="display:flex;align-items:center;gap:0.6rem;margin-top:1.1rem;padding:0.65rem 0.75rem;background:#0f172a;border:1px solid #1e293b;border-radius:8px">
+    <span style="font-size:0.75rem;color:#64748b;white-space:nowrap">Modelfile output type:</span>
+    <select id="mf-output-type" style="font-size:0.78rem;background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:5px;padding:0.2rem 0.4rem;flex:1;max-width:160px"
+      onchange="localStorage.setItem('mf_output_type', this.value)">
+      <option value="yaml">YAML / HA Dashboard</option>
+      <option value="python">Python (coming soon)</option>
+    </select>
+    <span style="font-size:0.7rem;color:#475569;flex:1">Examples baked into every pushed modelfile</span>
+    <button class="btn btn-primary btn-sm" onclick="pushAllModelfiles()" id="btn-push-all">Push All</button>
+  </div>
+  <div id="push-all-status" style="display:none;margin-top:0.5rem;font-size:0.75rem;color:#94a3b8"></div>
 </div>
 
 <!-- ── Jobs tab ── -->
@@ -1810,6 +1856,8 @@ function formatTokens(value) {{
 }}
 
 function renderHarnesses() {{
+  const sel = document.getElementById("mf-output-type");
+  if (sel) sel.value = localStorage.getItem("mf_output_type") || "yaml";
   const el = document.getElementById("harness-grid");
   el.innerHTML = Object.entries(harnesses).map(([id, h]) => {{
     const ctx = formatTokens(h.context_window);
@@ -1924,10 +1972,16 @@ async function openModelfileModal(id) {{
   document.getElementById("modal-modelfile").classList.add("open");
 }}
 
+function _mfOutputType() {{
+  return (document.getElementById("mf-output-type") || {{}}).value || localStorage.getItem("mf_output_type") || "yaml";
+}}
+
 async function generateModelfile() {{
   if (!_mfHarnessId) return;
   _mfStatus("⏳ Generating...", "#94a3b8");
-  const res = await fetch(api(`/api/harnesses/${{_mfHarnessId}}/modelfile/generate`), {{method:"POST"}}).then(r => r.json());
+  const res = await fetch(api(`/api/harnesses/${{_mfHarnessId}}/modelfile/generate`), {{
+    method:"POST", headers:{{"Content-Type":"application/json"}}, body: JSON.stringify({{output_type: _mfOutputType()}}),
+  }}).then(r => r.json());
   if (!res.ok) {{ _mfStatus(`✗ ${{res.error}}`, "#f87171"); return; }}
   document.getElementById("mf-content").value = res.content;
   const roleLabel = res.role ? `role: ${{res.role}}` : "no role assigned";
@@ -1982,6 +2036,33 @@ function _mfStatusClear() {{
   const el = document.getElementById("mf-status");
   el.style.display = "none";
   el.textContent = "";
+}}
+
+async function pushAllModelfiles() {{
+  const outputType = _mfOutputType();
+  const btn = document.getElementById("btn-push-all");
+  const statusEl = document.getElementById("push-all-status");
+  btn.disabled = true;
+  btn.textContent = "Pushing...";
+  statusEl.style.display = "block";
+  statusEl.textContent = `⏳ Pushing all modelfiles (output type: ${{outputType}})...`;
+  try {{
+    const res = await fetch(api("/api/modelfiles/push-all"), {{
+      method: "POST", headers: {{"Content-Type":"application/json"}},
+      body: JSON.stringify({{output_type: outputType}}),
+    }}).then(r => r.json());
+    const lines = (res.results || []).map(r => {{
+      if (r.skipped) return `— ${{r.name}}: skipped (${{r.reason}})`;
+      return `${{r.ok ? "✓" : "✗"}} ${{r.name}}: ${{r.message}}`;
+    }});
+    statusEl.innerHTML = lines.map(l => `<div>${{l}}</div>`).join("");
+    renderHarnesses();
+  }} catch(e) {{
+    statusEl.textContent = `✗ Error: ${{e.message}}`;
+  }} finally {{
+    btn.disabled = false;
+    btn.textContent = "Push All";
+  }}
 }}
 
 async function saveHarness(id) {{
@@ -2798,9 +2879,10 @@ function renderFleetDetail(j) {{
         ` : ""}}
         <button class="btn btn-ghost btn-sm" style="margin-left:auto;padding:0 0.3rem;font-size:0.65rem" onclick="_fleetDetailPanel=null;document.getElementById('fdetail-panel')?.remove()">✕</button>
       </div>
-      <pre style="color:#94a3b8;white-space:pre-wrap;word-break:break-word;max-height:200px;overflow-y:auto;margin:0">${{_pdpText}}</pre>
+      <pre style="color:#94a3b8;white-space:pre-wrap;word-break:break-word;overflow-y:auto;margin:0">${{_pdpText}}</pre>
     </div>` : "";
 
+  const _savedLogScroll = document.getElementById("flog-mini")?.scrollTop ?? null;
   center.innerHTML = `
     <div class="fleet-detail-card">
       <div style="display:flex;align-items:center;gap:0.6rem;margin-bottom:0.2rem">
@@ -2830,7 +2912,9 @@ function renderFleetDetail(j) {{
       </div>
     </div>`;
   const logEl = document.getElementById("flog-mini");
-  if (logEl) requestAnimationFrame(() => {{ logEl.scrollTop = logEl.scrollHeight; }});
+  if (logEl && _savedLogScroll !== null) {{
+    logEl.scrollTop = _savedLogScroll;
+  }}
 }}
 
 async function fleetShowStageOutput(jobId, stage, label) {{
@@ -2999,18 +3083,23 @@ function renderPipelineNodes() {{
       <span id="pl-output-title" style="font-size:0.82rem;font-weight:600;color:#e2e8f0"></span>
       <button class="btn btn-ghost btn-sm" style="margin-left:auto" onclick="document.getElementById('pl-output-panel').style.display='none'">✕</button>
     </div>
-    <pre id="pl-output-code" style="background:#0f172a;color:#94a3b8;padding:1rem;border-radius:8px;font-size:0.75rem;overflow:auto;max-height:400px;white-space:pre-wrap;border:1px solid #334155"></pre>
+    <pre id="pl-output-code" style="background:#0f172a;color:#94a3b8;padding:1rem;border-radius:8px;font-size:0.75rem;overflow:auto;white-space:pre-wrap;border:1px solid #334155"></pre>
   </div>`;
 
-  // Preserve output panel if open
+  // Preserve output panel scroll and visibility if open
   const prevPanel = document.getElementById("pl-output-panel");
   const savedPanel = (prevPanel && outputOpen) ? prevPanel.outerHTML : null;
+  const savedCodeScroll = document.getElementById("pl-output-code")?.scrollTop ?? null;
 
   canvas.innerHTML = html;
 
   if (savedPanel) {{
     const newPanel = document.getElementById("pl-output-panel");
     if (newPanel) newPanel.outerHTML = savedPanel;
+  }}
+  if (savedCodeScroll !== null) {{
+    const codeEl = document.getElementById("pl-output-code");
+    if (codeEl) codeEl.scrollTop = savedCodeScroll;
   }}
 }}
 

@@ -96,7 +96,10 @@ DEFAULT_PROMPTS: dict[str, str] = {
         "Job specification:\n{spec}\n\n"
         "Final output for sign-off:\n{prev}\n\n"
         "If the YAML is a valid Home Assistant Lovelace dashboard that fulfils the spec, return it unchanged.\n"
-        "If not, write REJECTED_AT: <stage> on the first line, then REJECTED: with specific reasons.\n"
+        "If not, output exactly three lines:\n"
+        "REJECTED_AT: <stage>\n"
+        "REJECTED: <specific reason what is wrong>\n"
+        "CORRECTIVE_BRIEF: <exact instructions for that stage to fix the problem — card types to use, entities, structure, what to avoid — be specific enough that the worker can act on it without asking questions>\n"
         "Valid REJECTED_AT stages: project_manager, manager, generator, reviewer.\n"
         "Choose the stage closest to where the error originated.\n"
         "Plain text only — no markdown, no bold, no bullet symbols."
@@ -320,9 +323,18 @@ _ROLE_STOPS: dict[str, list[str]] = {
 # Context window threshold below which we use minimal (1-example) few-shot
 _SMALL_MODEL_CTX = 32768
 
-# ── Per-role MESSAGE examples — minimal tier (small/1.5b models) ──────────────
+# Available output types — determines which MESSAGE examples are baked into modelfiles
+OUTPUT_TYPES: list[str] = ["yaml", "python"]
 
-_ROLE_MESSAGES_MINIMAL: dict[str, list[tuple[str, str]]] = {
+
+def get_output_types() -> list[str]:
+    return OUTPUT_TYPES
+
+
+# ── Per-role MESSAGE examples — minimal tier (small/1.5b models) ──────────────
+# Keyed by output type → role → list of (role_tag, message) pairs
+
+_ROLE_MESSAGES_MINIMAL_YAML: dict[str, list[tuple[str, str]]] = {
     "generator": [
         (
             "user",
@@ -330,7 +342,15 @@ _ROLE_MESSAGES_MINIMAL: dict[str, list[tuple[str, str]]] = {
         ),
         (
             "assistant",
-            "Sure — *yaml card output here*",
+            "Sure — *yaml card output here, card definition only*",
+        ),
+        (
+            "user",
+            "I need a card built:\nTask: [card type]\nBlock: [block name]\n\nAdditional instructions: [corrective brief — card types, entities, what to avoid]",
+        ),
+        (
+            "assistant",
+            "*yaml card output here — following corrective instructions exactly*",
         ),
     ],
     "manager": [
@@ -342,6 +362,14 @@ _ROLE_MESSAGES_MINIMAL: dict[str, list[tuple[str, str]]] = {
             "assistant",
             "BLOCK 1: [name]\n- Task 1: [card type and purpose]\n- Task 2: [card type and purpose]",
         ),
+        (
+            "user",
+            "I need a block/task breakdown.\n\nAdditional instructions: [corrective brief — how to restructure blocks or tasks]",
+        ),
+        (
+            "assistant",
+            "BLOCK 1: [restructured name]\n- Task 1: [adjusted card type per brief]",
+        ),
     ],
     "project_manager": [
         (
@@ -352,15 +380,31 @@ _ROLE_MESSAGES_MINIMAL: dict[str, list[tuple[str, str]]] = {
             "assistant",
             "Block 1: [domain]\n- [card type]\n\nBlock 2: [domain]\n- [card type]",
         ),
+        (
+            "user",
+            "I need a job scoped.\n\nAdditional instructions: [corrective brief — scope constraints, blocks to simplify]",
+        ),
+        (
+            "assistant",
+            "Block 1: [rescoped domain per brief]\n- [card type per constraints]",
+        ),
     ],
     "reviewer": [
         (
             "user",
-            "I need this dashboard reviewed — here's the spec and the assembled output in N blocks, M tasks. *expect yaml code here*",
+            "I need this reviewed — here's the spec and the assembled output. *expect yaml code here*",
         ),
         (
             "assistant",
             "# REVIEW: [verdict — fixed X / valid / escalating]\n*corrected yaml output here*",
+        ),
+        (
+            "user",
+            "I need this reviewed. *expect yaml code here*\n\nAdditional instructions: [corrective brief — specific issues to look for and fix]",
+        ),
+        (
+            "assistant",
+            "# REVIEW: Applied corrective brief — [what was fixed].\n*full corrected yaml here*",
         ),
     ],
     "supervisor": [
@@ -370,7 +414,7 @@ _ROLE_MESSAGES_MINIMAL: dict[str, list[tuple[str, str]]] = {
         ),
         (
             "assistant",
-            "*pass: yaml returned unchanged* or REJECTED_AT: [stage]\nREJECTED: [specific reason]",
+            "*pass: yaml returned unchanged* or REJECTED_AT: [stage]\nREJECTED: [specific reason]\nCORRECTIVE_BRIEF: [exact fix instructions for that stage]",
         ),
     ],
     "advisor": [
@@ -385,9 +429,9 @@ _ROLE_MESSAGES_MINIMAL: dict[str, list[tuple[str, str]]] = {
     ],
 }
 
-# ── Per-role MESSAGE examples (few-shot) ──────────────────────────────────────
+# ── Per-role MESSAGE examples (few-shot, yaml output type) ────────────────────
 
-_ROLE_MESSAGES: dict[str, list[tuple[str, str]]] = {
+_ROLE_MESSAGES_YAML: dict[str, list[tuple[str, str]]] = {
     "generator": [
         # Normal task → output card YAML only
         (
@@ -411,17 +455,17 @@ _ROLE_MESSAGES: dict[str, list[tuple[str, str]]] = {
             "assistant",
             "ESCALATE: missing entity — [entity purpose] entity ID not provided, cannot build card without it",
         ),
-        # Guidance injected via Additional instructions
+        # Corrective brief injected after supervisor rejection
         (
             "user",
             "I need a card built:\n"
             "Task: [card type]\n"
             "Block: [block name]\n\n"
-            "Additional instructions: [correction or constraint from manager]",
+            "Additional instructions: [corrective brief from supervisor — specific card types, entity IDs, structure to use, what to avoid]",
         ),
         (
             "assistant",
-            "*yaml card output here, applying the additional instructions*",
+            "*yaml card output here — following all corrective instructions exactly*",
         ),
         # Retry after rejection
         (
@@ -456,6 +500,21 @@ _ROLE_MESSAGES: dict[str, list[tuple[str, str]]] = {
             "- Task 2: [card type and purpose]\n\n"
             "BLOCK 2: [name]\n"
             "- Task 1: [card type and purpose]",
+        ),
+        # Corrective brief from supervisor — restructure failing block/tasks
+        (
+            "user",
+            "I need a block/task breakdown — here's the spec:\n"
+            "Original request: [job description]\n\n"
+            "Plan:\n"
+            "[PM block summary]\n\n"
+            "Additional instructions: [corrective brief from supervisor — how to restructure blocks or tasks to fix the failure]",
+        ),
+        (
+            "assistant",
+            "BLOCK 1: [restructured name per corrective brief]\n"
+            "- Task 1: [adjusted card type and purpose]\n"
+            "- Task 2: [adjusted card type and purpose]",
         ),
         # Generator escalated with missing entity
         (
@@ -498,6 +557,21 @@ _ROLE_MESSAGES: dict[str, list[tuple[str, str]]] = {
             "- [card type]\n\n"
             "Block 2: [domain]\n"
             "- [card type]",
+        ),
+        # Corrective brief from supervisor — re-scope with specific constraints
+        (
+            "user",
+            "I need a job scoped — here's the spec:\n"
+            "Job request: [job description]\n\n"
+            "Max tasks per run: [limit]\n\n"
+            "Additional instructions: [corrective brief from supervisor — specific constraints on scope, blocks to remove or simplify, approach to take]",
+        ),
+        (
+            "assistant",
+            "Block 1: [rescoped domain per corrective brief]\n"
+            "- [card type per constraints]\n\n"
+            "Block 2: [rescoped domain]\n"
+            "- [card type per constraints]",
         ),
         # Scope exceeds threshold → split into sub-jobs
         (
@@ -551,6 +625,20 @@ _ROLE_MESSAGES: dict[str, list[tuple[str, str]]] = {
             "# REVIEW: Fixed [N] issues — [brief description of what was corrected].\n"
             "*full corrected yaml here*",
         ),
+        # Corrective brief injected — focus review on specific failure areas
+        (
+            "user",
+            "I need this reviewed:\n"
+            "Spec: [job description]\n\n"
+            "YAML to review:\n"
+            "*assembled dashboard yaml here*\n\n"
+            "Additional instructions: [corrective brief from supervisor — specific issues to look for and fix, card types or fields to validate]",
+        ),
+        (
+            "assistant",
+            "# REVIEW: Applied corrective brief — [what was fixed per instructions].\n"
+            "*full corrected yaml here*",
+        ),
         # Input too large for single pass
         (
             "user",
@@ -578,7 +666,7 @@ _ROLE_MESSAGES: dict[str, list[tuple[str, str]]] = {
             "assistant",
             "*full yaml returned unchanged — output approved*",
         ),
-        # Output doesn't fulfil spec → reject with stage and reason
+        # Output doesn't fulfil spec → reject with stage, reason, and corrective brief
         (
             "user",
             "I need a final sign-off — output has problems.\n"
@@ -590,7 +678,8 @@ _ROLE_MESSAGES: dict[str, list[tuple[str, str]]] = {
         (
             "assistant",
             "REJECTED_AT: [stage closest to where the error originated]\n"
-            "REJECTED: [specific reason — what is wrong and what correct output should look like]",
+            "REJECTED: [specific reason — what is wrong]\n"
+            "CORRECTIVE_BRIEF: [exact fix instructions for that stage — card types, entity IDs, structure, what to avoid — specific enough to act on without questions]",
         ),
     ],
     "advisor": [
@@ -626,6 +715,27 @@ _ROLE_MESSAGES: dict[str, list[tuple[str, str]]] = {
         ),
     ],
 }
+
+# ── Python output type — MESSAGE examples (placeholder, TBD) ──────────────────
+_ROLE_MESSAGES_PYTHON: dict[str, list[tuple[str, str]]] = {}
+_ROLE_MESSAGES_MINIMAL_PYTHON: dict[str, list[tuple[str, str]]] = {}
+
+# ── Output type registry — add new types here ─────────────────────────────────
+_MESSAGES_BY_TYPE: dict[str, dict[str, list[tuple[str, str]]]] = {
+    "yaml":   _ROLE_MESSAGES_YAML,
+    "python": _ROLE_MESSAGES_PYTHON,
+}
+_MESSAGES_MINIMAL_BY_TYPE: dict[str, dict[str, list[tuple[str, str]]]] = {
+    "yaml":   _ROLE_MESSAGES_MINIMAL_YAML,
+    "python": _ROLE_MESSAGES_MINIMAL_PYTHON,
+}
+
+
+def _get_messages(role: str, ctx_window: int, output_type: str) -> list[tuple[str, str]]:
+    t = output_type if output_type in _MESSAGES_BY_TYPE else "yaml"
+    if ctx_window and ctx_window <= _SMALL_MODEL_CTX:
+        return _MESSAGES_MINIMAL_BY_TYPE[t].get(role, [])
+    return _MESSAGES_BY_TYPE[t].get(role, [])
 
 
 def _build_system_block(harness: dict[str, Any], role: str) -> str:
@@ -664,7 +774,7 @@ def _build_system_block(harness: dict[str, Any], role: str) -> str:
     )
 
 
-async def generate_modelfile(harness_id: str, ollama_host: str) -> dict[str, Any]:
+async def generate_modelfile(harness_id: str, ollama_host: str, output_type: str = "yaml") -> dict[str, Any]:
     """Generate a Modelfile for a harness, merging into any existing Modelfile from Ollama."""
     from app.harnesses import get_harness
     from app.roles import load_roles
@@ -720,12 +830,9 @@ async def generate_modelfile(harness_id: str, ollama_host: str) -> dict[str, Any
     # Stop sequences
     stops = _ROLE_STOPS.get(role or "", [])
 
-    # MESSAGE few-shot examples — minimal tier for small/weak models
+    # MESSAGE few-shot examples — selected by output type + model tier
     ctx_window = harness.get("context_window") or 0
-    if role and ctx_window and ctx_window <= _SMALL_MODEL_CTX:
-        messages = _ROLE_MESSAGES_MINIMAL.get(role, [])
-    else:
-        messages = _ROLE_MESSAGES.get(role or "", [])
+    messages = _get_messages(role or "", ctx_window, output_type)
 
     # Role-suffixed target model name — e.g. gemma4:reviewer, qwen-ha:generator
     base_model = model.split(":")[0] if ":" in model else model
