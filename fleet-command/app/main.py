@@ -1838,7 +1838,7 @@ function switchTab(name, el) {{
   if (name === "jobs") loadJobs();
   if (name === "fleet") loadFleetTab();
   if (name !== "jobs") stopLivePoll();
-  if (name !== "fleet") { stopFleetPoll(); _fleetSelectedId = null; }
+  if (name !== "fleet") {{ stopFleetPoll(); _fleetSelectedId = null; }}
 }}
 
 const REQUEST_FORMATS = ["ollama_chat","ollama_generate","openai_responses","openai_chat","anthropic_messages","raw_prompt_json"];
