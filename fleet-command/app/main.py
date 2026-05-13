@@ -446,14 +446,14 @@ async def api_modelfile_generate(harness_id: str, payload: dict = {}) -> dict:
 @app.post("/api/modelfiles/push-all")
 async def api_modelfile_push_all(payload: dict) -> dict:
     from app.pipeline_prompts import generate_modelfile, save_modelfile, push_modelfile_to_ollama
-    from app.harnesses import list_harnesses
+    from app.harnesses import load_harnesses
     from app.roles import load_roles
     from app.config import options
     ollama_host = str(options().get("ollama_host", "http://host.docker.internal:11434") or "").rstrip("/")
     output_type = payload.get("output_type", "yaml")
     roles = load_roles()
     assigned = {cfg.get("harness_id") for cfg in roles.values() if cfg.get("harness_id")}
-    harnesses = list_harnesses()
+    harnesses = list(load_harnesses().values())
     results = []
     for h in harnesses:
         hid = h.get("_id")
@@ -2700,6 +2700,7 @@ function renderFleetJobList() {{
     return;
   }}
   const STATUS_DOT = {{ running:"#f59e0b", pending:"#475569", done:"#22c55e", failed:"#ef4444", cancelled:"#475569", split:"#38bdf8", reviewing:"#818cf8" }};
+  const _savedListScroll = el.scrollTop;
   el.innerHTML = _fleetJobs.map(j => {{
     const dot = STATUS_DOT[j.status] || "#475569";
     const isActive = j.status === "running" || j.status === "pending";
@@ -2715,6 +2716,7 @@ function renderFleetJobList() {{
       </div>
     </div>`;
   }}).join("");
+  el.scrollTop = _savedListScroll;
 }}
 
 function renderFleetStats() {{

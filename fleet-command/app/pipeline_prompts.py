@@ -312,12 +312,9 @@ _ROLE_PARAMS: dict[str, dict[str, Any]] = {
     },
 }
 
-# Stop sequences per role — prevent common failure patterns
-_ROLE_STOPS: dict[str, list[str]] = {
-    "generator": ["```", "Here is", "Here's", "Sure,", "Certainly,"],
-    "reviewer":  ["```python", "Here is", "Explanation:"],
-    "manager":   ["```", "Here is", "Explanation:"],
-}
+# Stop sequences disabled — Ollama newer versions reject multiple PARAMETER stop lines
+# (error: "option stop must be of type array"). Left empty until Ollama fix or array format confirmed.
+_ROLE_STOPS: dict[str, list[str]] = {}
 
 
 # Context window threshold below which we use minimal (1-example) few-shot
