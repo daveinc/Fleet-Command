@@ -312,9 +312,12 @@ _ROLE_PARAMS: dict[str, dict[str, Any]] = {
     },
 }
 
-# Stop sequences disabled — Ollama newer versions reject multiple PARAMETER stop lines
-# (error: "option stop must be of type array"). Left empty until Ollama fix or array format confirmed.
-_ROLE_STOPS: dict[str, list[str]] = {}
+# Stop sequences — emitted as a single JSON array (Ollama 0.22.1+ rejects repeated PARAMETER stop lines)
+_ROLE_STOPS: dict[str, list[str]] = {
+    "generator": ["```", "Here is", "Here's", "Sure,", "Certainly,"],
+    "reviewer":  ["```python", "Here is", "Explanation:"],
+    "manager":   ["```", "Here is", "Explanation:"],
+}
 
 
 # Context window threshold below which we use minimal (1-example) few-shot
@@ -838,9 +841,9 @@ async def generate_modelfile(harness_id: str, ollama_host: str, output_type: str
     # Build final content, merging into base model's existing Modelfile
     content = _merge_modelfile(existing, system, params, messages)
 
-    # Insert stop sequences manually after other PARAMETERs (stop needs special format)
+    # Insert stop sequences as a JSON array — Ollama 0.22.1+ rejects repeated PARAMETER stop lines
     if stops:
-        stop_block = "\n".join(f'PARAMETER stop "{s}"' for s in stops)
+        stop_block = f"PARAMETER stop {json.dumps(stops)}"
         if "\nMESSAGE " in content:
             idx = content.index("\nMESSAGE ")
             content = content[:idx] + "\n" + stop_block + content[idx:]
