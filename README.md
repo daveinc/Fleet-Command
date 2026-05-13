@@ -6,7 +6,7 @@ Fleet Command is a Home Assistant add-on that orchestrates a multi-stage AI work
 
 Runs a configurable pipeline of AI workers — Project Manager → Manager → Generator → Reviewer → Supervisor — each assigned to a model of your choice (local Ollama, Claude, OpenAI-compatible, or any custom HTTP endpoint).
 
-## What's New in v1.5.0
+## What's New in v1.5.1
 
 - **Universal chunking** — messages are split to fit each worker's context window. Nothing is ever truncated.
 - **Python-only assembler** — dashboard fragments assembled in Python, no AI worker needed for that stage.
@@ -16,6 +16,14 @@ Runs a configurable pipeline of AI workers — Project Manager → Manager → G
 - **Harness probe** — test connection and auto-retrieve context window before saving a new worker.
 - **Role minimums** — configure recommended context window / token allowance per role. Harness cards flag workers that fall below the minimum.
 - **Auto context window resolution** — Ollama harnesses query `/api/show` at load time to resolve their real context window.
+
+## What's New in v1.5.1
+
+- **Modelfile generator** — generate a complete Ollama Modelfile per harness from the UI. Fetches existing Modelfile from Ollama as base, merges in role persona, chain-of-command rules, escalation signal format, per-role parameters (repeat_penalty, top_k, top_p, seed), stop sequences, and few-shot MESSAGE examples. Editable before push. Warns before overwriting a previously pushed Modelfile.
+- **Token allowance respected in chunking** — `available_input_tokens` now reserves `max(min_output_tokens, token_allowance)` so input chunks are correctly sized for workers with large output budgets.
+- **Role minimum tags** — harness capability tags now only show roles the worker actually meets the context window minimum for.
+- **Role minimum warnings on role cards** — assigned worker flagged with ⚠ if it falls below the minimum for that role.
+- **Dropdown cleaned up** — role assignment picker shows clean model names only, no capability warnings in the list.
 
 ## Pipeline Stages
 

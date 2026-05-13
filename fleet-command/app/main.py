@@ -408,6 +408,40 @@ async def api_prompts_reset() -> dict:
     return {"ok": True}
 
 
+@app.get("/api/harnesses/{harness_id}/modelfile")
+async def api_modelfile_get(harness_id: str) -> dict:
+    from app.pipeline_prompts import load_modelfiles
+    entry = load_modelfiles().get(harness_id, {})
+    return {"ok": True, "entry": entry}
+
+
+@app.post("/api/harnesses/{harness_id}/modelfile/generate")
+async def api_modelfile_generate(harness_id: str) -> dict:
+    from app.pipeline_prompts import generate_modelfile
+    from app.config import options
+    ollama_host = str(options().get("ollama_host", "http://host.docker.internal:11434") or "").rstrip("/")
+    return await generate_modelfile(harness_id, ollama_host)
+
+
+@app.post("/api/harnesses/{harness_id}/modelfile/save")
+async def api_modelfile_save(harness_id: str, payload: dict) -> dict:
+    from app.pipeline_prompts import save_modelfile
+    content = payload.get("content", "")
+    if not content:
+        return JSONResponse({"ok": False, "error": "content required"}, status_code=400)
+    save_modelfile(harness_id, content)
+    return {"ok": True}
+
+
+@app.post("/api/harnesses/{harness_id}/modelfile/push")
+async def api_modelfile_push(harness_id: str) -> dict:
+    from app.pipeline_prompts import push_modelfile_to_ollama
+    from app.config import options
+    ollama_host = str(options().get("ollama_host", "http://host.docker.internal:11434") or "").rstrip("/")
+    ok, msg = await push_modelfile_to_ollama(harness_id, ollama_host)
+    return {"ok": ok, "message": msg}
+
+
 @app.get("/api/pipeline-rules")
 async def api_pipeline_rules_get() -> dict:
     from app.pipeline_rules import load_rules
@@ -1330,6 +1364,25 @@ def _dashboard_html(root: str) -> str:  # noqa: C901
   </div>
 </div>
 
+<div class="modal-overlay" id="modal-modelfile">
+  <div class="modal" style="width:min(680px,96vw)">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.75rem">
+      <h3 style="margin:0">Modelfile — <span id="mf-harness-name"></span></h3>
+      <span id="mf-role-badge" style="font-size:0.72rem;color:#6366f1"></span>
+    </div>
+    <div id="mf-status" style="display:none;margin-bottom:0.5rem;padding:0.4rem 0.65rem;border-radius:6px;font-size:0.8rem"></div>
+    <textarea id="mf-content" rows="22"
+      style="width:100%;background:#0f172a;color:#94a3b8;border:1px solid #334155;border-radius:6px;font-size:0.72rem;padding:0.5rem;resize:vertical;font-family:monospace"
+      placeholder="Click Generate to create a Modelfile for this worker..."></textarea>
+    <div class="modal-actions" style="margin-top:0.75rem">
+      <button class="btn btn-ghost btn-sm" onclick="closeModal('modal-modelfile')">Close</button>
+      <button class="btn btn-ghost btn-sm" onclick="generateModelfile()">Generate</button>
+      <button class="btn btn-ghost btn-sm" onclick="saveModelfile()">Save Draft</button>
+      <button class="btn btn-primary btn-sm" onclick="pushModelfile()">Push to Ollama</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal-overlay" id="modal-new-job">
   <div class="modal" style="width:min(560px,94vw)">
     <h3>New Job</h3>
@@ -1549,14 +1602,17 @@ function roleCard(role, idx, list) {{
   const enrichCaps   = h?.capabilities || staffMatch?.capabilities || [];
   const enrichStatusCls = enrichStatus ? "staff-status " + staffStatusClass(enrichStatus) : "";
 
+  const roleMins = _roleMinimums[role] || {{}};
+  const minCtx = roleMins.context_window;
+  const minAllow = roleMins.token_allowance;
+  const belowCtx = h && minCtx && (!h.context_window || h.context_window < minCtx);
+  const belowAllow = h && minAllow && h.token_allowance && h.token_allowance < minAllow;
+  const minWarn = belowCtx || belowAllow
+    ? `<span style="color:#f59e0b;font-size:0.72rem" title="${{[belowCtx?`ctx ${{h.context_window||"?"}} < ${{minCtx}}`:""，belowAllow?`allow ${{h.token_allowance}} < ${{minAllow}}`:""].filter(Boolean).join(", ")}}">⚠ below minimum</span>`
+    : "";
+
   const options = Object.entries(harnesses)
-    .map(([id, info]) => {{
-      const caps = info.capabilities || [];
-      const qualified = caps.length === 0 || caps.includes(role);
-      const label = qualified ? info.display_name : `${{info.display_name}} (not in capabilities)`;
-      const style = qualified ? "" : 'style="color:#6b7280"';
-      return `<option value="${{id}}" ${{id === hid ? "selected" : ""}} ${{style}}>${{label}}</option>`;
-    }})
+    .map(([id, info]) => `<option value="${{id}}" ${{id === hid ? "selected" : ""}}>${{info.display_name}}</option>`)
     .join("");
 
   const upBtn = idx > 0
@@ -1589,6 +1645,7 @@ function roleCard(role, idx, list) {{
       ${{enrichScore ? `<span style="color:#64748b">${{enrichScore}}</span>` : ""}}
       ${{enrichStatus ? `<span class="${{enrichStatusCls}}" style="font-size:0.66rem">${{enrichStatus}}</span>` : ""}}
       ${{enrichCaps.map(c=>`<span class="cap-tag">${{c}}</span>`).join("")}}
+      ${{minWarn}}
       ${{meta.description ? `<span style="color:#374151;font-style:italic">${{meta.description}}</span>` : ""}}
     </div>
     <div class="params-panel" id="params-${{role}}">
@@ -1753,6 +1810,7 @@ function renderHarnesses() {{
           <div style="margin-top:0.35rem;display:flex;gap:0.3rem;flex-wrap:wrap">${{caps}}</div>
           ${{h.notes ? `<div class="harness-notes">${{h.notes}}</div>` : ""}}
         </div>
+        <button class="btn btn-ghost btn-sm" onclick="openModelfileModal('${{id}}')" title="Modelfile">📄</button>
         <button class="btn btn-ghost btn-sm" onclick="toggleHarnessEdit('${{id}}')" title="Edit">⚙</button>
       </div>
       <div id="hedit-${{id}}" style="display:none;margin-top:0.75rem;border-top:1px solid #1e293b;padding-top:0.75rem">
@@ -1808,6 +1866,91 @@ function renderHarnesses() {{
 function toggleHarnessEdit(id) {{
   const el = document.getElementById("hedit-" + id);
   el.style.display = el.style.display === "none" ? "block" : "none";
+}}
+
+// ── Modelfile ─────────────────────────────────────────────────────────────────
+
+let _mfHarnessId = null;
+let _mfAlreadyPushed = false;
+
+async function openModelfileModal(id) {{
+  _mfHarnessId = id;
+  const h = harnesses[id];
+  document.getElementById("mf-harness-name").textContent = h?.display_name || id;
+  document.getElementById("mf-role-badge").textContent = "";
+  document.getElementById("mf-content").value = "";
+  _mfStatusClear();
+
+  // Load saved draft if exists
+  const res = await fetch(api(`/api/harnesses/${{id}}/modelfile`)).then(r => r.json());
+  if (res.entry?.content) {{
+    document.getElementById("mf-content").value = res.entry.content;
+    _mfAlreadyPushed = !!res.entry.pushed;
+    const pushedAt = res.entry.pushed_at ? ` (pushed ${{res.entry.pushed_at.slice(0,10)}})` : "";
+    _mfStatus(_mfAlreadyPushed ? `Loaded saved draft — previously pushed${{pushedAt}}` : "Loaded saved draft — not yet pushed", _mfAlreadyPushed ? "#4ade80" : "#f59e0b");
+  }} else {{
+    _mfAlreadyPushed = false;
+  }}
+
+  document.getElementById("modal-modelfile").classList.add("open");
+}}
+
+async function generateModelfile() {{
+  if (!_mfHarnessId) return;
+  _mfStatus("⏳ Generating...", "#94a3b8");
+  const res = await fetch(api(`/api/harnesses/${{_mfHarnessId}}/modelfile/generate`), {{method:"POST"}}).then(r => r.json());
+  if (!res.ok) {{ _mfStatus(`✗ ${{res.error}}`, "#f87171"); return; }}
+  document.getElementById("mf-content").value = res.content;
+  document.getElementById("mf-role-badge").textContent = res.role ? `role: ${{res.role}}` : "no role assigned";
+  const fetched = res.existing_fetched ? "existing Modelfile from Ollama merged" : "no existing Modelfile — built from scratch";
+  _mfStatus(`✓ Generated — ${{fetched}}`, "#4ade80");
+  _mfAlreadyPushed = res.already_pushed;
+}}
+
+async function saveModelfile() {{
+  if (!_mfHarnessId) return;
+  const content = document.getElementById("mf-content").value.trim();
+  if (!content) {{ _mfStatus("Nothing to save.", "#f59e0b"); return; }}
+  await fetch(api(`/api/harnesses/${{_mfHarnessId}}/modelfile/save`), {{
+    method:"POST", headers:{{"Content-Type":"application/json"}}, body: JSON.stringify({{content}}),
+  }});
+  _mfStatus("Draft saved.", "#4ade80");
+}}
+
+async function pushModelfile() {{
+  if (!_mfHarnessId) return;
+  const content = document.getElementById("mf-content").value.trim();
+  if (!content) {{ _mfStatus("Generate or write a Modelfile first.", "#f59e0b"); return; }}
+  if (_mfAlreadyPushed) {{
+    if (!confirm("This harness already has a pushed Modelfile. Overwrite it?")) return;
+  }}
+  // Save draft first
+  await fetch(api(`/api/harnesses/${{_mfHarnessId}}/modelfile/save`), {{
+    method:"POST", headers:{{"Content-Type":"application/json"}}, body: JSON.stringify({{content}}),
+  }});
+  _mfStatus("⏳ Pushing to Ollama...", "#94a3b8");
+  const res = await fetch(api(`/api/harnesses/${{_mfHarnessId}}/modelfile/push`), {{method:"POST"}}).then(r => r.json());
+  if (res.ok) {{
+    _mfAlreadyPushed = true;
+    _mfStatus("✓ Pushed successfully.", "#4ade80");
+    renderHarnesses();
+  }} else {{
+    _mfStatus(`✗ Push failed — ${{res.message}}`, "#f87171");
+  }}
+}}
+
+function _mfStatus(msg, color) {{
+  const el = document.getElementById("mf-status");
+  el.style.display = "block";
+  el.style.color = color;
+  el.style.background = "#1e293b";
+  el.textContent = msg;
+}}
+
+function _mfStatusClear() {{
+  const el = document.getElementById("mf-status");
+  el.style.display = "none";
+  el.textContent = "";
 }}
 
 async function saveHarness(id) {{
@@ -3266,12 +3409,8 @@ function harnessRoleMinTags(h) {{
     const allow = mins.token_allowance;
     const ctxOk = !ctx || (h.context_window && h.context_window >= ctx);
     const allowOk = !allow || !h.token_allowance || h.token_allowance >= allow;
-    const ok = ctxOk && allowOk;
-    const tip = ok ? "" : [
-      !ctxOk ? `ctx: ${{h.context_window||"?"}} < ${{ctx}}` : "",
-      !allowOk ? `allow: ${{h.token_allowance||"?"}} < ${{allow}}` : "",
-    ].filter(Boolean).join(", ");
-    return `<span class="cap-tag" style="${{ok ? "" : "border-color:#f59e0b;color:#f59e0b"}}" title="${{tip}}">${{role}}${{ok ? "" : " ⚠"}}</span>`;
+    if (!ctxOk || !allowOk) return "";
+    return `<span class="cap-tag">${{role}}</span>`;
   }}).join(" ");
 }}
 

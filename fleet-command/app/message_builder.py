@@ -83,12 +83,18 @@ def available_input_tokens(
     min_output_tokens: int = MIN_USEFUL_OUTPUT,
 ) -> int | None:
     """Tokens available for variable content after fixed_content and output headroom.
-    Returns None if context_window is unknown."""
+    Returns None if context_window is unknown.
+    Respects token_allowance — reserves whichever is larger: min_output_tokens or token_allowance."""
     ctx = _ctx_window(harness)
     if not ctx:
         return None
+    try:
+        allowance = int(harness.get("token_allowance") or 0)
+    except (TypeError, ValueError):
+        allowance = 0
+    output_reserve = max(min_output_tokens, allowance)
     fixed = _estimate_tokens(fixed_content)
-    return max(0, int(ctx * _INPUT_HEADROOM) - fixed - min_output_tokens)
+    return max(0, int(ctx * _INPUT_HEADROOM) - fixed - output_reserve)
 
 
 def chunk_to_fit(

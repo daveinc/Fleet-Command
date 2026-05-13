@@ -182,6 +182,278 @@ async def fetch_modelfile_from_ollama(model: str, ollama_host: str) -> str | Non
         return None
 
 
+def _merge_modelfile(
+    existing: str,
+    new_system: str,
+    new_params: dict[str, Any],
+    new_messages: list[tuple[str, str]],
+) -> str:
+    """Merge generated SYSTEM, PARAMETERs, and MESSAGE examples into an existing Modelfile.
+    Preserves FROM, TEMPLATE, ADAPTER, LICENSE lines.
+    Replaces SYSTEM block, our PARAMETER lines, and all MESSAGE lines.
+    """
+    our_param_keys = {k.lower() for k in new_params}
+    lines_out: list[str] = []
+    in_system = False
+    system_written = False
+    params_written: set[str] = set()
+
+    for line in existing.splitlines():
+        stripped = line.strip()
+        upper = stripped.upper()
+
+        # Skip all existing MESSAGE lines — we replace them entirely
+        if upper.startswith("MESSAGE "):
+            continue
+
+        # Detect start of existing SYSTEM block
+        if upper.startswith("SYSTEM"):
+            in_system = True
+            if not system_written:
+                lines_out.append(f'SYSTEM """\n{new_system}\n"""')
+                system_written = True
+            if '"""' in stripped[6:]:
+                in_system = False
+            continue
+
+        if in_system:
+            if '"""' in stripped:
+                in_system = False
+            continue
+
+        # Replace our PARAMETER lines
+        if upper.startswith("PARAMETER"):
+            parts = stripped.split(None, 2)
+            if len(parts) >= 2:
+                key = parts[1].lower()
+                if key in our_param_keys:
+                    if key not in params_written:
+                        lines_out.append(f"PARAMETER {parts[1]} {new_params[parts[1]]}")
+                        params_written.add(key)
+                    continue
+        lines_out.append(line)
+
+    if not system_written:
+        lines_out.append(f'\nSYSTEM """\n{new_system}\n"""')
+
+    for key, val in new_params.items():
+        if key.lower() not in params_written:
+            lines_out.append(f"PARAMETER {key} {val}")
+
+    # Append MESSAGE examples
+    if new_messages:
+        lines_out.append("")
+        for role_tag, msg in new_messages:
+            lines_out.append(f"MESSAGE {role_tag} {msg}")
+
+    return "\n".join(lines_out)
+
+
+# ── Per-role default parameters ───────────────────────────────────────────────
+
+_ROLE_PARAMS: dict[str, dict[str, Any]] = {
+    "generator": {
+        "repeat_penalty": 1.15,
+        "repeat_last_n": 128,
+        "top_k": 20,
+        "top_p": 0.85,
+    },
+    "reviewer": {
+        "repeat_penalty": 1.05,
+        "top_k": 30,
+        "top_p": 0.9,
+    },
+    "manager": {
+        "repeat_penalty": 1.1,
+        "top_k": 30,
+        "top_p": 0.9,
+    },
+    "project_manager": {
+        "repeat_penalty": 1.1,
+        "top_k": 40,
+        "top_p": 0.95,
+    },
+    "supervisor": {
+        "repeat_penalty": 1.05,
+        "top_k": 40,
+        "top_p": 0.95,
+    },
+    "advisor": {
+        "repeat_penalty": 1.05,
+        "top_k": 40,
+        "top_p": 0.95,
+    },
+}
+
+# Stop sequences per role — prevent common failure patterns
+_ROLE_STOPS: dict[str, list[str]] = {
+    "generator": ["```", "Here is", "Here's", "Sure,", "Certainly,"],
+    "reviewer":  ["```python", "Here is", "Explanation:"],
+    "manager":   ["```", "Here is", "Explanation:"],
+}
+
+
+# ── Per-role MESSAGE examples (few-shot) ──────────────────────────────────────
+
+_ROLE_MESSAGES: dict[str, list[tuple[str, str]]] = {
+    "generator": [
+        ("user", "Task: Add a weather card\nBlock: Weather"),
+        ("assistant", "type: weather-forecast\nentity: weather.home"),
+        ("user", "Task: Show current temperature\nBlock: Climate"),
+        ("assistant", "type: sensor\nentity: sensor.temperature\nname: Temperature"),
+        ("user", "Task: Summarize 40 sensors across 15 domains into one card with live updates for all of them"),
+        ("assistant", "ESCALATE: context too large — task requires 40+ sensors across 15 domains, exceeds single-card scope"),
+    ],
+    "reviewer": [
+        ("user", "Spec: Weather dashboard\n\nYAML to review:\n```yaml\ntype: weather-forecast\nentity: weather.home\n```"),
+        ("assistant", "# REVIEW: Fixed markdown fences.\ntype: weather-forecast\nentity: weather.home"),
+        ("user", "Spec: Climate view\n\nYAML to review:\ntype: markdown\nentity: sensor.temp"),
+        ("assistant", "# REVIEW: Fixed markdown card using entity instead of content.\ntype: markdown\ncontent: |\n  {{ states('sensor.temp') }}°C"),
+        ("user", "Spec: Full home dashboard\n\nYAML to review:\ntitle: Home\nviews:\n  - title: Main\n    cards: [... 800 cards ...]"),
+        ("assistant", "ESCALATE: context too large — received YAML with 800+ cards, cannot review in single pass"),
+    ],
+    "manager": [
+        ("user", "Original request: Weather dashboard\n\nPlan:\nBuild a weather block with current conditions and forecast"),
+        ("assistant", "BLOCK 1: Weather\n- Task 1: weather-forecast current conditions\n- Task 2: markdown 5-day forecast"),
+        ("user", "Original request: Home overview\n\nPlan:\n[plan with 200 blocks and 1500 tasks across 40 domains]"),
+        ("assistant", "ESCALATE: context too large — plan contains 200 blocks/1500 tasks, exceeds single breakdown capacity"),
+    ],
+    "project_manager": [
+        ("user", "Job request: Build a simple weather dashboard with current conditions"),
+        ("assistant", "Block 1: Weather\n- weather-forecast card\n- temperature sensor card"),
+        ("user", "Job request: Full smart home dashboard covering all 47 rooms with live sensors, cameras, automation controls, energy monitoring, and security"),
+        ("assistant", "ESCALATE: scope too large for single planning pass — recommend splitting into sub-projects per floor or domain"),
+    ],
+    "supervisor": [
+        ("user", "Job specification:\nWeather dashboard\n\nFinal output:\ntitle: Weather\nviews:\n  - title: Main\n    cards:\n      - type: weather-forecast\n        entity: weather.home"),
+        ("assistant", "title: Weather\nviews:\n  - title: Main\n    cards:\n      - type: weather-forecast\n        entity: weather.home"),
+        ("user", "Job specification:\nWeather dashboard\n\nFinal output:\ntitle: Weather\nviews:\n  - title: Main\n    cards:\n      - type: weather-forecast\n        sensor: weather.home"),
+        ("assistant", "REJECTED_AT: generator\nREJECTED: weather-forecast card uses invalid field 'sensor' — must be 'entity'"),
+    ],
+    "advisor": [
+        ("user", "A generator worker is escalating to you — it cannot complete its task.\n\nReason: context too large — received task requiring 40 sensors\n\nTask context:\nBuild a unified sensor overview card"),
+        ("assistant", "Split into multiple cards — one per sensor domain. Generator should output one card per call. Manager should rewrite the task as: 'Task 1: climate sensors card, Task 2: energy sensors card' etc."),
+    ],
+}
+
+
+def _build_system_block(harness: dict[str, Any], role: str) -> str:
+    from app.roles import ROLE_META
+    from app.pipeline_rules import ESCALATION_CHAIN
+
+    meta = ROLE_META.get(role, {})
+    persona = meta.get("persona", "You are a helpful AI assistant.")
+    escalation_target = ESCALATION_CHAIN.get(role)
+    cost_type = harness.get("cost_type", "local")
+
+    chain_lines = []
+    if escalation_target:
+        target_label = ROLE_META.get(escalation_target, {}).get("title", escalation_target)
+        chain_lines.append(f"- You report to: {escalation_target} ({target_label})")
+    reports_to_me = [s for s, t in ESCALATION_CHAIN.items() if t == role]
+    if reports_to_me:
+        chain_lines.append(f"- Workers below you: {', '.join(reports_to_me)}")
+    chain_section = "\n\nChain of command:\n" + "\n".join(chain_lines) if chain_lines else ""
+
+    cost_note = ""
+    if cost_type == "cloud_metered":
+        cost_note = "\n\nToken conservation: metered cloud worker — be concise, do not pad output."
+    elif cost_type == "cloud_shared":
+        cost_note = "\n\nToken conservation: shared cloud pool — keep responses tight and focused."
+
+    return (
+        f"{persona}"
+        f"{chain_section}"
+        f"\n\nOperational rules:"
+        f"\n- Output ESCALATE: <reason> if you cannot complete a task"
+        f"\n- Output ESCALATE: context too large — <brief summary> if input exceeds your capacity"
+        f"\n- Never explain failures in prose — always use the signal format"
+        f"\n- Output only what is requested — no explanations, no preamble, no fences unless explicitly asked"
+        f"{cost_note}"
+    )
+
+
+async def generate_modelfile(harness_id: str, ollama_host: str) -> dict[str, Any]:
+    """Generate a Modelfile for a harness, merging into any existing Modelfile from Ollama."""
+    from app.harnesses import get_harness
+    from app.roles import load_roles
+
+    harness = get_harness(harness_id)
+    if not harness:
+        return {"ok": False, "error": f"Harness '{harness_id}' not found"}
+
+    model = harness.get("model", "")
+    if not model:
+        return {"ok": False, "error": "Harness has no model name"}
+
+    roles = load_roles()
+    role = next((r for r, a in roles.items() if a.get("harness_id") == harness_id), None)
+
+    existing = await fetch_modelfile_from_ollama(model, ollama_host)
+    existing_fetched = bool(existing)
+    if not existing:
+        existing = f"FROM {model}\n"
+
+    system = _build_system_block(harness, role) if role else (
+        "You are an AI worker in the Fleet Command pipeline.\n\n"
+        "Operational rules:\n"
+        "- Output ESCALATE: <reason> if you cannot complete a task\n"
+        "- Output only what is requested — no explanations, no preamble"
+    )
+
+    # Build full parameter set: role defaults → harness overrides
+    h_params = harness.get("params", {})
+    params: dict[str, Any] = {}
+    if role:
+        params.update(_ROLE_PARAMS.get(role, {}))
+
+    ctx = harness.get("context_window")
+    if ctx:
+        params["num_ctx"] = ctx
+    allowance = harness.get("token_allowance")
+    if allowance:
+        params["num_predict"] = allowance
+    temp = h_params.get("temperature")
+    if temp is not None:
+        params["temperature"] = temp
+        if float(temp) == 0:
+            params["seed"] = 42
+    for k in ("top_k", "top_p", "min_p"):
+        if k in h_params:
+            params[k] = h_params[k]
+
+    # Stop sequences
+    stops = _ROLE_STOPS.get(role or "", [])
+
+    # MESSAGE few-shot examples
+    messages = _ROLE_MESSAGES.get(role or "", [])
+
+    # Build final content: params first (including stops), then merge
+    stop_lines = {f"stop_{i}": f'stop "{s}"' for i, s in enumerate(stops)}
+
+    content = _merge_modelfile(existing, system, params, messages)
+
+    # Insert stop sequences manually after other PARAMETERs (stop needs special format)
+    if stops:
+        stop_block = "\n".join(f'PARAMETER stop "{s}"' for s in stops)
+        # Insert before MESSAGE block or at end
+        if "\nMESSAGE " in content:
+            idx = content.index("\nMESSAGE ")
+            content = content[:idx] + "\n" + stop_block + content[idx:]
+        else:
+            content += "\n" + stop_block
+
+    already_pushed = is_modelfile_pushed(harness_id)
+
+    return {
+        "ok": True,
+        "content": content,
+        "existing_fetched": existing_fetched,
+        "already_pushed": already_pushed,
+        "role": role,
+    }
+
+
 async def push_modelfile_to_ollama(harness_id: str, ollama_host: str) -> tuple[bool, str]:
     import httpx
     from app.harnesses import get_harness
