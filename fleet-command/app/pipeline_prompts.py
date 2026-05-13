@@ -98,7 +98,8 @@ DEFAULT_PROMPTS: dict[str, str] = {
         "If the YAML is a valid Home Assistant Lovelace dashboard that fulfils the spec, return it unchanged.\n"
         "If not, write REJECTED_AT: <stage> on the first line, then REJECTED: with specific reasons.\n"
         "Valid REJECTED_AT stages: project_manager, manager, generator, reviewer.\n"
-        "Choose the stage closest to where the error originated."
+        "Choose the stage closest to where the error originated.\n"
+        "Plain text only — no markdown, no bold, no bullet symbols."
     ),
 }
 

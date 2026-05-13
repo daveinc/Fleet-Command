@@ -1177,7 +1177,7 @@ async def _run_pipeline_inner(job_id: str) -> None:
             return
 
         # Supervisor rejection — check for REJECTED_AT routing
-        if stage == "supervisor" and prev_output and prev_output.strip().upper().startswith("REJECTED"):
+        if stage == "supervisor" and prev_output and re.search(r'REJECTED_AT:', prev_output, re.IGNORECASE):
             match = re.search(r'REJECTED_AT:\s*(\w+)', prev_output, re.IGNORECASE)
             target = match.group(1).strip() if match else None
             if target and target in pipeline:
@@ -1208,7 +1208,7 @@ async def _run_pipeline_inner(job_id: str) -> None:
                 # Keep rejection_feedback in job so manual reruns can still use it
                 prev_output = r.get("output")
                 # If the rerun supervisor also rejected, fail — don't swallow it as done
-                if prev_output and prev_output.strip().upper().startswith("REJECTED"):
+                if prev_output and re.search(r'REJECTED_AT:', prev_output, re.IGNORECASE):
                     job = load_job(job_id)
                     job["rejection_feedback"] = prev_output
                     append_log(job, "supervisor", "Second rejection after rerun — use ↺ Retry")
