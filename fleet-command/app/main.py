@@ -1930,7 +1930,9 @@ async function generateModelfile() {{
   const res = await fetch(api(`/api/harnesses/${{_mfHarnessId}}/modelfile/generate`), {{method:"POST"}}).then(r => r.json());
   if (!res.ok) {{ _mfStatus(`✗ ${{res.error}}`, "#f87171"); return; }}
   document.getElementById("mf-content").value = res.content;
-  document.getElementById("mf-role-badge").textContent = res.role ? `role: ${{res.role}}` : "no role assigned";
+  const roleLabel = res.role ? `role: ${{res.role}}` : "no role assigned";
+  const targetLabel = res.target_model && res.target_model !== res.base_model ? ` → will create ${{res.target_model}}` : "";
+  document.getElementById("mf-role-badge").textContent = roleLabel + targetLabel;
   const fetched = res.existing_fetched ? "existing Modelfile from Ollama merged" : "no existing Modelfile — built from scratch";
   _mfStatus(`✓ Generated — ${{fetched}}`, "#4ade80");
   _mfAlreadyPushed = res.already_pushed;
@@ -1961,7 +1963,7 @@ async function pushModelfile() {{
   const res = await fetch(api(`/api/harnesses/${{_mfHarnessId}}/modelfile/push`), {{method:"POST"}}).then(r => r.json());
   if (res.ok) {{
     _mfAlreadyPushed = true;
-    _mfStatus("✓ Pushed successfully.", "#4ade80");
+    _mfStatus(`✓ ${{res.message || "Pushed successfully."}}`, "#4ade80");
     renderHarnesses();
   }} else {{
     _mfStatus(`✗ Push failed — ${{res.message}}`, "#f87171");

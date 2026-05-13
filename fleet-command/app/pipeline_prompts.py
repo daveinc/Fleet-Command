@@ -264,11 +264,11 @@ def _merge_modelfile(
         if key.lower() not in params_written:
             lines_out.append(f"PARAMETER {key} {val}")
 
-    # Append MESSAGE examples
+    # Append MESSAGE examples using """ delimiters (Ollama multi-line format)
     if new_messages:
         lines_out.append("")
         for role_tag, msg in new_messages:
-            lines_out.append(f"MESSAGE {role_tag} {msg}")
+            lines_out.append(f'MESSAGE {role_tag} """\n{msg}\n"""')
 
     return "\n".join(lines_out)
 
@@ -317,258 +317,280 @@ _ROLE_STOPS: dict[str, list[str]] = {
 }
 
 
+# Context window threshold below which we use minimal (1-example) few-shot
+_SMALL_MODEL_CTX = 32768
+
+# ── Per-role MESSAGE examples — minimal tier (small/1.5b models) ──────────────
+
+_ROLE_MESSAGES_MINIMAL: dict[str, list[tuple[str, str]]] = {
+    "generator": [
+        (
+            "user",
+            "I need a card built — here's the task brief and block assignment.",
+        ),
+        (
+            "assistant",
+            "Sure — *yaml card output here*",
+        ),
+    ],
+    "manager": [
+        (
+            "user",
+            "I need a block/task breakdown — here's the spec and the PM plan.",
+        ),
+        (
+            "assistant",
+            "BLOCK 1: [name]\n- Task 1: [card type and purpose]\n- Task 2: [card type and purpose]",
+        ),
+    ],
+    "project_manager": [
+        (
+            "user",
+            "I need a job scoped — here's the spec and the task limit.",
+        ),
+        (
+            "assistant",
+            "Block 1: [domain]\n- [card type]\n\nBlock 2: [domain]\n- [card type]",
+        ),
+    ],
+    "reviewer": [
+        (
+            "user",
+            "I need this dashboard reviewed — here's the spec and the assembled output in N blocks, M tasks. *expect yaml code here*",
+        ),
+        (
+            "assistant",
+            "# REVIEW: [verdict — fixed X / valid / escalating]\n*corrected yaml output here*",
+        ),
+    ],
+    "supervisor": [
+        (
+            "user",
+            "I need a final sign-off — here's the spec and the reviewed output. *expect yaml code here*",
+        ),
+        (
+            "assistant",
+            "*pass: yaml returned unchanged* or REJECTED_AT: [stage]\nREJECTED: [specific reason]",
+        ),
+    ],
+    "advisor": [
+        (
+            "user",
+            "A supervisor worker is escalating to you — it cannot complete its task.\n\nReason: [escalation reason]\n\nTask context:\n[job summary]\n\nProvide clear, specific guidance.",
+        ),
+        (
+            "assistant",
+            "[direct actionable guidance — break loop / substitute / accept partial / flag for user]",
+        ),
+    ],
+}
+
 # ── Per-role MESSAGE examples (few-shot) ──────────────────────────────────────
 
 _ROLE_MESSAGES: dict[str, list[tuple[str, str]]] = {
     "generator": [
-        # Normal task with known entities → output YAML card only
+        # Normal task → output card YAML only
         (
             "user",
-            "Task: entities card with toggle and brightness for living room lights\n"
-            "Block: Lighting",
+            "I need a card built — here's the task brief and block assignment:\n"
+            "Task: [card type and purpose]\n"
+            "Block: [block name]",
         ),
         (
             "assistant",
-            "type: entities\n"
-            "title: Living Room Lights\n"
-            "entities:\n"
-            "  - entity: light.living_room\n"
-            "    name: Living Room\n"
-            "    toggle: true",
+            "Sure — *yaml card output here, card definition only*",
         ),
-        # Task with entity hint provided → use it in template
+        # Missing entity → escalate, don't guess
         (
             "user",
-            "Task: markdown card showing outdoor temperature and humidity\n"
-            "Block: Weather\n"
-            "Entities: sensor.outdoor_temperature, sensor.outdoor_humidity",
+            "I need a card built — here's the task:\n"
+            "Task: [card requiring entity ID that was not provided]\n"
+            "Block: [block name]",
         ),
         (
             "assistant",
-            "type: markdown\n"
-            "title: Outdoor Conditions\n"
-            "content: |\n"
-            "  ## Outdoor\n"
-            "  Temperature: {{ states('sensor.outdoor_temperature') }}°C\n"
-            "  Humidity: {{ states('sensor.outdoor_humidity') }}%",
+            "ESCALATE: missing entity — [entity purpose] entity ID not provided, cannot build card without it",
         ),
-        # Entity unknown → escalate to manager, not guess
+        # Guidance injected via Additional instructions
         (
             "user",
-            "Task: gauge card showing solar panel current output\n"
-            "Block: Energy",
+            "I need a card built:\n"
+            "Task: [card type]\n"
+            "Block: [block name]\n\n"
+            "Additional instructions: [correction or constraint from manager]",
         ),
         (
             "assistant",
-            "ESCALATE: missing entity — solar panel output entity ID not provided, cannot build gauge without it",
+            "*yaml card output here, applying the additional instructions*",
         ),
-        # Task returned with guidance injected via Additional instructions
+        # Retry after rejection
         (
             "user",
-            "Task: markdown card showing current time\n"
-            "Block: Overview\n\n"
-            "Additional instructions: markdown cards must use content: field, not entity:",
-        ),
-        (
-            "assistant",
-            "type: markdown\n"
-            "title: Current Time\n"
-            "content: |\n"
-            "  {{ now().strftime('%H:%M') }}",
-        ),
-        # Retry after rejection — fix the flagged issue
-        (
-            "user",
-            "Task: button card for living room lights toggle\n"
-            "Block: Lighting\n\n"
+            "I need a card rebuilt — previous attempt was rejected:\n"
+            "Task: [card type]\n"
+            "Block: [block name]\n\n"
             "This is a retry. The original request was:\n"
-            "button card for living room lights toggle\n\n"
+            "[original task spec]\n\n"
             "The previous attempt was rejected with these remarks:\n"
-            "button card uses invalid field 'sensor' — correct field is 'entity'\n\n"
+            "[rejection reason]\n\n"
             "Address all rejection remarks in your output.",
         ),
         (
             "assistant",
-            "type: button\n"
-            "name: Living Room\n"
-            "entity: light.living_room\n"
-            "tap_action:\n"
-            "  action: toggle",
+            "*corrected yaml card here — all rejection remarks addressed*",
         ),
     ],
     "manager": [
         # PM plan → structured BLOCK/task breakdown
         (
             "user",
-            "Original request: Weather dashboard with current conditions and 5-day forecast\n\n"
+            "I need a block/task breakdown — here's the spec and the PM plan:\n"
+            "Original request: [job description]\n\n"
             "Plan:\n"
-            "Block 1: Weather\n"
-            "- weather-forecast card (current + 5-day)\n"
-            "- outdoor temperature sensor",
+            "[PM block summary]",
         ),
         (
             "assistant",
-            "BLOCK 1: Weather\n"
-            "- Task 1: weather-forecast card showing current conditions and 5-day forecast\n"
-            "- Task 2: sensor card showing outdoor temperature (entity: sensor.outdoor_temperature)",
+            "BLOCK 1: [name]\n"
+            "- Task 1: [card type and purpose]\n"
+            "- Task 2: [card type and purpose]\n\n"
+            "BLOCK 2: [name]\n"
+            "- Task 1: [card type and purpose]",
         ),
-        # Generator escalated with missing entity → manager receives actual escalation_prompt format
+        # Generator escalated with missing entity
         (
             "user",
             "A generator worker is escalating to you — it cannot complete its task.\n\n"
-            "Reason: missing entity — solar panel output entity ID not provided, cannot build gauge without it\n\n"
+            "Reason: [escalation reason from generator]\n\n"
             "Task context:\n"
-            "Task: gauge card showing solar panel current output\n"
-            "Block: Energy\n\n"
-            "Provide clear, specific guidance on how to proceed. You may: clarify the task, provide missing information, split it differently, or specify a different approach. Be concise and actionable. Your response will be passed directly back to the worker.",
+            "[task brief that was being worked on]\n\n"
+            "Provide clear, specific guidance on how to proceed.",
         ),
         (
             "assistant",
-            "Use entity: sensor.solaredge_current_power for the solar panel output gauge card.",
+            "[direct fix — supply missing info, correct the task, or specify a different approach]",
         ),
-        # Plan from PM is too large → escalate back to PM
+        # Plan too large → escalate back to PM
         (
             "user",
-            "Original request: Full smart home dashboard\n\n"
+            "I need a block/task breakdown — here's the spec:\n"
+            "Original request: [very large multi-domain job]\n\n"
             "Plan:\n"
-            "[12 blocks, 80+ cards — lighting, climate, security, energy, media, presence, automations, cameras, network, weather, system health, irrigation]",
+            "[PM plan with too many blocks / tasks to break down in one pass]",
         ),
         (
             "assistant",
-            "ESCALATE: plan too large — 12 blocks and 80+ tasks exceeds single breakdown pass, recommend PM splits into separate sub-jobs per domain",
+            "ESCALATE: plan too large — [N] blocks and [M]+ tasks exceeds single breakdown pass, recommend PM splits into separate sub-jobs per domain",
         ),
     ],
     "project_manager": [
         # Normal spec that fits within threshold → block list
         (
             "user",
-            "Job request: Home overview dashboard with weather, lights for main rooms, and door sensors\n\nMax tasks per run: 25",
+            "I need a job scoped — here's the spec and task limit:\n"
+            "Job request: [job description that fits within max_tasks]\n\n"
+            "Max tasks per run: [limit]",
         ),
         (
             "assistant",
-            "Block 1: Weather\n"
-            "- weather-forecast card\n"
-            "- outdoor temperature and humidity sensors\n\n"
-            "Block 2: Lighting\n"
-            "- toggle cards for living room, bedroom, kitchen lights\n\n"
-            "Block 3: Security\n"
-            "- binary sensor cards for front door, back door, motion sensor",
+            "Block 1: [domain]\n"
+            "- [card type]\n"
+            "- [card type]\n\n"
+            "Block 2: [domain]\n"
+            "- [card type]",
         ),
-        # Scope exceeds threshold → split into sub-jobs, do NOT escalate
+        # Scope exceeds threshold → split into sub-jobs
         (
             "user",
-            "Job request: Full smart home dashboard — weather, all lights across 15 rooms, security sensors, energy monitoring, climate per zone, media players, presence tracking\n\nMax tasks per run: 25",
+            "I need a job scoped — here's the spec:\n"
+            "Job request: [multi-domain job that exceeds max_tasks]\n\n"
+            "Max tasks per run: [limit]",
         ),
         (
             "assistant",
-            "SUB-JOB 1: Weather and outdoor environment dashboard — conditions, forecast, temperature, humidity sensors\n"
-            "SUB-JOB 2: Lighting control dashboard — room-by-room light toggles and brightness for all 15 rooms\n"
-            "SUB-JOB 3: Security and presence dashboard — door/window sensors, motion detectors, who is home\n"
-            "SUB-JOB 4: Energy and climate dashboard — solar, grid, battery, thermostat controls per zone",
+            "SUB-JOB 1: [self-contained domain scope]\n"
+            "SUB-JOB 2: [self-contained domain scope]\n"
+            "SUB-JOB 3: [self-contained domain scope]",
         ),
-        # Single domain is genuinely too large even after splitting → escalate
+        # Single domain genuinely too large even after splitting → escalate
         (
             "user",
-            "Job request: Complete lighting dashboard for all 120 individually addressable lights across 40 rooms, each needing a separate brightness slider and color picker\n\nMax tasks per run: 25",
+            "I need a job scoped — here's the spec:\n"
+            "Job request: [single domain so large it cannot be split into runs under the task limit]\n\n"
+            "Max tasks per run: [limit]",
         ),
         (
             "assistant",
-            "ESCALATE: single domain exceeds run limit — 120 lights cannot be split into sub-jobs each under 25 tasks without losing coherence, requires manual scoping",
+            "ESCALATE: single domain exceeds run limit — [reason] cannot be split into sub-jobs each under [limit] tasks without losing coherence, requires manual scoping",
         ),
     ],
     "reviewer": [
-        # Valid YAML → # REVIEW header + return unchanged
+        # Valid assembled dashboard → pass through unchanged
         (
             "user",
-            "Spec: Weather dashboard\n\n"
+            "I need this reviewed — here's the spec and the assembled output.\n"
+            "Spec: [job description]\n\n"
             "YAML to review:\n"
-            "type: weather-forecast\n"
-            "entity: weather.home\n"
-            "show_forecast: true",
+            "*assembled dashboard yaml here — N blocks, M cards across K views*",
         ),
         (
             "assistant",
             "# REVIEW: Valid — no changes needed.\n"
-            "type: weather-forecast\n"
-            "entity: weather.home\n"
-            "show_forecast: true",
+            "*full yaml returned unchanged here*",
         ),
-        # Markdown card with wrong field → fix it, note it in header
+        # Assembled dashboard with fixable issues
         (
             "user",
-            "Spec: Outdoor temperature display\n\n"
+            "I need this reviewed — assembled output has issues.\n"
+            "Spec: [job description]\n\n"
             "YAML to review:\n"
-            "type: markdown\n"
-            "entity: sensor.outdoor_temperature\n"
-            "title: Temperature",
+            "*assembled dashboard yaml here — contains invalid fields, leaked fences, or wrong card structure*",
         ),
         (
             "assistant",
-            "# REVIEW: Fixed markdown card — replaced invalid 'entity:' with 'content:' using live template.\n"
-            "type: markdown\n"
-            "title: Temperature\n"
-            "content: |\n"
-            "  {{ states('sensor.outdoor_temperature') }}°C",
+            "# REVIEW: Fixed [N] issues — [brief description of what was corrected].\n"
+            "*full corrected yaml here*",
         ),
-        # YAML too large for single pass → escalate
+        # Input too large for single pass
         (
             "user",
-            "Spec: Full home dashboard\n\n"
+            "I need this reviewed:\n"
+            "Spec: [job description]\n\n"
             "YAML to review:\n"
-            "[assembled dashboard with 150+ cards across 8 views]",
+            "*assembled dashboard yaml here — very large, exceeds context capacity*",
         ),
         (
             "assistant",
-            "ESCALATE: context too large — 150-card dashboard cannot be reviewed in a single pass, chunking required",
+            "ESCALATE: context too large — [N]-card dashboard cannot be reviewed in a single pass, chunking required",
         ),
     ],
     "supervisor": [
-        # Valid output matching spec → return unchanged, no edits
+        # Valid output matching spec → return unchanged
         (
             "user",
+            "I need a final sign-off — here's the spec and the reviewed output.\n"
             "Job specification:\n"
-            "Weather dashboard with forecast and outdoor temperature\n\n"
+            "[job description]\n\n"
             "Final output for sign-off:\n"
-            "title: Weather\n"
-            "views:\n"
-            "  - title: Weather\n"
-            "    cards:\n"
-            "      - type: weather-forecast\n"
-            "        entity: weather.home\n"
-            "      - type: sensor\n"
-            "        entity: sensor.outdoor_temperature\n"
-            "        name: Temperature",
+            "*reviewed dashboard yaml here — complete, all views and cards*",
         ),
         (
             "assistant",
-            "title: Weather\n"
-            "views:\n"
-            "  - title: Weather\n"
-            "    cards:\n"
-            "      - type: weather-forecast\n"
-            "        entity: weather.home\n"
-            "      - type: sensor\n"
-            "        entity: sensor.outdoor_temperature\n"
-            "        name: Temperature",
+            "*full yaml returned unchanged — output approved*",
         ),
-        # Output has wrong field → reject back to the stage that caused it
+        # Output doesn't fulfil spec → reject with stage and reason
         (
             "user",
+            "I need a final sign-off — output has problems.\n"
             "Job specification:\n"
-            "Living room light toggle button\n\n"
+            "[job description]\n\n"
             "Final output for sign-off:\n"
-            "title: Lights\n"
-            "views:\n"
-            "  - title: Lights\n"
-            "    cards:\n"
-            "      - type: button\n"
-            "        sensor: light.living_room\n"
-            "        name: Living Room",
+            "*reviewed dashboard yaml here — contains an error the reviewer missed*",
         ),
         (
             "assistant",
-            "REJECTED_AT: generator\n"
-            "REJECTED: button card uses invalid field 'sensor' — correct field is 'entity'",
+            "REJECTED_AT: [stage closest to where the error originated]\n"
+            "REJECTED: [specific reason — what is wrong and what correct output should look like]",
         ),
     ],
     "advisor": [
@@ -698,18 +720,23 @@ async def generate_modelfile(harness_id: str, ollama_host: str) -> dict[str, Any
     # Stop sequences
     stops = _ROLE_STOPS.get(role or "", [])
 
-    # MESSAGE few-shot examples
-    messages = _ROLE_MESSAGES.get(role or "", [])
+    # MESSAGE few-shot examples — minimal tier for small/weak models
+    ctx_window = harness.get("context_window") or 0
+    if role and ctx_window and ctx_window <= _SMALL_MODEL_CTX:
+        messages = _ROLE_MESSAGES_MINIMAL.get(role, [])
+    else:
+        messages = _ROLE_MESSAGES.get(role or "", [])
 
-    # Build final content: params first (including stops), then merge
-    stop_lines = {f"stop_{i}": f'stop "{s}"' for i, s in enumerate(stops)}
+    # Role-suffixed target model name — e.g. gemma4:reviewer, qwen-ha:generator
+    base_model = model.split(":")[0] if ":" in model else model
+    target_model = f"{base_model}:{role}" if role else model
 
+    # Build final content, merging into base model's existing Modelfile
     content = _merge_modelfile(existing, system, params, messages)
 
     # Insert stop sequences manually after other PARAMETERs (stop needs special format)
     if stops:
         stop_block = "\n".join(f'PARAMETER stop "{s}"' for s in stops)
-        # Insert before MESSAGE block or at end
         if "\nMESSAGE " in content:
             idx = content.index("\nMESSAGE ")
             content = content[:idx] + "\n" + stop_block + content[idx:]
@@ -724,6 +751,8 @@ async def generate_modelfile(harness_id: str, ollama_host: str) -> dict[str, Any
         "existing_fetched": existing_fetched,
         "already_pushed": already_pushed,
         "role": role,
+        "target_model": target_model,
+        "base_model": model,
     }
 
 
@@ -734,10 +763,26 @@ def _modelfile_to_api_payload(model_name: str, content: str) -> dict:
     params: dict = {}
     messages: list = []
     in_system = False
+    in_message = False
+    current_msg_role = ""
+    current_msg_lines: list[str] = []
 
     for line in content.splitlines():
         stripped = line.strip()
         upper = stripped.upper()
+
+        if in_message:
+            if '"""' in stripped:
+                before = stripped[:stripped.index('"""')]
+                if before:
+                    current_msg_lines.append(before)
+                messages.append({"role": current_msg_role, "content": "\n".join(current_msg_lines).strip()})
+                in_message = False
+                current_msg_lines = []
+                current_msg_role = ""
+            else:
+                current_msg_lines.append(line)
+            continue
 
         if upper.startswith("SYSTEM"):
             rest = stripped[6:].strip()
@@ -747,9 +792,9 @@ def _modelfile_to_api_payload(model_name: str, content: str) -> dict:
                     system = inner[:-3].strip()
                 elif inner:
                     system = inner
-                    in_system = True  # content continues on next lines
+                    in_system = True
                 else:
-                    in_system = True  # opening """ only, content on next lines
+                    in_system = True
             else:
                 m = re.match(r'"(.+)"', rest)
                 if m:
@@ -783,8 +828,21 @@ def _modelfile_to_api_payload(model_name: str, content: str) -> dict:
 
         if upper.startswith("MESSAGE "):
             parts = stripped.split(None, 2)
-            if len(parts) == 3:
-                messages.append({"role": parts[1], "content": parts[2]})
+            if len(parts) >= 2:
+                current_msg_role = parts[1]
+                rest = parts[2].strip() if len(parts) == 3 else ""
+                if rest.startswith('"""'):
+                    inner = rest[3:]
+                    if inner.endswith('"""'):
+                        messages.append({"role": current_msg_role, "content": inner[:-3].strip()})
+                    elif inner:
+                        current_msg_lines = [inner]
+                        in_message = True
+                    else:
+                        current_msg_lines = []
+                        in_message = True
+                else:
+                    messages.append({"role": current_msg_role, "content": rest})
             continue
 
     payload: dict = {"model": model_name, "from": model_name}
@@ -799,7 +857,9 @@ def _modelfile_to_api_payload(model_name: str, content: str) -> dict:
 
 async def push_modelfile_to_ollama(harness_id: str, ollama_host: str) -> tuple[bool, str]:
     import httpx
-    from app.harnesses import get_harness
+    from app.harnesses import get_harness, save_user_harness
+    from app.roles import load_roles
+
     entry = load_modelfiles().get(harness_id, {})
     content = entry.get("content", "")
     if not content:
@@ -807,15 +867,35 @@ async def push_modelfile_to_ollama(harness_id: str, ollama_host: str) -> tuple[b
     harness = get_harness(harness_id)
     if not harness:
         return False, f"Harness '{harness_id}' not found"
-    model_name = harness.get("model", "")
-    if not model_name:
+    base_model = harness.get("model", "")
+    if not base_model:
         return False, "Harness has no model name"
+
+    # Compute role-suffixed target name
+    roles = load_roles()
+    role = next((r for r, a in roles.items() if a.get("harness_id") == harness_id), None)
+    if role:
+        base = base_model.split(":")[0] if ":" in base_model else base_model
+        target_model = f"{base}:{role}"
+    else:
+        target_model = base_model
+
     try:
-        payload = _modelfile_to_api_payload(model_name, content)
+        payload = _modelfile_to_api_payload(target_model, content)
+        # Push to base model so Ollama can inherit weights, but create as target_model
+        payload["from"] = base_model
         async with httpx.AsyncClient(timeout=120) as client:
             resp = await client.post(f"{ollama_host}/api/create", json=payload)
             resp.raise_for_status()
         mark_modelfile_pushed(harness_id)
-        return True, "OK"
+
+        # Update harness to point to the role-suffixed model
+        if target_model != base_model:
+            updated = dict(harness)
+            updated["model"] = target_model
+            updated.pop("_id", None)
+            save_user_harness(harness_id, updated)
+
+        return True, f"Created {target_model}"
     except Exception as exc:
         return False, str(exc)
