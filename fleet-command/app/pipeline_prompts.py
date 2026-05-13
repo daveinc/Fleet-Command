@@ -349,12 +349,12 @@ _ROLE_MESSAGES: dict[str, list[tuple[str, str]]] = {
             "assistant",
             "ESCALATE: missing entity — solar panel output entity ID not provided, cannot build gauge without it",
         ),
-        # Task returned from reviewer with guidance injected → apply it
+        # Task returned with guidance injected via Additional instructions
         (
             "user",
             "Task: markdown card showing current time\n"
-            "Block: Overview\n"
-            "Guidance from supervisor: markdown cards must use content: field, not entity:",
+            "Block: Overview\n\n"
+            "Additional instructions: markdown cards must use content: field, not entity:",
         ),
         (
             "assistant",
@@ -362,6 +362,25 @@ _ROLE_MESSAGES: dict[str, list[tuple[str, str]]] = {
             "title: Current Time\n"
             "content: |\n"
             "  {{ now().strftime('%H:%M') }}",
+        ),
+        # Retry after rejection — fix the flagged issue
+        (
+            "user",
+            "Task: button card for living room lights toggle\n"
+            "Block: Lighting\n\n"
+            "This is a retry. The original request was:\n"
+            "button card for living room lights toggle\n\n"
+            "The previous attempt was rejected with these remarks:\n"
+            "button card uses invalid field 'sensor' — correct field is 'entity'\n\n"
+            "Address all rejection remarks in your output.",
+        ),
+        (
+            "assistant",
+            "type: button\n"
+            "name: Living Room\n"
+            "entity: light.living_room\n"
+            "tap_action:\n"
+            "  action: toggle",
         ),
     ],
     "manager": [
@@ -380,19 +399,19 @@ _ROLE_MESSAGES: dict[str, list[tuple[str, str]]] = {
             "- Task 1: weather-forecast card showing current conditions and 5-day forecast\n"
             "- Task 2: sensor card showing outdoor temperature (entity: sensor.outdoor_temperature)",
         ),
-        # Generator escalated with missing entity → rewrite task with entity hint
+        # Generator escalated with missing entity → manager receives actual escalation_prompt format
         (
             "user",
-            "Original request: Energy dashboard\n\n"
-            "Generator escalation:\n"
+            "A generator worker is escalating to you — it cannot complete its task.\n\n"
+            "Reason: missing entity — solar panel output entity ID not provided, cannot build gauge without it\n\n"
+            "Task context:\n"
             "Task: gauge card showing solar panel current output\n"
-            "Reason: missing entity — solar panel output entity ID not provided\n\n"
-            "Rewrite the task with a specific entity, or escalate if you cannot resolve it.",
+            "Block: Energy\n\n"
+            "Provide clear, specific guidance on how to proceed. You may: clarify the task, provide missing information, split it differently, or specify a different approach. Be concise and actionable. Your response will be passed directly back to the worker.",
         ),
         (
             "assistant",
-            "BLOCK 2: Energy\n"
-            "- Task 1: gauge card showing solar panel current output (entity: sensor.solaredge_current_power)",
+            "Use entity: sensor.solaredge_current_power for the solar panel output gauge card.",
         ),
         # Plan from PM is too large → escalate back to PM
         (
@@ -540,34 +559,35 @@ _ROLE_MESSAGES: dict[str, list[tuple[str, str]]] = {
         ),
     ],
     "advisor": [
-        # Generator stuck on missing entity → guide manager to rewrite the task
+        # Supervisor cannot make final call on partially valid output
         (
             "user",
-            "Escalation from: generator\n"
-            "Reason: missing entity — solar panel output entity ID not provided\n\n"
+            "A supervisor worker is escalating to you — it cannot complete its task.\n\n"
+            "Reason: output is partially valid — 3 of 5 views are correct YAML but 2 have unresolvable entity references that reviewer could not fix\n\n"
             "Task context:\n"
-            "Task: gauge card showing solar panel current output\n"
-            "Block: Energy",
+            "Job: Weather and security dashboard — output has been through 2 reviewer passes, still has 2 cards with unknown entities\n\n"
+            "Provide clear, specific guidance on how to proceed. You may: clarify the task, provide missing information, split it differently, or specify a different approach. Be concise and actionable. Your response will be passed directly back to the worker.",
         ),
         (
             "assistant",
-            "Instruct manager to rewrite the task with a specific entity hint. "
-            "Common solar entities in HA: sensor.solaredge_current_power, sensor.solar_power, sensor.pv_production. "
-            "Manager should pick the most likely candidate or flag it for reviewer to resolve in entity-resolution pass.",
+            "Accept the 3 valid views and reject the 2 with unresolvable entities. "
+            "Output REJECTED_AT: generator with specific entity IDs that need user clarification before rerunning. "
+            "Do not block the whole job on 2 cards — flag them and pass the rest.",
         ),
-        # Manager escalating oversized plan → guide PM to split the job
+        # Supervisor stuck in retry loop → break it
         (
             "user",
-            "Escalation from: manager\n"
-            "Reason: plan too large — 12 blocks, 80+ tasks, exceeds single breakdown pass\n\n"
+            "A supervisor worker is escalating to you — it cannot complete its task.\n\n"
+            "Reason: job has been rejected 3 times at generator stage — same entity resolution failure each pass\n\n"
             "Task context:\n"
-            "Original request: Full smart home dashboard",
+            "Original spec: Solar monitoring dashboard — sensor.solar_power not found (×3)\n\n"
+            "Provide clear, specific guidance on how to proceed. You may: clarify the task, provide missing information, split it differently, or specify a different approach. Be concise and actionable. Your response will be passed directly back to the worker.",
         ),
         (
             "assistant",
-            "Instruct project_manager to split into separate sub-jobs: one job per domain (lighting, security, energy, climate). "
-            "Each sub-job should cover at most 3-4 blocks and 20 tasks. "
-            "Assemble views separately then combine into one dashboard at the end.",
+            "Break the loop — generator cannot guess entity IDs from spec alone. "
+            "Accept what was produced, replacing the unknown sensor card with a static markdown card noting that solar entity requires user configuration. "
+            "Return the job as complete with that substitution.",
         ),
     ],
 }
