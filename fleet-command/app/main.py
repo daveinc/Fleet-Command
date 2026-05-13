@@ -1838,7 +1838,7 @@ function switchTab(name, el) {{
   if (name === "jobs") loadJobs();
   if (name === "fleet") loadFleetTab();
   if (name !== "jobs") stopLivePoll();
-  if (name !== "fleet") stopFleetPoll();
+  if (name !== "fleet") { stopFleetPoll(); _fleetSelectedId = null; }
 }}
 
 const REQUEST_FORMATS = ["ollama_chat","ollama_generate","openai_responses","openai_chat","anthropic_messages","raw_prompt_json"];
@@ -2701,11 +2701,27 @@ function renderFleetJobList() {{
   }}
   const STATUS_DOT = {{ running:"#f59e0b", pending:"#475569", done:"#22c55e", failed:"#ef4444", cancelled:"#475569", split:"#38bdf8", reviewing:"#818cf8" }};
   const _savedListScroll = el.scrollTop;
-  el.innerHTML = _fleetJobs.map(j => {{
+  const childIds = new Set(_fleetJobs.flatMap(j => j.child_job_ids || []));
+  el.innerHTML = _fleetJobs.filter(j => !childIds.has(j.id)).map(j => {{
     const dot = STATUS_DOT[j.status] || "#475569";
     const isActive = j.status === "running" || j.status === "pending";
     const stageCount = Object.keys(j.stages || {{}}).length;
     const isSel = j.id === _fleetSelectedId;
+    const children = (j.child_job_ids || []).map(cid => {{
+      const c = _fleetJobs.find(x => x.id === cid);
+      if (!c) return "";
+      const cdot = STATUS_DOT[c.status] || "#475569";
+      const cisSel = c.id === _fleetSelectedId;
+      return `<div class="fjob-row${{cisSel?" selected":""}}${{c.status==="running"||c.status==="pending"?" active":""}}"
+        style="margin-left:0.75rem;border-left:2px solid #1e3a5f;padding-left:0.5rem"
+        onclick="event.stopPropagation();selectFleetJob('${{c.id}}')">
+        <div class="fjob-name" style="font-size:0.72rem">↳ ${{(c.spec||"—").slice(0,48)}}</div>
+        <div class="fjob-meta">
+          <span style="width:6px;height:6px;border-radius:50%;background:${{cdot}};display:inline-block;flex-shrink:0"></span>
+          <span style="font-size:0.65rem;color:${{cdot}}">${{c.status}}</span>
+        </div>
+      </div>`;
+    }}).join("");
     return `<div class="fjob-row${{isSel?" selected":""}}${{isActive?" active":""}}"
       onclick="selectFleetJob('${{j.id}}')">
       <div class="fjob-name">${{(j.spec||"—").slice(0,55)}}</div>
@@ -2714,7 +2730,7 @@ function renderFleetJobList() {{
         <span style="font-size:0.68rem;color:${{dot}}">${{j.status}}</span>
         <span style="font-size:0.65rem;color:#334155;margin-left:auto">${{stageCount}} stages</span>
       </div>
-    </div>`;
+    </div>${{children}}`;
   }}).join("");
   el.scrollTop = _savedListScroll;
 }}
@@ -2991,9 +3007,9 @@ async function loadPipelineTab() {{
   if (!sel) return;
   const prev = sel.value;
   sel.innerHTML = _plJobs.length
-    ? _plJobs.map(j => `<option value="${{j.id}}">${{j.id}} — ${{j.status}} (${{(j.spec||"").slice(0,40)}})</option>`).join("")
-    : `<option>No jobs yet</option>`;
-  if (prev) sel.value = prev;
+    ? `<option value="">— select job —</option>` + _plJobs.map(j => `<option value="${{j.id}}">${{j.id}} — ${{j.status}} (${{(j.spec||"").slice(0,40)}})</option>`).join("")
+    : `<option value="">No jobs yet</option>`;
+  if (prev && _plJobs.find(j => j.id === prev)) sel.value = prev;
   renderPipelineNodes();
   loadStageInstructions();
   loadRulesPanel();

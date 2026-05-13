@@ -1160,6 +1160,8 @@ async def _run_pipeline_inner(job_id: str) -> None:
     job = load_job(job_id)
     if not job:
         return
+    if is_cancelled(job_id):
+        return
 
     job["status"] = STATUS_RUNNING
     save_job(job)
@@ -1204,12 +1206,13 @@ async def _run_pipeline_inner(job_id: str) -> None:
             subjob_specs = _parse_subjobs(prev_output)
             if subjob_specs:
                 child_ids = []
+                child_pipeline = [s for s in job.get("pipeline", []) if s != "project_manager"]
                 for spec_text in subjob_specs:
                     child = _create_job({
                         "spec": spec_text,
                         "type": job.get("type", "ha_dashboard"),
                         "target_dashboard": job.get("target_dashboard", "fleet-output"),
-                        "pipeline": job.get("pipeline", []),
+                        "pipeline": child_pipeline,
                         "parent_job_id": job_id,
                     })
                     child_ids.append(child["id"])
