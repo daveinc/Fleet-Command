@@ -197,12 +197,13 @@ def _merge_modelfile(
     new_messages: list[tuple[str, str]],
 ) -> str:
     """Merge generated SYSTEM, PARAMETERs, and MESSAGE examples into an existing Modelfile.
-    Preserves FROM, TEMPLATE, ADAPTER, LICENSE lines.
+    Preserves FROM, TEMPLATE, ADAPTER lines. Strips LICENSE block entirely.
     Replaces SYSTEM block, our PARAMETER lines, and all MESSAGE lines.
     """
     our_param_keys = {k.lower() for k in new_params}
     lines_out: list[str] = []
     in_system = False
+    in_license = False
     system_written = False
     params_written: set[str] = set()
 
@@ -227,10 +228,21 @@ def _merge_modelfile(
         if in_system:
             if '"""' in stripped:
                 in_system = False
+                # Line that closes SYSTEM might also open another block (e.g. LICENSE """)
+                if upper.startswith("LICENSE"):
+                    in_license = True
             continue
 
-        # Strip LICENSE lines — noise from base model
+        # Strip LICENSE block entirely — opening line + all body until closing """
         if upper.startswith("LICENSE"):
+            in_license = True
+            if stripped.count('"""') >= 2:
+                in_license = False  # single-line LICENSE block
+            continue
+
+        if in_license:
+            if '"""' in stripped:
+                in_license = False
             continue
 
         # Replace our PARAMETER lines
@@ -650,6 +662,10 @@ async def generate_modelfile(harness_id: str, ollama_host: str) -> dict[str, Any
     existing_fetched = bool(existing)
     if not existing:
         existing = f"FROM {model}\n"
+    else:
+        # Normalize FROM: blob paths / absolute paths don't work on /api/create
+        import re as _re
+        existing = _re.sub(r'(?m)^FROM\s+\S+', f'FROM {model}', existing)
 
     system = _build_system_block(harness, role) if role else (
         "You are an AI worker in the Fleet Command pipeline.\n\n"
@@ -711,6 +727,76 @@ async def generate_modelfile(harness_id: str, ollama_host: str) -> dict[str, Any
     }
 
 
+def _modelfile_to_api_payload(model_name: str, content: str) -> dict:
+    """Parse Modelfile content into the structured /api/create payload (Ollama 0.5+)."""
+    import re
+    system = ""
+    params: dict = {}
+    messages: list = []
+    in_system = False
+
+    for line in content.splitlines():
+        stripped = line.strip()
+        upper = stripped.upper()
+
+        if upper.startswith("SYSTEM"):
+            rest = stripped[6:].strip()
+            if rest.startswith('"""'):
+                inner = rest[3:]
+                if inner.endswith('"""'):
+                    system = inner[:-3].strip()
+                elif inner:
+                    system = inner
+                    in_system = True  # content continues on next lines
+                else:
+                    in_system = True  # opening """ only, content on next lines
+            else:
+                m = re.match(r'"(.+)"', rest)
+                if m:
+                    system = m.group(1)
+                else:
+                    system = rest
+            continue
+
+        if in_system:
+            if '"""' in stripped:
+                before = stripped[:stripped.index('"""')]
+                if before:
+                    system += ("\n" if system else "") + before
+                in_system = False
+            else:
+                system += ("\n" if system else "") + line
+            continue
+
+        if upper.startswith("PARAMETER "):
+            parts = stripped.split(None, 2)
+            if len(parts) == 3:
+                key, val = parts[1], parts[2].strip('"')
+                try:
+                    params[key] = int(val)
+                except ValueError:
+                    try:
+                        params[key] = float(val)
+                    except ValueError:
+                        params[key] = val
+            continue
+
+        if upper.startswith("MESSAGE "):
+            parts = stripped.split(None, 2)
+            if len(parts) == 3:
+                messages.append({"role": parts[1], "content": parts[2]})
+            continue
+
+    payload: dict = {"model": model_name, "from": model_name}
+    if system:
+        payload["system"] = system.strip()
+    if params:
+        payload["parameters"] = params
+    if messages:
+        payload["messages"] = messages
+    return payload
+
+
 async def push_modelfile_to_ollama(harness_id: str, ollama_host: str) -> tuple[bool, str]:
     import httpx
     from app.harnesses import get_harness
@@ -725,11 +811,9 @@ async def push_modelfile_to_ollama(harness_id: str, ollama_host: str) -> tuple[b
     if not model_name:
         return False, "Harness has no model name"
     try:
+        payload = _modelfile_to_api_payload(model_name, content)
         async with httpx.AsyncClient(timeout=120) as client:
-            resp = await client.post(
-                f"{ollama_host}/api/create",
-                json={"name": model_name, "modelfile": content},
-            )
+            resp = await client.post(f"{ollama_host}/api/create", json=payload)
             resp.raise_for_status()
         mark_modelfile_pushed(harness_id)
         return True, "OK"
