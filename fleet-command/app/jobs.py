@@ -16,6 +16,23 @@ STATUS_FAILED    = "failed"
 STATUS_SPLIT     = "split"
 
 
+_PIPELINE_EXECUTION_ORDER = [
+    "project_manager", "manager", "generator", "assembler", "reviewer", "supervisor"
+]
+
+
+def _default_pipeline() -> list[str]:
+    """Return the full pipeline stages that have a harness assigned, in execution order."""
+    try:
+        from app.roles import load_roles
+        roles = load_roles()
+        assigned = {stage for stage, cfg in roles.items() if cfg.get("harness_id")}
+        pipeline = [s for s in _PIPELINE_EXECUTION_ORDER if s in assigned]
+        return pipeline if pipeline else ["generator"]
+    except Exception:
+        return ["generator"]
+
+
 def _run_dir(job_id: str) -> Path:
     return _RUNS_DIR / job_id
 
@@ -27,7 +44,7 @@ def create_job(spec: dict[str, Any]) -> dict[str, Any]:
         "type": spec.get("type", "ha_dashboard"),
         "spec": spec.get("spec", ""),
         "target_dashboard": spec.get("target_dashboard", "fleet-output"),
-        "pipeline": spec.get("pipeline", ["generator"]),
+        "pipeline": spec.get("pipeline") or _default_pipeline(),
         "status": STATUS_PENDING,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "stages": {},
