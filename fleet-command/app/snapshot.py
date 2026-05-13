@@ -1,3 +1,5 @@
+# TODO: HA sensor feed — rebuild before UI overhaul. Wire to real job data (/data/jobs/).
+# Current data is hardcoded. SENSOR_KEYS are the HA entity IDs. Concept is valid, impl is stale.
 from __future__ import annotations
 
 from pathlib import Path

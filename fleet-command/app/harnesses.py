@@ -14,7 +14,7 @@ BUILTIN_HARNESSES: dict[str, dict[str, Any]] = {
         "api_path": "/api/chat",
         "request_format": "ollama_chat",
         "auth_type": "none",
-        "context_window": 4096,
+        "context_window": None,
         "token_allowance": None,
         "cost_type": "local",
         "capabilities": ["generator"],
@@ -110,7 +110,7 @@ BUILTIN_HARNESSES: dict[str, dict[str, Any]] = {
         "api_path": "/api/chat",
         "request_format": "ollama_chat",
         "auth_type": "none",
-        "context_window": 4096,
+        "context_window": None,
         "token_allowance": None,
         "cost_type": "local",
         "capabilities": ["generator"],
@@ -207,7 +207,12 @@ def load_harnesses() -> dict[str, dict[str, Any]]:
                 harnesses[f.stem] = data
             except Exception:
                 pass
-    return {hid: _resolve_context_window(dict(harness)) for hid, harness in harnesses.items()}
+    result = {}
+    for hid, harness in harnesses.items():
+        h = _resolve_context_window(dict(harness))
+        h["_id"] = hid
+        result[hid] = h
+    return result
 
 
 def get_harness(harness_id: str) -> dict[str, Any] | None:
@@ -219,3 +224,97 @@ def save_user_harness(harness_id: str, data: dict[str, Any]) -> None:
     (_USER_HARNESS_DIR / f"{harness_id}.json").write_text(
         json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
     )
+
+
+def probe_harness(harness: dict[str, Any]) -> dict[str, Any]:
+    """Test connection to a harness and retrieve available metadata.
+
+    Returns a result dict:
+      ok: bool
+      message: human-readable status
+      context_window: int | None   (if retrieved)
+      model_info: dict             (raw /api/show model_info, if Ollama)
+      error: str                   (if ok=False)
+    """
+    fmt = harness.get("request_format", "")
+    model = str(harness.get("model", "") or "")
+    endpoint = str(harness.get("endpoint", "") or "").rstrip("/")
+
+    if fmt in ("ollama_chat", "ollama_generate"):
+        return _probe_ollama(model, endpoint)
+
+    if fmt == "anthropic_messages":
+        return _probe_anthropic(model, endpoint, harness)
+
+    # Generic OpenAI-compatible: attempt a minimal chat completion
+    return _probe_openai_compatible(model, endpoint, harness)
+
+
+def _probe_ollama(model: str, endpoint: str) -> dict[str, Any]:
+    host = _ollama_host(endpoint)
+    hosts = [host]
+    if "host.docker.internal" in host:
+        hosts.append(host.replace("host.docker.internal", "localhost"))
+
+    for candidate in hosts:
+        try:
+            resp = httpx.post(f"{candidate}/api/show", json={"model": model}, timeout=8)
+            resp.raise_for_status()
+            data = resp.json()
+            model_info = data.get("model_info", {})
+            ctx = _extract_context_window(model_info)
+            return {
+                "ok": True,
+                "message": f"Connected — {model}",
+                "context_window": ctx,
+                "model_info": model_info,
+            }
+        except httpx.HTTPStatusError as exc:
+            return {"ok": False, "message": f"Connection failed", "error": f"HTTP {exc.response.status_code}: {exc.response.text[:200]}"}
+        except Exception as exc:
+            continue
+
+    return {"ok": False, "message": "Connection failed", "error": f"Could not reach {endpoint}"}
+
+
+def _probe_anthropic(model: str, endpoint: str, harness: dict[str, Any]) -> dict[str, Any]:
+    api_key = harness.get("api_key") or ""
+    if not api_key:
+        try:
+            import os
+            api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        except Exception:
+            pass
+    if not api_key:
+        return {"ok": False, "message": "Connection failed", "error": "No API key configured"}
+    try:
+        resp = httpx.post(
+            f"{endpoint}/v1/messages",
+            headers={"x-api-key": api_key, "anthropic-version": "2023-06-01", "content-type": "application/json"},
+            json={"model": model, "max_tokens": 1, "messages": [{"role": "user", "content": "hi"}]},
+            timeout=10,
+        )
+        if resp.status_code in (200, 400):
+            return {"ok": True, "message": f"Connected — {model}", "context_window": None, "model_info": {}}
+        return {"ok": False, "message": "Connection failed", "error": f"HTTP {resp.status_code}: {resp.text[:200]}"}
+    except Exception as exc:
+        return {"ok": False, "message": "Connection failed", "error": str(exc)}
+
+
+def _probe_openai_compatible(model: str, endpoint: str, harness: dict[str, Any]) -> dict[str, Any]:
+    api_key = harness.get("api_key") or ""
+    headers = {"content-type": "application/json"}
+    if api_key:
+        headers["authorization"] = f"Bearer {api_key}"
+    try:
+        resp = httpx.post(
+            f"{endpoint}/v1/chat/completions",
+            headers=headers,
+            json={"model": model, "max_tokens": 1, "messages": [{"role": "user", "content": "hi"}]},
+            timeout=10,
+        )
+        if resp.status_code in (200, 400):
+            return {"ok": True, "message": f"Connected — {model}", "context_window": None, "model_info": {}}
+        return {"ok": False, "message": "Connection failed", "error": f"HTTP {resp.status_code}: {resp.text[:200]}"}
+    except Exception as exc:
+        return {"ok": False, "message": "Connection failed", "error": str(exc)}

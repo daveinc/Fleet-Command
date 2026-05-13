@@ -61,13 +61,25 @@ DEFAULT_ASSIGNMENTS: dict[str, Any] = {
     "manager":         {"harness_id": "gemma4_e4b", "params": {"temperature": 0.5}},
     "reviewer":        {"harness_id": "gemma4_e4b", "params": {}},
     "generator":       {"harness_id": "qwen_ha_1_5b", "params": {}},
-    "assembler":       {"harness_id": "gemma4_e4b", "params": {}},
     "advisor":         {"harness_id": "claude_sonnet", "params": {}},
 }
 
 ROLE_LABELS = {k: v["label"] for k, v in ROLE_META.items()}
 
+# Minimum harness values recommended per role — informational only, never enforced.
+# context_window: minimum context window in tokens
+# token_allowance: minimum output token allowance (None = no minimum)
+DEFAULT_ROLE_MINIMUMS: dict[str, dict[str, Any]] = {
+    "supervisor":      {"context_window": 32000,  "token_allowance": None},
+    "project_manager": {"context_window": 16000,  "token_allowance": None},
+    "manager":         {"context_window": 16000,  "token_allowance": None},
+    "reviewer":        {"context_window": 32000,  "token_allowance": None},
+    "generator":       {"context_window": 4000,   "token_allowance": None},
+    "advisor":         {"context_window": 64000,  "token_allowance": None},
+}
+
 _ASSIGNMENTS_FILE = Path("/data/role_assignments.json")
+_MINIMUMS_FILE = Path("/data/role_minimums.json")
 
 
 def load_roles() -> dict[str, Any]:
@@ -94,3 +106,55 @@ def swap_roles(assignments: dict[str, Any], role_a: str, role_b: str) -> dict[st
     result = dict(assignments)
     result[role_a], result[role_b] = result[role_b], result[role_a]
     return result
+
+
+def load_role_minimums() -> dict[str, dict[str, Any]]:
+    if _MINIMUMS_FILE.exists():
+        try:
+            data = json.loads(_MINIMUMS_FILE.read_text(encoding="utf-8"))
+            merged = {k: dict(v) for k, v in DEFAULT_ROLE_MINIMUMS.items()}
+            for role, vals in data.items():
+                if role in merged:
+                    merged[role].update(vals)
+                else:
+                    merged[role] = vals
+            return merged
+        except Exception:
+            pass
+    return {k: dict(v) for k, v in DEFAULT_ROLE_MINIMUMS.items()}
+
+
+def save_role_minimums(minimums: dict[str, dict[str, Any]]) -> None:
+    _MINIMUMS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _MINIMUMS_FILE.write_text(json.dumps(minimums, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def check_harness_for_role(harness: dict[str, Any], role: str) -> dict[str, Any]:
+    """Check a harness against the configured minimums for a role.
+
+    Returns:
+        meets_all: bool — True if all defined minimums are satisfied
+        checks: list of {field, minimum, actual, ok}
+        in_capabilities: bool — whether the role is listed in harness capabilities
+    """
+    minimums = load_role_minimums().get(role, {})
+    checks = []
+
+    for field, minimum in minimums.items():
+        if minimum is None:
+            continue
+        actual = harness.get(field)
+        try:
+            ok = actual is not None and int(actual) >= int(minimum)
+        except (TypeError, ValueError):
+            ok = False
+        checks.append({"field": field, "minimum": minimum, "actual": actual, "ok": ok})
+
+    capabilities = harness.get("capabilities", [])
+    in_capabilities = role in capabilities
+
+    return {
+        "meets_all": all(c["ok"] for c in checks),
+        "checks": checks,
+        "in_capabilities": in_capabilities,
+    }

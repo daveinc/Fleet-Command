@@ -256,8 +256,11 @@ async def _call_harness(
     if ctx and info["pct"] >= 70:
         _flog(f"  ctx usage ~{info['pct']}% before call — approaching limit")
 
+    from app.pipeline_prompts import is_modelfile_pushed
+    effective_system = "" if is_modelfile_pushed(harness.get("_id", "")) else system
+
     endpoint = _resolve_endpoint(harness)
-    payload = _build_payload(harness, system, user)
+    payload = _build_payload(harness, effective_system, user)
     auth_headers = _auth_headers(harness)
     headers = {"Content-Type": "application/json", **auth_headers}
     fmt = harness.get("request_format", "ollama_chat")
@@ -307,14 +310,20 @@ async def _call_with_fallback(
 ) -> tuple[str, str, dict[str, int]]:
     """Try primary harness, escalate up the chain. Returns (raw_output, actual_role_used, token_counts).
     On input overflow, prefers escalating to a harness with a larger context window before giving up."""
-    from app.message_builder import overflow_info
+    from app.message_builder import overflow_info, harness_can_respond
 
     # Use harness_id strings as identity — harness dicts have no "id" field
     primary_harness_id = roles.get(stage, {}).get("harness_id", "") or ""
     tried_harness_ids: set[str] = set()
 
-    primary_info = overflow_info(system, user, primary_harness)
-    primary_overflows = primary_info["overflows"]
+    if not harness_can_respond(primary_harness):
+        _flog(f"  ESCALATE: primary harness token_allowance too small for useful response")
+        append_log(job, stage, "⚠ Primary worker token allowance insufficient — escalating")
+        primary_info = overflow_info(system, user, primary_harness)
+        primary_overflows = True
+    else:
+        primary_info = overflow_info(system, user, primary_harness)
+        primary_overflows = primary_info["overflows"]
 
     if not primary_overflows:
         try:
@@ -362,6 +371,9 @@ async def _call_with_fallback(
         tried_harness_ids.add(fb_harness_id)
 
         fb_ctx = fb_harness.get("context_window")
+        if not harness_can_respond(fb_harness):
+            _flog(f"  SKIP {fallback_role}/{fb_harness_id} — token_allowance too small")
+            continue
         fb_info = overflow_info(system, user, fb_harness)
         if fb_info["overflows"]:
             _flog(f"  SKIP {fallback_role}/{fb_harness_id} — would also overflow ({fb_info['pct']}%)")
@@ -378,6 +390,36 @@ async def _call_with_fallback(
             continue
 
     raise RuntimeError(f"All workers exhausted for stage '{stage}' — no available harness responded")
+
+
+async def _call_stage_chunked(
+    stage: str,
+    harness: dict[str, Any],
+    persona: str,
+    items: list[str],
+    fixed_prefix: str,
+    prompt_fn: Any,
+    roles: dict[str, Any],
+    job: dict[str, Any],
+    chunk_label: str = "chunk",
+) -> list[tuple[str, str, dict[str, int]]]:
+    """Split items into context-fitting batches and call _call_with_fallback per batch.
+
+    prompt_fn(batch_text: str) -> str builds the user prompt for each batch.
+    Returns list of (raw_output, handled_by, token_counts) per batch.
+    Single-item batches that are still too large escalate inside _call_with_fallback.
+    """
+    from app.message_builder import chunk_to_fit
+
+    batches = chunk_to_fit(items, harness, fixed_prefix=fixed_prefix)
+    results = []
+    for i, batch in enumerate(batches):
+        if len(batches) > 1:
+            append_log(job, stage, f"{chunk_label} {i + 1}/{len(batches)} ({len(batch)} items)")
+        user_prompt = prompt_fn("\n".join(batch))
+        raw, handled_by, tok = await _call_with_fallback(stage, harness, persona, user_prompt, roles, job)
+        results.append((raw, handled_by, tok))
+    return results
 
 
 def _accum_tokens(job: dict[str, Any], stage: str, tokens: dict[str, int]) -> None:
@@ -578,105 +620,147 @@ async def _run_reviewer_3pass(
     roles: dict[str, Any],
     job: dict[str, Any],
 ) -> dict[str, Any]:
-    """3-pass reviewer: entity IDs → container/structure → card_mod/styles."""
+    """3-pass reviewer with view-level chunking: entity IDs → structure → card_mod."""
+    import yaml as _yaml
+    from app.message_builder import chunk_to_fit
+
     harness_id = roles.get("reviewer", {}).get("harness_id", "reviewer")
     append_log(job, "reviewer", "Starting 3-pass review...")
     job["stages"]["reviewer"] = {"status": "running"}
     save_job(job)
 
-    _DASHBOARD_STRUCTURE_RULE = (
+    _STRUCTURE_RULE = (
         "CRITICAL STRUCTURE RULE: A Lovelace dashboard root MUST have 'title:' and 'views:' keys. "
-        "NEVER output 'type:', 'cards:', or 'entities:' at root level — those belong inside a view's cards. "
+        "NEVER output 'type:', 'cards:', or 'entities:' at root level. "
         "If the input has correct title+views structure, preserve it exactly."
     )
 
-    # Pass 1 — Entity ID resolution
-    from app.message_builder import remaining_input_budget
+    def _safe(candidate: str, fallback: str) -> str:
+        return candidate if "views:" in candidate else fallback
 
-    pass1_without_entities = (
-        f"Spec: {spec}\n\n"
-        "Available Home Assistant entities:\n\n\n"
-        f"Dashboard YAML:\n{yaml_input}\n\n"
-        "Replace ALL placeholder or incorrect entity IDs with real entity IDs from the list above. "
-        "Match by domain and purpose. If unsure, pick the closest available entity. "
-        "Do NOT change card structure, layout, or the root dashboard structure. "
-        f"{_DASHBOARD_STRUCTURE_RULE} "
-        "Output corrected YAML only. No fences. No explanation."
-    )
-    entity_budget = max(0, remaining_input_budget(persona, pass1_without_entities, harness) - 64)
-    entity_list = await _fetch_ha_entities(spec, yaml_input=yaml_input, token_budget=entity_budget)
-    pass1_prompt = (
-        f"Spec: {spec}\n\n"
-        f"Available Home Assistant entities:\n{entity_list}\n\n"
-        f"Dashboard YAML:\n{yaml_input}\n\n"
-        "Replace ALL placeholder or incorrect entity IDs with real entity IDs from the list above. "
-        "Match by domain and purpose. If unsure, pick the closest available entity. "
-        "Do NOT change card structure, layout, or the root dashboard structure. "
-        f"{_DASHBOARD_STRUCTURE_RULE} "
-        "Output corrected YAML only. No fences. No explanation."
-    )
-    write_stage_input(job_id, "reviewer", f"[Pass 1 — Entity IDs]\n{pass1_prompt}")
-    append_log(job, "reviewer", "Pass 1: Entity ID resolution...")
-    yaml1 = yaml_input
-    last_handled = "reviewer"
+    def _reassemble(chunks: list[str], title: str) -> str:
+        all_views: list = []
+        for chunk in chunks:
+            try:
+                parsed = _yaml.safe_load(chunk)
+                if isinstance(parsed, dict):
+                    all_views.extend(parsed.get("views", []))
+            except Exception:
+                pass
+        if not all_views:
+            return chunks[0] if chunks else ""
+        return _yaml.dump({"title": title, "views": all_views},
+                          default_flow_style=False, allow_unicode=True, sort_keys=False)
+
+    def _view_items(yaml_text: str) -> list[str]:
+        views = _split_yaml_views(yaml_text)
+        return [f"  - title: {t}\n{c}" for t, c in views] if views else [yaml_text]
+
+    def _chunk_yaml(batch: list[str], title: str) -> str:
+        return f"title: {title}\nviews:\n" + "\n".join(batch)
+
     try:
-        raw1, last_handled, tok1 = await _call_with_fallback("reviewer", harness, persona, pass1_prompt, roles, job)
-        _accum_tokens(job, "reviewer", tok1)
-        candidate1 = _strip_all_fences(_strip_fences(raw1))
-        # Safety: reject if root structure was destroyed
-        yaml1 = candidate1 if ("views:" in candidate1) else yaml_input
-        if "views:" not in candidate1:
-            append_log(job, "reviewer", "Pass 1 dropped views: — keeping assembler output")
-        append_log(job, "reviewer", f"Pass 1 done ({len(yaml1)} chars)")
-    except Exception as exc:
-        append_log(job, "reviewer", f"Pass 1 failed: {exc} — using assembler output")
+        _p = _yaml.safe_load(yaml_input)
+        dash_title = _p.get("title", "Dashboard") if isinstance(_p, dict) else "Dashboard"
+    except Exception:
+        dash_title = "Dashboard"
 
-    # Pass 2 — Container / structure
-    pass2_prompt = (
-        f"Review this Home Assistant Lovelace dashboard YAML for container and assembly issues:\n\n{yaml1}\n\n"
+    last_handled = "reviewer"
+
+    # ── Pass 1 — Entity ID resolution ──────────────────────────────────────
+    entity_list = await _fetch_ha_entities(spec, yaml_input=yaml_input, token_budget=None)
+    p1_fixed = (
+        f"Spec: {spec}\n\nAvailable Home Assistant entities:\n{entity_list}\n\n"
+        "Replace ALL placeholder or incorrect entity IDs with real entity IDs from the list above. "
+        "Match by domain and purpose. If unsure, pick the closest available entity. "
+        "Do NOT change card structure, layout, or root dashboard structure. "
+        f"{_STRUCTURE_RULE} "
+        "Output corrected YAML only. No fences. No explanation.\n\nDashboard YAML:\n"
+    )
+    items1 = _view_items(yaml_input)
+    batches1 = chunk_to_fit(items1, harness, fixed_prefix=p1_fixed)
+    append_log(job, "reviewer", f"Pass 1: entity resolution — {len(items1)} views, {len(batches1)} chunk(s)")
+    yaml1 = yaml_input
+    try:
+        results1: list[str] = []
+        for i, batch in enumerate(batches1):
+            if len(batches1) > 1:
+                append_log(job, "reviewer", f"Pass 1 chunk {i+1}/{len(batches1)}")
+            prompt = p1_fixed + _chunk_yaml(batch, dash_title)
+            write_stage_input(job_id, "reviewer", f"[Pass 1 chunk {i+1}/{len(batches1)}]\n{prompt}")
+            raw, last_handled, tok = await _call_with_fallback("reviewer", harness, persona, prompt, roles, job)
+            _accum_tokens(job, "reviewer", tok)
+            results1.append(_strip_all_fences(_strip_fences(raw)))
+        c1 = _reassemble(results1, dash_title) if len(results1) > 1 else (results1[0] if results1 else yaml_input)
+        yaml1 = _safe(c1, yaml_input)
+        if "views:" not in c1:
+            append_log(job, "reviewer", "Pass 1 dropped views: — keeping input")
+        append_log(job, "reviewer", f"Pass 1 done — {len(yaml1)} chars, model={harness.get('display_name', harness_id)}")
+    except Exception as exc:
+        append_log(job, "reviewer", f"Pass 1 failed: {exc} — using input")
+
+    # ── Pass 2 — Container / structure ─────────────────────────────────────
+    p2_fixed = (
+        "Review this Home Assistant Lovelace dashboard YAML for container and assembly issues.\n"
         "Check: valid card types (sensor/entities/gauge/weather-forecast/history-graph/button/markdown/grid/vertical-stack), "
         "correct nesting (entities card uses list under 'entities:' key, not 'entity:'), "
         "no extra/invalid fields, proper view → cards hierarchy. "
-        f"{_DASHBOARD_STRUCTURE_RULE} "
-        "Fix all issues. Output corrected YAML only. No fences. No explanation."
+        f"{_STRUCTURE_RULE} "
+        "Fix all issues. Output corrected YAML only. No fences. No explanation.\n\nDashboard YAML:\n"
     )
-    append_log(job, "reviewer", "Pass 2: Container/structure review...")
+    items2 = _view_items(yaml1)
+    batches2 = chunk_to_fit(items2, harness, fixed_prefix=p2_fixed)
+    append_log(job, "reviewer", f"Pass 2: structure — {len(items2)} views, {len(batches2)} chunk(s)")
     yaml2 = yaml1
     try:
-        raw2, last_handled, tok2 = await _call_with_fallback("reviewer", harness, persona, pass2_prompt, roles, job)
-        _accum_tokens(job, "reviewer", tok2)
-        candidate2 = _strip_all_fences(_strip_fences(raw2))
-        yaml2 = candidate2 if ("views:" in candidate2) else yaml1
-        if "views:" not in candidate2:
-            append_log(job, "reviewer", "Pass 2 dropped views: — keeping pass 1 output")
-        append_log(job, "reviewer", f"Pass 2 done ({len(yaml2)} chars)")
+        results2: list[str] = []
+        for i, batch in enumerate(batches2):
+            if len(batches2) > 1:
+                append_log(job, "reviewer", f"Pass 2 chunk {i+1}/{len(batches2)}")
+            prompt = p2_fixed + _chunk_yaml(batch, dash_title)
+            raw, last_handled, tok = await _call_with_fallback("reviewer", harness, persona, prompt, roles, job)
+            _accum_tokens(job, "reviewer", tok)
+            results2.append(_strip_all_fences(_strip_fences(raw)))
+        c2 = _reassemble(results2, dash_title) if len(results2) > 1 else (results2[0] if results2 else yaml1)
+        yaml2 = _safe(c2, yaml1)
+        if "views:" not in c2:
+            append_log(job, "reviewer", "Pass 2 dropped views: — keeping pass 1")
+        append_log(job, "reviewer", f"Pass 2 done — {len(yaml2)} chars, model={harness.get('display_name', harness_id)}")
     except Exception as exc:
-        append_log(job, "reviewer", f"Pass 2 failed: {exc} — using pass 1 output")
+        append_log(job, "reviewer", f"Pass 2 failed: {exc} — using pass 1")
 
-    # Pass 3 — card_mod / styles (only if card_mod is actually present)
+    # ── Pass 3 — card_mod / styles (conditional) ───────────────────────────
     yaml3 = yaml2
     if "card_mod" not in yaml2 and "card_mod" not in spec.lower():
-        append_log(job, "reviewer", "Pass 3: no card_mod detected — skipping")
+        append_log(job, "reviewer", "Pass 3: no card_mod — skipping")
     else:
-        pass3_prompt = (
-            f"Review this Home Assistant Lovelace dashboard YAML for card_mod and style issues:\n\n{yaml2}\n\n"
+        p3_fixed = (
+            "Review this Home Assistant Lovelace dashboard YAML for card_mod and style issues.\n"
             "Check: card_mod sections have valid CSS syntax, style targets correct elements (card, :host, ha-card), "
-            "no invalid card_mod fields, all style blocks are properly indented under card_mod. "
-            "If there are no card_mod sections, output the YAML unchanged. "
-            f"{_DASHBOARD_STRUCTURE_RULE} "
-            "Fix all issues. Output corrected YAML only. No fences. No explanation."
+            "no invalid card_mod fields, all style blocks properly indented under card_mod. "
+            "If no card_mod sections present, output YAML unchanged. "
+            f"{_STRUCTURE_RULE} "
+            "Fix all issues. Output corrected YAML only. No fences. No explanation.\n\nDashboard YAML:\n"
         )
-        append_log(job, "reviewer", "Pass 3: card_mod/styles review...")
+        items3 = _view_items(yaml2)
+        batches3 = chunk_to_fit(items3, harness, fixed_prefix=p3_fixed)
+        append_log(job, "reviewer", f"Pass 3: card_mod — {len(items3)} views, {len(batches3)} chunk(s)")
         try:
-            raw3, last_handled, tok3 = await _call_with_fallback("reviewer", harness, persona, pass3_prompt, roles, job)
-            _accum_tokens(job, "reviewer", tok3)
-            candidate3 = _strip_all_fences(_strip_fences(raw3))
-            yaml3 = candidate3 if ("views:" in candidate3) else yaml2
-            if "views:" not in candidate3:
-                append_log(job, "reviewer", "Pass 3 dropped views: — keeping pass 2 output")
-            append_log(job, "reviewer", f"Pass 3 done ({len(yaml3)} chars)")
+            results3: list[str] = []
+            for i, batch in enumerate(batches3):
+                if len(batches3) > 1:
+                    append_log(job, "reviewer", f"Pass 3 chunk {i+1}/{len(batches3)}")
+                prompt = p3_fixed + _chunk_yaml(batch, dash_title)
+                raw, last_handled, tok = await _call_with_fallback("reviewer", harness, persona, prompt, roles, job)
+                _accum_tokens(job, "reviewer", tok)
+                results3.append(_strip_all_fences(_strip_fences(raw)))
+            c3 = _reassemble(results3, dash_title) if len(results3) > 1 else (results3[0] if results3 else yaml2)
+            yaml3 = _safe(c3, yaml2)
+            if "views:" not in c3:
+                append_log(job, "reviewer", "Pass 3 dropped views: — keeping pass 2")
+            append_log(job, "reviewer", f"Pass 3 done — {len(yaml3)} chars, model={harness.get('display_name', harness_id)}")
         except Exception as exc:
-            append_log(job, "reviewer", f"Pass 3 failed: {exc} — using pass 2 output")
+            append_log(job, "reviewer", f"Pass 3 failed: {exc} — using pass 2")
 
     if not yaml3.strip():
         yaml3 = yaml_input
@@ -698,10 +782,107 @@ async def _run_reviewer_3pass(
     return {"ok": True, "stage": "reviewer", "output": yaml3, "handled_by": last_handled}
 
 
+async def _handle_escalation(
+    stage: str,
+    reason: str,
+    context: str,
+    roles: dict[str, Any],
+    job: dict[str, Any],
+) -> str | None:
+    """Escalate one level up the chain. Returns guidance text or None if escalation failed."""
+    from app.pipeline_rules import get_escalation_target
+
+    target_stage = get_escalation_target(stage)
+    if not target_stage:
+        _flog(f"  ESCALATE: no target defined for {stage}")
+        return None
+
+    assignment = roles.get(target_stage, {})
+    target_harness = get_harness(assignment.get("harness_id", "")) if assignment.get("harness_id") else None
+    if not target_harness:
+        _flog(f"  ESCALATE: no harness for {target_stage}")
+        return None
+
+    target_persona = ROLE_META.get(target_stage, {}).get("persona", "You are a helpful AI assistant.")
+    target_persona = target_persona.split(".")[0] + "."
+
+    escalation_prompt = (
+        f"A {stage} worker is escalating to you — it cannot complete its task.\n\n"
+        f"Reason: {reason}\n\n"
+        f"Task context:\n{context[:1200]}\n\n"
+        "Provide clear, specific guidance on how to proceed. "
+        "You may: clarify the task, provide missing information, split it differently, or specify a different approach. "
+        "Be concise and actionable. Your response will be passed directly back to the worker."
+    )
+
+    append_log(job, stage, f"Escalating to {target_stage}: {reason[:100]}")
+    _flog(f"  ESCALATE {stage} → {target_stage}: {reason[:80]}")
+
+    try:
+        raw, _, tok = await _call_with_fallback(target_stage, target_harness, target_persona, escalation_prompt, roles, job)
+        _accum_tokens(job, target_stage, tok)
+        guidance = _strip_fences(raw).strip()
+        append_log(job, stage, f"Guidance from {target_stage} ({len(guidance)} chars)")
+        save_job(job)
+        return guidance
+    except Exception as exc:
+        _flog(f"  ESCALATE to {target_stage} failed: {exc}")
+        append_log(job, stage, f"Escalation to {target_stage} failed: {exc}")
+        return None
+
+
+def _parse_fragments_text(text: str) -> list[dict[str, str]]:
+    """Parse generator fragment text (# Block: name\\nyaml) back into fragment dicts."""
+    fragments: list[dict[str, str]] = []
+    current_block = "Main"
+    current_lines: list[str] = []
+    for line in text.splitlines():
+        m = re.match(r'^# Block:\s*(.+)', line)
+        if m:
+            if current_lines:
+                fragments.append({"block": current_block, "task": current_block,
+                                   "yaml": "\n".join(current_lines).strip()})
+                current_lines = []
+            current_block = m.group(1).strip()
+        else:
+            current_lines.append(line)
+    if current_lines:
+        fragments.append({"block": current_block, "task": current_block,
+                           "yaml": "\n".join(current_lines).strip()})
+    return fragments
+
+
+async def _run_python_assembler(job_id: str, job: dict[str, Any]) -> dict[str, Any]:
+    """Python-only assembly — parse generator fragments and combine into dashboard YAML."""
+    append_log(job, "assembler", "Python assembly...")
+    job["stages"]["assembler"] = {"status": "running"}
+    save_job(job)
+    try:
+        prev = read_stage_output(job_id, "generator") or ""
+        if "views:" in prev:
+            result = prev
+        else:
+            fragments = _parse_fragments_text(prev)
+            result = _assemble_yaml_fragments(fragments)
+        write_stage_output(job_id, "assembler", result)
+        job["stages"]["assembler"] = {"status": "done", "preview": result[:400], "handled_by": "python"}
+        append_log(job, "assembler", f"Done — {len(result)} chars")
+        save_job(job)
+        return {"ok": True, "stage": "assembler", "output": result, "handled_by": "python"}
+    except Exception as exc:
+        job["stages"]["assembler"] = {"status": "error", "error": str(exc)}
+        append_log(job, "assembler", f"ERROR: {exc}")
+        save_job(job)
+        return {"ok": False, "error": str(exc)}
+
+
 async def run_stage(job_id: str, stage: str) -> dict[str, Any]:
     job = load_job(job_id)
     if not job:
         return {"ok": False, "error": "job not found"}
+
+    if stage == "assembler":
+        return await _run_python_assembler(job_id, job)
 
     roles = load_roles()
     assignment = roles.get(stage, {})
@@ -752,6 +933,30 @@ async def run_stage(job_id: str, stage: str) -> dict[str, Any]:
         _accum_tokens(job, stage, tok)
         output = _strip_all_fences(_strip_fences(raw))
 
+        # Escalation: worker signals it cannot complete, or returned empty output
+        from app.pipeline_rules import is_worker_signal, is_trigger_enabled
+        is_signal, signal_reason = is_worker_signal(output)
+        is_empty = not output.strip()
+
+        if (is_signal and is_trigger_enabled("worker_signal")) or (is_empty and is_trigger_enabled("empty_output")):
+            esc_reason = signal_reason if is_signal else "empty output"
+            append_log(job, stage, f"Worker escalating: {esc_reason[:120]}")
+            guidance = await _handle_escalation(stage, esc_reason, user, roles, job)
+            if guidance:
+                job = load_job(job_id)
+                instr = job.get("stage_instructions", {})
+                instr[stage] = guidance
+                job["stage_instructions"] = instr
+                save_job(job)
+                # Rebuild user prompt with guidance and retry once
+                retry_extra = guidance
+                retry_user = _user_prompt(stage, spec, prev, extra=retry_extra)
+                write_stage_input(job_id, stage, retry_user)
+                append_log(job, stage, "Retrying with escalation guidance...")
+                raw2, handled_by, tok2 = await _call_with_fallback(stage, harness, persona, retry_user, roles, job)
+                _accum_tokens(job, stage, tok2)
+                output = _strip_all_fences(_strip_fences(raw2))
+
         write_stage_output(job_id, stage, output)
         note = f" (handled by {handled_by})" if handled_by != stage else ""
         stage_data: dict = {
@@ -775,98 +980,6 @@ async def run_stage(job_id: str, stage: str) -> dict[str, Any]:
         return {"ok": False, "error": str(exc)}
 
 
-async def _call_assembler(job_id: str, fragments: list[dict[str, str]], roles: dict[str, Any], job: dict[str, Any]) -> dict[str, Any]:
-    """Assemble block-by-block: one model call per block, then merge views in Python."""
-    from app.pipeline_prompts import render_prompt
-    assignment = roles.get("assembler", {})
-    harness_id = assignment.get("harness_id")
-    harness = get_harness(harness_id) if harness_id else None
-
-    spec = job.get("spec", "")
-
-    if not harness:
-        _flog("  assembler: no harness assigned, using Python fallback")
-        append_log(job, "assembler", "No assembler assigned — using Python assembly fallback")
-        result = _assemble_yaml_fragments(fragments)
-        write_stage_output(job_id, "assembler", result)
-        job["stages"]["assembler"] = {"status": "done", "preview": result[:400], "handled_by": "python"}
-        save_job(job)
-        return {"ok": True, "output": result}
-
-    persona = ROLE_META.get("assembler", {}).get("persona", "You are an integration engineer.")
-    persona = persona.split(".")[0] + "."
-    model_name = harness.get("display_name", harness_id)
-
-    # Group fragments by block
-    blocks: dict[str, list[dict]] = {}
-    for f in fragments:
-        blocks.setdefault(f["block"], []).append(f)
-
-    append_log(job, "assembler", f"Assembling {len(blocks)} blocks ({len(fragments)} fragments) with {model_name}...")
-    job["stages"]["assembler"] = {"status": "running"}
-    save_job(job)
-
-    assembled_views: list[str] = []
-    all_inputs: list[str] = []
-    last_handled_by = harness_id
-
-    try:
-        for block_name, block_frags in blocks.items():
-            if is_cancelled(job_id):
-                return {"ok": False, "error": "cancelled"}
-
-            frags_text = "\n".join(
-                f"--- Card {i+1} (Task: {f['task']}) ---\n{f['yaml']}"
-                for i, f in enumerate(block_frags)
-            )
-            block_prompt = (
-                f"Block name: {block_name}\n\n"
-                f"Card fragments:\n{frags_text}\n\n"
-                "Combine these cards into a single Lovelace view section.\n"
-                "Output ONLY a YAML list of cards (starting with '- type:'), no views wrapper, no title, no dashboard structure.\n"
-                "Fix any invalid card fields. YAML only. No fences. No explanation."
-            )
-            all_inputs.append(f"=== Block: {block_name} ===\n{block_prompt}")
-            append_log(job, "assembler", f"Block: {block_name} ({len(block_frags)} cards)")
-            job["stages"]["assembler"]["progress"] = f"{len(assembled_views)+1}/{len(blocks)} blocks"
-            save_job(job)
-
-            raw, last_handled_by, tok_a = await _call_with_fallback("assembler", harness, persona, block_prompt, roles, job)
-            _accum_tokens(job, "assembler", tok_a)
-            cards_yaml = _strip_all_fences(_strip_fences(raw)).strip()
-            assembled_views.append((block_name, cards_yaml))
-
-        # Save combined input for inspection
-        write_stage_input(job_id, "assembler", "\n\n".join(all_inputs))
-
-        # Python-merge: build full dashboard structure
-        spec_title = spec.split("\n")[0][:60].strip() or "Dashboard"
-        views_yaml = "\n".join(
-            f"  - title: {name}\n    cards:\n" + "\n".join(
-                f"      {line}" for line in cards.splitlines()
-            )
-            for name, cards in assembled_views
-        )
-        output = f"title: {spec_title}\nviews:\n{views_yaml}"
-
-        write_stage_output(job_id, "assembler", output)
-        asm_stage: dict = {
-            "status": "done", "preview": output[:400], "handled_by": last_handled_by,
-            "model_name": harness.get("display_name", harness_id),
-            "ctx_window": harness.get("context_window"),
-        }
-        if job.get("stages", {}).get("assembler", {}).get("tokens"):
-            asm_stage["tokens"] = job["stages"]["assembler"]["tokens"]
-        job["stages"]["assembler"] = asm_stage
-        append_log(job, "assembler", f"Done — {len(assembled_views)} views, {len(output)} chars")
-        save_job(job)
-        return {"ok": True, "output": output}
-
-    except Exception as exc:
-        job["stages"]["assembler"] = {"status": "error", "error": str(exc)}
-        append_log(job, "assembler", f"ERROR: {exc}")
-        save_job(job)
-        return {"ok": False, "error": str(exc)}
 
 
 async def _run_generator_loop(job_id: str, roles: dict[str, Any], job: dict[str, Any]) -> dict[str, Any]:
@@ -950,13 +1063,16 @@ async def _run_generator_loop(job_id: str, roles: dict[str, Any], job: dict[str,
     append_log(job, "generator", f"Done — {len(fragments)} fragments collected")
     save_job(job)
 
-    # Assembler: capable model combines fragments into complete output
-    assemble_result = await _call_assembler(job_id, fragments, roles, job)
-    if not assemble_result["ok"]:
-        return assemble_result
-
-    final = assemble_result["output"]
-    return {"ok": True, "stage": "generator", "output": final, "handled_by": "generator"}
+    # Python assembly — combine fragments into complete dashboard YAML
+    append_log(job, "assembler", f"Python assembly: {len(fragments)} fragments")
+    job["stages"]["assembler"] = {"status": "running"}
+    save_job(job)
+    assembled = _assemble_yaml_fragments(fragments)
+    write_stage_output(job_id, "assembler", assembled)
+    job["stages"]["assembler"] = {"status": "done", "preview": assembled[:400], "handled_by": "python"}
+    append_log(job, "assembler", f"Done — {len(assembled)} chars")
+    save_job(job)
+    return {"ok": True, "stage": "generator", "output": assembled, "handled_by": "generator"}
 
 
 async def run_pipeline(job_id: str) -> None:
@@ -1014,40 +1130,6 @@ async def _run_pipeline_inner(job_id: str) -> None:
             return
         prev_output = result.get("output")
         job = load_job(job_id)
-
-        # QUESTION: escalation — worker is stuck, route to advisor and retry once
-        if prev_output and prev_output.strip().upper().startswith("QUESTION:") and stage != "supervisor":
-            question_text = prev_output.strip()[9:].strip()
-            advisor_harness_id = load_roles().get("advisor", {}).get("harness_id")
-            advisor_harness = get_harness(advisor_harness_id) if advisor_harness_id else None
-            if advisor_harness:
-                advisor_persona = ROLE_META.get("advisor", {}).get("persona", "")
-                advisor_prompt = (
-                    f"A {stage} worker is stuck on this job and needs guidance.\n\n"
-                    f"Job spec: {job.get('spec','')}\n\n"
-                    f"Their question: {question_text}\n\n"
-                    "Provide a clear, specific answer. Be concise."
-                )
-                try:
-                    raw_answer, _, tok_adv = await _call_with_fallback("advisor", advisor_harness, advisor_persona, advisor_prompt, load_roles(), job)
-                    _accum_tokens(job, "advisor", tok_adv)
-                    answer = _strip_fences(raw_answer)
-                    append_log(job, "advisor", f"Q: {question_text[:80]} → answered ({len(answer)} chars)")
-                    job["stage_instructions"] = job.get("stage_instructions", {})
-                    job["stage_instructions"][stage] = f"Advisor guidance: {answer}"
-                    save_job(job)
-                    # Retry the stage with the advisor's answer
-                    result = await run_stage(job_id, stage)
-                    if not result["ok"]:
-                        job = load_job(job_id)
-                        job["status"] = STATUS_FAILED
-                        save_job(job)
-                        return
-                    prev_output = result.get("output")
-                    job = load_job(job_id)
-                except Exception as e:
-                    append_log(job, "advisor", f"Escalation failed: {e}")
-                    save_job(job)
 
         # Supervisor empty output — treat as failed, don't silently pass
         if stage == "supervisor" and not (prev_output or "").strip():

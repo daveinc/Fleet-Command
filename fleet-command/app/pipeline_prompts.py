@@ -126,3 +126,83 @@ def render_prompt(stage: str, **kwargs: Any) -> str:
         return template.format(**kwargs)
     except KeyError:
         return template
+
+
+# ── Modelfile management ─────────────────────────────────────────────────────
+
+_MODELFILES_FILE = Path("/data/pipeline_modelfiles.json")
+
+
+def load_modelfiles() -> dict[str, Any]:
+    if _MODELFILES_FILE.exists():
+        try:
+            return json.loads(_MODELFILES_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {}
+
+
+def _save_modelfiles(data: dict[str, Any]) -> None:
+    _MODELFILES_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _MODELFILES_FILE.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def save_modelfile(harness_id: str, content: str) -> None:
+    data = load_modelfiles()
+    entry = data.get(harness_id, {})
+    entry["content"] = content
+    entry["pushed"] = False
+    data[harness_id] = entry
+    _save_modelfiles(data)
+
+
+def is_modelfile_pushed(harness_id: str) -> bool:
+    return bool(load_modelfiles().get(harness_id, {}).get("pushed", False))
+
+
+def mark_modelfile_pushed(harness_id: str) -> None:
+    from datetime import datetime, timezone
+    data = load_modelfiles()
+    entry = data.get(harness_id, {})
+    entry["pushed"] = True
+    entry["pushed_at"] = datetime.now(timezone.utc).isoformat()
+    data[harness_id] = entry
+    _save_modelfiles(data)
+
+
+async def fetch_modelfile_from_ollama(model: str, ollama_host: str) -> str | None:
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.post(f"{ollama_host}/api/show", json={"name": model})
+            resp.raise_for_status()
+            data = resp.json()
+            return data.get("modelfile") or data.get("Modelfile")
+    except Exception:
+        return None
+
+
+async def push_modelfile_to_ollama(harness_id: str, ollama_host: str) -> tuple[bool, str]:
+    import httpx
+    from app.harnesses import get_harness
+    entry = load_modelfiles().get(harness_id, {})
+    content = entry.get("content", "")
+    if not content:
+        return False, f"No modelfile content saved for harness '{harness_id}'"
+    harness = get_harness(harness_id)
+    if not harness:
+        return False, f"Harness '{harness_id}' not found"
+    model_name = harness.get("model", "")
+    if not model_name:
+        return False, "Harness has no model name"
+    try:
+        async with httpx.AsyncClient(timeout=120) as client:
+            resp = await client.post(
+                f"{ollama_host}/api/create",
+                json={"name": model_name, "modelfile": content},
+            )
+            resp.raise_for_status()
+        mark_modelfile_pushed(harness_id)
+        return True, "OK"
+    except Exception as exc:
+        return False, str(exc)

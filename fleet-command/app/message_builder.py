@@ -63,6 +63,74 @@ def _trim_to_token_budget(text: str, budget: int) -> str:
     return text[:char_limit] + "\n[...truncated to fit context window]"
 
 
+MIN_USEFUL_OUTPUT = 256
+
+
+def harness_can_respond(harness: dict[str, Any], min_output_tokens: int = MIN_USEFUL_OUTPUT) -> bool:
+    """Return False if token_allowance is explicitly set and too small for a useful response."""
+    allowance = harness.get("token_allowance")
+    if allowance is None:
+        return True
+    try:
+        return int(allowance) >= min_output_tokens
+    except (TypeError, ValueError):
+        return True
+
+
+def available_input_tokens(
+    harness: dict[str, Any],
+    fixed_content: str = "",
+    min_output_tokens: int = MIN_USEFUL_OUTPUT,
+) -> int | None:
+    """Tokens available for variable content after fixed_content and output headroom.
+    Returns None if context_window is unknown."""
+    ctx = _ctx_window(harness)
+    if not ctx:
+        return None
+    fixed = _estimate_tokens(fixed_content)
+    return max(0, int(ctx * _INPUT_HEADROOM) - fixed - min_output_tokens)
+
+
+def chunk_to_fit(
+    items: list[str],
+    harness: dict[str, Any],
+    fixed_prefix: str = "",
+    min_output_tokens: int = MIN_USEFUL_OUTPUT,
+) -> list[list[str]]:
+    """Split items into batches that each fit within the harness context window.
+
+    Sizing: fixed_prefix + batch content must fit within context_window * INPUT_HEADROOM,
+    leaving min_output_tokens headroom for the response.
+
+    - Unknown context_window → returns [items] as one batch; overflow_info in _call_harness catches it.
+    - Single item too large for budget → returned alone in its own batch; caller should escalate.
+    """
+    budget = available_input_tokens(harness, fixed_prefix, min_output_tokens)
+    if budget is None:
+        return [items]
+
+    batches: list[list[str]] = []
+    batch: list[str] = []
+    batch_tokens = 0
+
+    for item in items:
+        item_tokens = _estimate_tokens(item)
+        if batch and batch_tokens + item_tokens > budget:
+            batches.append(batch)
+            batch = [item]
+            batch_tokens = item_tokens
+        else:
+            batch.append(item)
+            batch_tokens += item_tokens
+
+    if batch:
+        batches.append(batch)
+
+    return batches if batches else [items]
+
+
+# TODO: blueprint system — reserved for full dashboard templates (multi-view, multi-block specs).
+# Not used by active pipeline. Wire in after per-card/per-block generation is stable.
 def load_blueprint(blueprint_id: str) -> dict[str, Any] | None:
     """Load a blueprint JSON file by id. Returns None if not found."""
     for path in _BLUEPRINTS_DIR.glob("*.json"):

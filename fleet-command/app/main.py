@@ -9,8 +9,8 @@ from fastapi.responses import HTMLResponse, JSONResponse
 
 from app.snapshot import capabilities, status
 from app.workers import configured_workers, test_worker
-from app.harnesses import load_harnesses, save_user_harness
-from app.roles import load_roles, save_roles, swap_roles, ROLE_ORDER, ROLE_LABELS, ROLE_META, ADVISOR_ROLE
+from app.harnesses import load_harnesses, save_user_harness, probe_harness
+from app.roles import load_roles, save_roles, swap_roles, ROLE_ORDER, ROLE_LABELS, ROLE_META, ADVISOR_ROLE, load_role_minimums, save_role_minimums, check_harness_for_role, DEFAULT_ROLE_MINIMUMS
 from fastapi import BackgroundTasks
 from app.jobs import create_job, load_job, list_jobs, read_stage_output, cancel_job, delete_job, restart_job, rerun_from_stage
 from app.pipeline import run_pipeline, run_stage
@@ -104,6 +104,33 @@ async def api_harness_save(harness_id: str, payload: dict) -> dict:
     updated = {**existing, **payload}
     save_user_harness(harness_id, updated)
     return {"ok": True, "harness": updated}
+
+
+@app.post("/api/harnesses/probe")
+async def api_harness_probe(payload: dict) -> dict:
+    result = probe_harness(payload)
+    return result
+
+
+@app.get("/api/role-minimums")
+async def api_role_minimums_get() -> dict:
+    return {"minimums": load_role_minimums(), "defaults": DEFAULT_ROLE_MINIMUMS}
+
+
+@app.post("/api/role-minimums")
+async def api_role_minimums_save(payload: dict) -> dict:
+    save_role_minimums(payload.get("minimums", {}))
+    return {"ok": True}
+
+
+@app.get("/api/harnesses/{harness_id}/role-check")
+async def api_harness_role_check(harness_id: str) -> dict:
+    harness = load_harnesses().get(harness_id)
+    if not harness:
+        return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
+    roles = [*ROLE_ORDER, ADVISOR_ROLE]
+    checks = {role: check_harness_for_role(harness, role) for role in roles}
+    return {"ok": True, "checks": checks}
 
 
 @app.get("/api/roles")
@@ -1070,7 +1097,7 @@ def _dashboard_html(root: str) -> str:  # noqa: C901
   <div class="tab active" onclick="switchTab('fleet', this)">Fleet</div>
   <div class="tab" onclick="switchTab('staff', this); renderHarnesses()">Staff</div>
   <div class="tab" onclick="switchTab('jobs', this)">Projects</div>
-  <div class="tab" onclick="switchTab('templates', this); loadMessageTemplates()">Templates</div>
+  <div class="tab" onclick="switchTab('templates', this); loadMessageTemplates(); loadRoleMinimums()">Templates</div>
   <div class="tab" onclick="switchTab('pipeline', this); loadPipelineTab()">Pipeline</div>
 </div>
 
@@ -1202,6 +1229,16 @@ def _dashboard_html(root: str) -> str:  # noqa: C901
   </div>
   <div id="msg-tmpl-grid" style="margin-top:0.75rem;display:grid;gap:0.75rem"></div>
   <button class="btn btn-primary btn-sm" style="margin-top:0.75rem" onclick="saveMessageTemplates()">Save All Templates</button>
+
+  <!-- Role Minimums -->
+  <div style="margin-top:1.75rem;display:flex;justify-content:space-between;align-items:center">
+    <div class="section-title" style="margin:0">Role Minimums — Recommended Harness Requirements</div>
+    <button class="btn btn-ghost btn-sm" onclick="saveRoleMinimums()">Save Minimums</button>
+  </div>
+  <div style="margin-top:0.4rem;font-size:0.78rem;color:#475569;margin-bottom:0.75rem">
+    Harnesses below these values will be flagged on role cards. Not enforced — informational only.
+  </div>
+  <div id="role-minimums-grid" style="display:grid;gap:0.5rem"></div>
 </div>
 
 <!-- ── Modals ── -->
@@ -1284,8 +1321,10 @@ def _dashboard_html(root: str) -> str:  # noqa: C901
       </div>
     </div>
     <div class="field"><label>Notes (optional)</label><textarea id="nw-notes" rows="2" style="resize:vertical"></textarea></div>
+    <div id="nw-probe-status" style="display:none;margin-top:0.5rem;padding:0.5rem 0.75rem;border-radius:6px;font-size:0.82rem"></div>
     <div class="modal-actions" style="margin-top:0.75rem">
       <button class="btn btn-ghost btn-sm" onclick="closeModal('modal-new-worker')">Cancel</button>
+      <button class="btn btn-ghost btn-sm" onclick="testNewWorkerConnection()">Test Connection</button>
       <button class="btn btn-primary btn-sm" onclick="submitNewWorker()">Add Worker</button>
     </div>
   </div>
@@ -1683,7 +1722,7 @@ function renderHarnesses() {{
     const ctx = formatTokens(h.context_window);
     const allowance = formatTokens(h.token_allowance);
     const ctxSource = h.context_window_source === "manual" ? "manual" : (h.context_window_source ? "auto" : "");
-    const caps = (h.capabilities || []).map(c => `<span class="cap-tag">${{c}}</span>`).join(" ");
+    const caps = harnessRoleMinTags(h);
     const costBadgeHtml = h.cost_type === "local"
       ? '<span class="cost-badge local">local</span>'
       : h.cost_type === "cloud_metered"
@@ -3158,6 +3197,115 @@ async function resetMessageTemplates() {{
 function resetOneTemplate(stage) {{
   const el = document.getElementById(`mtp-${{stage}}`);
   if (el && _msgDefaults[stage]) el.value = _msgDefaults[stage];
+}}
+
+// ── Role Minimums ─────────────────────────────────────────────────────────────
+
+let _roleMinimums = {{}};
+const MINIMUM_FIELDS = ["context_window", "token_allowance"];
+const MINIMUM_LABELS = {{context_window: "Context Window", token_allowance: "Token Allowance"}};
+
+async function loadRoleMinimums() {{
+  const res = await fetch(api("/api/role-minimums")).then(r => r.json());
+  _roleMinimums = res.minimums || {{}};
+  renderRoleMinimums();
+}}
+
+function renderRoleMinimums() {{
+  const el = document.getElementById("role-minimums-grid");
+  if (!el) return;
+  const roles = [...roleOrder, advisorRole];
+  el.innerHTML = roles.map(role => {{
+    const mins = _roleMinimums[role] || {{}};
+    return `<div style="background:#1e293b;border:1px solid #334155;border-radius:8px;padding:0.65rem 0.85rem;display:flex;align-items:center;gap:1rem;flex-wrap:wrap">
+      <span style="font-size:0.8rem;font-weight:600;color:#6366f1;min-width:110px">${{role}}</span>
+      ${{MINIMUM_FIELDS.map(f => `
+        <div style="display:flex;align-items:center;gap:0.4rem">
+          <label style="font-size:0.75rem;color:#64748b">${{MINIMUM_LABELS[f]}}</label>
+          <input type="number" id="rm-${{role}}-${{f}}" min="0" step="1" value="${{mins[f] || ""}}" placeholder="none"
+            style="background:#0f1117;border:1px solid #334155;border-radius:4px;color:#e2e8f0;font-size:0.78rem;padding:0.2rem 0.4rem;width:90px">
+        </div>`).join("")}}
+    </div>`;
+  }}).join("");
+}}
+
+async function saveRoleMinimums() {{
+  const roles = [...roleOrder, advisorRole];
+  const minimums = {{}};
+  roles.forEach(role => {{
+    const entry = {{}};
+    MINIMUM_FIELDS.forEach(f => {{
+      const el = document.getElementById(`rm-${{role}}-${{f}}`);
+      const v = el ? (parseInt(el.value) || null) : null;
+      entry[f] = v;
+    }});
+    minimums[role] = entry;
+  }});
+  await fetch(api("/api/role-minimums"), {{
+    method: "POST", headers: {{"Content-Type":"application/json"}},
+    body: JSON.stringify({{minimums}}),
+  }});
+  _roleMinimums = minimums;
+  renderHarnesses();
+  alert("Role minimums saved.");
+}}
+
+function harnessRoleMinTags(h) {{
+  if (!h.capabilities || !h.capabilities.length) return "";
+  return h.capabilities.map(role => {{
+    const mins = _roleMinimums[role];
+    if (!mins) return `<span class="cap-tag">${{role}}</span>`;
+    const ctx = mins.context_window;
+    const allow = mins.token_allowance;
+    const ctxOk = !ctx || (h.context_window && h.context_window >= ctx);
+    const allowOk = !allow || !h.token_allowance || h.token_allowance >= allow;
+    const ok = ctxOk && allowOk;
+    const tip = ok ? "" : [
+      !ctxOk ? `ctx: ${{h.context_window||"?"}} < ${{ctx}}` : "",
+      !allowOk ? `allow: ${{h.token_allowance||"?"}} < ${{allow}}` : "",
+    ].filter(Boolean).join(", ");
+    return `<span class="cap-tag" style="${{ok ? "" : "border-color:#f59e0b;color:#f59e0b"}}" title="${{tip}}">${{role}}${{ok ? "" : " ⚠"}}</span>`;
+  }}).join(" ");
+}}
+
+// ── Harness probe ─────────────────────────────────────────────────────────────
+
+async function testNewWorkerConnection() {{
+  const statusEl = document.getElementById("nw-probe-status");
+  const payload = {{
+    model: document.getElementById("nw-model").value.trim(),
+    endpoint: document.getElementById("nw-endpoint").value.trim(),
+    api_path: document.getElementById("nw-apipath").value.trim(),
+    request_format: document.getElementById("nw-fmt").value,
+    auth_type: document.getElementById("nw-auth").value,
+    api_key: document.getElementById("nw-apikey").value.trim(),
+  }};
+  statusEl.style.display = "block";
+  statusEl.style.background = "#1e293b";
+  statusEl.style.color = "#94a3b8";
+  statusEl.textContent = `⏳ Testing connection — ${{payload.model || "?"}}...`;
+
+  const res = await fetch(api("/api/harnesses/probe"), {{
+    method: "POST", headers: {{"Content-Type":"application/json"}}, body: JSON.stringify(payload),
+  }}).then(r => r.json()).catch(e => ({{ok: false, error: String(e)}}));
+
+  if (res.ok) {{
+    statusEl.style.background = "#052e16";
+    statusEl.style.color = "#4ade80";
+    let msg = `✓ ${{res.message}}`;
+    if (res.context_window) {{
+      msg += ` — ctx ${{formatTokens(res.context_window)}}`;
+      const ctxEl = document.getElementById("nw-ctx");
+      if (ctxEl && !ctxEl.value) ctxEl.value = res.context_window;
+    }} else {{
+      msg += ` — context window not retrieved, fill manually if needed`;
+    }}
+    statusEl.textContent = msg;
+  }} else {{
+    statusEl.style.background = "#2d0a0a";
+    statusEl.style.color = "#f87171";
+    statusEl.textContent = `✗ ${{res.message || "Connection failed"}} — ${{res.error || ""}}`;
+  }}
 }}
 
 function renderWorkerConfigs() {{
