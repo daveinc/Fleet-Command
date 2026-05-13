@@ -1608,7 +1608,7 @@ function roleCard(role, idx, list) {{
   const belowCtx = h && minCtx && (!h.context_window || h.context_window < minCtx);
   const belowAllow = h && minAllow && h.token_allowance && h.token_allowance < minAllow;
   const minWarn = belowCtx || belowAllow
-    ? `<span style="color:#f59e0b;font-size:0.72rem" title="${{[belowCtx?`ctx ${{h.context_window||"?"}} < ${{minCtx}}`:""，belowAllow?`allow ${{h.token_allowance}} < ${{minAllow}}`:""].filter(Boolean).join(", ")}}">⚠ below minimum</span>`
+    ? `<span style="color:#f59e0b;font-size:0.72rem" title="${{[belowCtx?`ctx ${{h.context_window||"?"}} < ${{minCtx}}`:"",belowAllow?`allow ${{h.token_allowance}} < ${{minAllow}}`:""].filter(Boolean).join(", ")}}">⚠ below minimum</span>`
     : "";
 
   const options = Object.entries(harnesses)
