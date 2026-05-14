@@ -34,7 +34,7 @@ def _flog(msg: str) -> None:
         pass
 
 from app.jobs import (
-    load_job, save_job, append_log,
+    load_job, save_job, append_log, log_message,
     write_stage_output, read_stage_output,
     write_stage_input, read_stage_input,
     is_cancelled, rerun_from_stage,
@@ -252,6 +252,21 @@ def _auth_headers(harness: dict[str, Any]) -> dict[str, str]:
     return {}
 
 
+def _detect_comm(text: str) -> tuple[bool, str]:
+    """Returns (is_comm, comm_content) if response starts with [COMM] tag."""
+    stripped = text.strip()
+    if stripped.startswith("[COMM]"):
+        first_line = stripped.split("\n")[0]
+        return True, first_line[6:].strip()
+    return False, ""
+
+
+def _parse_comm_recipient(comm_content: str) -> str:
+    """Extract 'to:<role>' from COMM content, e.g. '[COMM] to:reviewer — reason'."""
+    m = re.search(r"\bto:\s*(\w+)", comm_content, re.IGNORECASE)
+    return m.group(1).lower() if m else "next"
+
+
 def _strip_fences(text: str) -> str:
     """Strip outer markdown code fences."""
     text = text.strip()
@@ -406,10 +421,44 @@ async def _call_harness(
                     if job and stage:
                         append_log(job, stage, f"⚠ {warn}")
 
-            # Append assistant response to thread
-            if use_thread and stage in job.get("threads", {}):
-                job["threads"][stage].append({"role": "assistant", "content": result})
-                save_job(job)
+            # [COMM] detection — worker sent a communication message; follow up for code output
+            is_comm, comm_content = _detect_comm(result)
+            if is_comm:
+                _flog(f"  [COMM] detected: {comm_content[:80]}")
+                if job:
+                    recipient = _parse_comm_recipient(comm_content)
+                    log_message(job, sender=stage, recipient=recipient,
+                                msg_type="comm", content=comm_content, stage=stage)
+                    append_log(job, stage, f"[COMM] → {recipient}: {comm_content[:100]}")
+
+                follow_up_user = "[PIPELINE] Continue — send your output now."
+                if use_thread and job is not None and stage in job.get("threads", {}):
+                    job["threads"][stage].append({"role": "assistant", "content": result})
+                    job["threads"][stage].append({"role": "user", "content": follow_up_user})
+                    follow_up_messages = job["threads"][stage]
+                else:
+                    follow_up_messages = list(messages) + [
+                        {"role": "assistant", "content": result},
+                        {"role": "user", "content": follow_up_user},
+                    ]
+                follow_up_payload = _build_payload(harness, follow_up_messages, model_override)
+                _flog(f"  [COMM] follow-up call")
+                resp2 = await client.post(endpoint, headers=headers, json=follow_up_payload)
+                resp2.raise_for_status()
+                result2, tok2 = _extract(resp2, fmt)
+                tokens["input"] += tok2["input"]
+                tokens["output"] += tok2["output"]
+                result = result2
+                _flog(f"  [COMM] follow-up done: {len(result)} chars")
+                # Append final code response to thread
+                if use_thread and job is not None and stage in job.get("threads", {}):
+                    job["threads"][stage].append({"role": "assistant", "content": result})
+                    save_job(job)
+            else:
+                # Normal: append assistant response to thread
+                if use_thread and stage in job.get("threads", {}):
+                    job["threads"][stage].append({"role": "assistant", "content": result})
+                    save_job(job)
 
             return result, tokens
     except Exception as exc:

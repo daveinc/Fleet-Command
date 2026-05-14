@@ -52,6 +52,7 @@ def create_job(spec: dict[str, Any]) -> dict[str, Any]:
         "final_output": None,
         "parent_job_id": spec.get("parent_job_id"),
         "child_job_ids": [],
+        "message_log": [],
     }
     d = _run_dir(job_id)
     d.mkdir(parents=True, exist_ok=True)
@@ -96,6 +97,27 @@ def append_log(job: dict[str, Any], stage: str, message: str) -> None:
         "ts": datetime.now(timezone.utc).isoformat(),
         "stage": stage,
         "msg": message,
+    })
+
+
+def log_message(
+    job: dict[str, Any],
+    sender: str,
+    recipient: str,
+    msg_type: str,
+    content: str,
+    stage: str,
+    block: str = "",
+) -> None:
+    """Log an inter-worker communication entry. msg_type: 'comm' | 'code'."""
+    job.setdefault("message_log", []).append({
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "sender": sender,
+        "recipient": recipient,
+        "type": msg_type,
+        "content": content,
+        "stage": stage,
+        "block": block,
     })
 
 

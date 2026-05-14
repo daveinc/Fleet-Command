@@ -789,6 +789,13 @@ def _build_system_block(harness: dict[str, Any], role: str) -> str:
         f"\n- Output ESCALATE: context too large — <brief summary> if input exceeds your capacity"
         f"\n- Never explain failures in prose — always use the signal format"
         f"\n- Output only what is requested — no explanations, no preamble, no fences unless explicitly asked"
+        f"\n\nCommunication protocol:"
+        f"\n- In irregular situations (task unclear, sending back with issues, routing to a specific worker),"
+        f"\n  start your response with: [COMM] to:<role> — <reason and context>"
+        f"\n  The pipeline will then prompt you to send your output. Send your output only — no [COMM] tag."
+        f"\n- In normal situations, send your output directly — no [COMM] needed."
+        f"\n- When you receive a message starting with [COMM], treat it as a handoff note from the"
+        f"\n  previous worker — read it before processing your task, do not echo it back."
         f"{cost_note}"
     )
 
