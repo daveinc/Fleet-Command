@@ -440,7 +440,8 @@ async def api_modelfile_generate(harness_id: str, payload: dict = {}) -> dict:
     from app.config import options
     ollama_host = str(options().get("ollama_host", "http://host.docker.internal:11434") or "").rstrip("/")
     output_type = payload.get("output_type", "yaml") if payload else "yaml"
-    return await generate_modelfile(harness_id, ollama_host, output_type)
+    target_name = (payload.get("target_name") or "").strip() if payload else ""
+    return await generate_modelfile(harness_id, ollama_host, output_type, target_name)
 
 
 @app.post("/api/modelfiles/push-all")
@@ -472,11 +473,23 @@ async def api_modelfile_push_all(payload: dict) -> dict:
 
 @app.post("/api/harnesses/{harness_id}/modelfile/save")
 async def api_modelfile_save(harness_id: str, payload: dict) -> dict:
-    from app.pipeline_prompts import save_modelfile
+    from app.pipeline_prompts import save_modelfile, load_modelfiles, _save_modelfiles
     content = payload.get("content", "")
     if not content:
         return JSONResponse({"ok": False, "error": "content required"}, status_code=400)
     save_modelfile(harness_id, content)
+    # Persist target_name and base_model if provided
+    target_name = (payload.get("target_name") or "").strip()
+    if target_name:
+        from app.harnesses import get_harness
+        data = load_modelfiles()
+        entry = data.get(harness_id, {})
+        entry["target_model"] = target_name
+        if not entry.get("base_model"):
+            h = get_harness(harness_id)
+            entry["base_model"] = (h or {}).get("model", "")
+        data[harness_id] = entry
+        _save_modelfiles(data)
     return {"ok": True}
 
 
@@ -1445,7 +1458,14 @@ def _dashboard_html(root: str) -> str:  # noqa: C901
       <span id="mf-role-badge" style="font-size:0.72rem;color:#6366f1"></span>
     </div>
     <div id="mf-status" style="display:none;margin-bottom:0.5rem;padding:0.4rem 0.65rem;border-radius:6px;font-size:0.8rem"></div>
-    <textarea id="mf-content" rows="22"
+    <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.5rem">
+      <label style="font-size:0.75rem;color:#64748b;white-space:nowrap">Model name in Ollama:</label>
+      <input id="mf-target-name" type="text"
+        style="flex:1;background:#0f172a;color:#e2e8f0;border:1px solid #334155;border-radius:5px;padding:0.25rem 0.5rem;font-size:0.78rem;font-family:monospace"
+        placeholder="auto (set once to freeze e.g. qwen-fleet-code)">
+      <span id="mf-name-badge" style="font-size:0.7rem;color:#64748b"></span>
+    </div>
+    <textarea id="mf-content" rows="20"
       style="width:100%;background:#0f172a;color:#94a3b8;border:1px solid #334155;border-radius:6px;font-size:0.72rem;padding:0.5rem;resize:vertical;font-family:monospace"
       placeholder="Click Generate to create a Modelfile for this worker..."></textarea>
     <div class="modal-actions" style="margin-top:0.75rem">
@@ -1956,6 +1976,8 @@ async function openModelfileModal(id) {{
   document.getElementById("mf-harness-name").textContent = h?.display_name || id;
   document.getElementById("mf-role-badge").textContent = "";
   document.getElementById("mf-content").value = "";
+  document.getElementById("mf-target-name").value = "";
+  document.getElementById("mf-name-badge").textContent = "";
   _mfStatusClear();
 
   // Load saved draft if exists
@@ -1965,6 +1987,10 @@ async function openModelfileModal(id) {{
     _mfAlreadyPushed = !!res.entry.pushed;
     const pushedAt = res.entry.pushed_at ? ` (pushed ${{res.entry.pushed_at.slice(0,10)}})` : "";
     _mfStatus(_mfAlreadyPushed ? `Loaded saved draft — previously pushed${{pushedAt}}` : "Loaded saved draft — not yet pushed", _mfAlreadyPushed ? "#4ade80" : "#f59e0b");
+    if (res.entry.target_model) {{
+      document.getElementById("mf-target-name").value = res.entry.target_model;
+      document.getElementById("mf-name-badge").textContent = "🔒 frozen";
+    }}
   }} else {{
     _mfAlreadyPushed = false;
   }}
@@ -1979,25 +2005,30 @@ function _mfOutputType() {{
 async function generateModelfile() {{
   if (!_mfHarnessId) return;
   _mfStatus("⏳ Generating...", "#94a3b8");
+  const targetName = (document.getElementById("mf-target-name").value || "").trim();
   const res = await fetch(api(`/api/harnesses/${{_mfHarnessId}}/modelfile/generate`), {{
-    method:"POST", headers:{{"Content-Type":"application/json"}}, body: JSON.stringify({{output_type: _mfOutputType()}}),
+    method:"POST", headers:{{"Content-Type":"application/json"}},
+    body: JSON.stringify({{output_type: _mfOutputType(), target_name: targetName}}),
   }}).then(r => r.json());
   if (!res.ok) {{ _mfStatus(`✗ ${{res.error}}`, "#f87171"); return; }}
   document.getElementById("mf-content").value = res.content;
+  document.getElementById("mf-target-name").value = res.target_model || "";
+  document.getElementById("mf-name-badge").textContent = res.target_model ? "" : "";
   const roleLabel = res.role ? `role: ${{res.role}}` : "no role assigned";
-  const targetLabel = res.target_model && res.target_model !== res.base_model ? ` → will create ${{res.target_model}}` : "";
+  const targetLabel = res.target_model && res.target_model !== res.base_model ? ` → ${{res.target_model}}` : "";
   document.getElementById("mf-role-badge").textContent = roleLabel + targetLabel;
-  const fetched = res.existing_fetched ? "existing Modelfile from Ollama merged" : "no existing Modelfile — built from scratch";
-  _mfStatus(`✓ Generated — ${{fetched}}`, "#4ade80");
+  const fetched = res.existing_fetched ? "existing Modelfile merged" : "built from scratch";
+  _mfStatus(`✓ Generated — ${{fetched}}. Save draft then Push.`, "#4ade80");
   _mfAlreadyPushed = res.already_pushed;
 }}
 
 async function saveModelfile() {{
   if (!_mfHarnessId) return;
   const content = document.getElementById("mf-content").value.trim();
+  const targetName = (document.getElementById("mf-target-name").value || "").trim();
   if (!content) {{ _mfStatus("Nothing to save.", "#f59e0b"); return; }}
   await fetch(api(`/api/harnesses/${{_mfHarnessId}}/modelfile/save`), {{
-    method:"POST", headers:{{"Content-Type":"application/json"}}, body: JSON.stringify({{content}}),
+    method:"POST", headers:{{"Content-Type":"application/json"}}, body: JSON.stringify({{content, target_name: targetName}}),
   }});
   _mfStatus("Draft saved.", "#4ade80");
 }}
@@ -2005,13 +2036,15 @@ async function saveModelfile() {{
 async function pushModelfile() {{
   if (!_mfHarnessId) return;
   const content = document.getElementById("mf-content").value.trim();
+  const targetName = (document.getElementById("mf-target-name").value || "").trim();
   if (!content) {{ _mfStatus("Generate or write a Modelfile first.", "#f59e0b"); return; }}
+  if (!targetName) {{ _mfStatus("Set a model name before pushing.", "#f59e0b"); return; }}
   if (_mfAlreadyPushed) {{
-    if (!confirm("This harness already has a pushed Modelfile. Overwrite it?")) return;
+    if (!confirm(`Overwrite existing pushed model '${{targetName}}'?`)) return;
   }}
-  // Save draft first
+  // Save draft first (with target_name)
   await fetch(api(`/api/harnesses/${{_mfHarnessId}}/modelfile/save`), {{
-    method:"POST", headers:{{"Content-Type":"application/json"}}, body: JSON.stringify({{content}}),
+    method:"POST", headers:{{"Content-Type":"application/json"}}, body: JSON.stringify({{content, target_name: targetName}}),
   }});
   _mfStatus("⏳ Pushing to Ollama...", "#94a3b8");
   const res = await fetch(api(`/api/harnesses/${{_mfHarnessId}}/modelfile/push`), {{method:"POST"}}).then(r => r.json());
@@ -2782,10 +2815,6 @@ async function selectFleetJob(id) {{
   const res = await fetch(api("/api/jobs/" + id)).then(r => r.json());
   if (!res.ok) return;
   renderFleetDetail(res.job);
-  if (res.job.status === "running" || res.job.status === "pending") {{
-    clearTimeout(_fleetPollTimer);
-    _fleetPollTimer = setTimeout(() => selectFleetJob(id), 2000);
-  }}
 }}
 
 function hideFleetDetail() {{

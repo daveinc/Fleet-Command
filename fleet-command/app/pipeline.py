@@ -137,8 +137,8 @@ def _overflow_message(info: dict[str, Any], harness: dict[str, Any]) -> str:
     )
 
 
-def _build_payload(harness: dict[str, Any], system: str, user: str) -> dict[str, Any]:
-    model = harness.get("model", "")
+def _build_payload(harness: dict[str, Any], system: str, user: str, model_override: str = "") -> dict[str, Any]:
+    model = model_override or harness.get("model", "")
     fmt = harness.get("request_format", "ollama_chat")
     params = harness.get("params", {})
     temp = params.get("temperature", 0)
@@ -297,16 +297,20 @@ async def _call_harness(
     if ctx and info["pct"] >= 70:
         _flog(f"  ctx usage ~{info['pct']}% before call — approaching limit")
 
-    from app.pipeline_prompts import is_modelfile_pushed
-    effective_system = "" if is_modelfile_pushed(harness.get("_id", "")) else system
+    from app.pipeline_prompts import is_modelfile_pushed, get_pushed_model, reset_modelfile_pushed
+    harness_id = harness.get("_id", "")
+    pushed_model = get_pushed_model(harness_id) if harness_id else None
+    effective_system = "" if pushed_model else system
+    model_override = pushed_model or ""
 
     endpoint = _resolve_endpoint(harness)
-    payload = _build_payload(harness, effective_system, user)
+    payload = _build_payload(harness, effective_system, user, model_override)
     auth_headers = _auth_headers(harness)
     headers = {"Content-Type": "application/json", **auth_headers}
     fmt = harness.get("request_format", "ollama_chat")
+    effective_model = model_override or harness.get("model", "")
 
-    _flog(f"CALL model={harness.get('model')} fmt={fmt}")
+    _flog(f"CALL model={effective_model}{' (pushed)' if pushed_model else ''} fmt={fmt}")
     _flog(f"  endpoint={endpoint}")
     _flog(f"  auth={'yes ('+harness.get('auth_type')+')' if auth_headers else 'none'}")
     _flog(f"  payload_keys={list(payload.keys())}")
@@ -319,6 +323,25 @@ async def _call_harness(
             resp = await client.post(endpoint, headers=headers, json=payload)
             elapsed = time.monotonic() - t0
             _flog(f"  response status={resp.status_code} elapsed={elapsed:.1f}s size={len(resp.content)}b")
+            # If the pushed model no longer exists in Ollama, reset and retry with base model
+            if resp.status_code in (404, 500) and pushed_model and harness_id:
+                try:
+                    err_text = resp.json().get("error", "")
+                except Exception:
+                    err_text = resp.text
+                if "not found" in err_text.lower() or resp.status_code == 404:
+                    _flog(f"  pushed model {pushed_model!r} not found — resetting pushed flag, retrying with base model")
+                    if job and stage:
+                        append_log(job, stage, f"⚠ Pushed model {pushed_model!r} missing from Ollama — resetting to base model {harness.get('model')!r}")
+                    reset_modelfile_pushed(harness_id)
+                    base_payload = _build_payload(harness, system, user)
+                    resp2 = await client.post(endpoint, headers=headers, json=base_payload)
+                    elapsed = time.monotonic() - t0
+                    _flog(f"  retry status={resp2.status_code} elapsed={elapsed:.1f}s size={len(resp2.content)}b")
+                    resp2.raise_for_status()
+                    result, tokens = _extract(resp2, fmt)
+                    _flog(f"  extracted={len(result)} chars (base fallback) preview={result[:120].strip()!r}")
+                    return result, tokens
             resp.raise_for_status()
             result, tokens = _extract(resp, fmt)
             _flog(f"  extracted={len(result)} chars tokens=in:{tokens['input']} out:{tokens['output']} preview={result[:120].strip()!r}")

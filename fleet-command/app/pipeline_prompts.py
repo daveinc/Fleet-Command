@@ -171,12 +171,31 @@ def is_modelfile_pushed(harness_id: str) -> bool:
     return bool(load_modelfiles().get(harness_id, {}).get("pushed", False))
 
 
-def mark_modelfile_pushed(harness_id: str) -> None:
+def mark_modelfile_pushed(harness_id: str, target_model: str = "") -> None:
     from datetime import datetime, timezone
     data = load_modelfiles()
     entry = data.get(harness_id, {})
     entry["pushed"] = True
     entry["pushed_at"] = datetime.now(timezone.utc).isoformat()
+    if target_model:
+        entry["target_model"] = target_model
+    data[harness_id] = entry
+    _save_modelfiles(data)
+
+
+def get_pushed_model(harness_id: str) -> str | None:
+    """Return the pushed model name (role-suffixed) if the modelfile is active, else None."""
+    entry = load_modelfiles().get(harness_id, {})
+    if not entry.get("pushed"):
+        return None
+    return entry.get("target_model") or None
+
+
+def reset_modelfile_pushed(harness_id: str) -> None:
+    """Mark modelfile as not pushed — called when Ollama can't find the pushed model."""
+    data = load_modelfiles()
+    entry = data.get(harness_id, {})
+    entry["pushed"] = False
     data[harness_id] = entry
     _save_modelfiles(data)
 
@@ -774,8 +793,13 @@ def _build_system_block(harness: dict[str, Any], role: str) -> str:
     )
 
 
-async def generate_modelfile(harness_id: str, ollama_host: str, output_type: str = "yaml") -> dict[str, Any]:
-    """Generate a Modelfile for a harness, merging into any existing Modelfile from Ollama."""
+async def generate_modelfile(harness_id: str, ollama_host: str, output_type: str = "yaml", target_name: str = "") -> dict[str, Any]:
+    """Generate a Modelfile for a harness, merging into any existing Modelfile from Ollama.
+
+    target_name: optional user-defined model name (e.g. 'qwen-fleet-code'). Once set and pushed,
+    subsequent pushes reuse the same name so the model accumulates improvements without losing its name.
+    If not provided, uses the previously stored name or auto-derives from base:role.
+    """
     from app.harnesses import get_harness
     from app.roles import load_roles
 
@@ -790,14 +814,27 @@ async def generate_modelfile(harness_id: str, ollama_host: str, output_type: str
     roles = load_roles()
     role = next((r for r, a in roles.items() if a.get("harness_id") == harness_id), None)
 
-    existing = await fetch_modelfile_from_ollama(model, ollama_host)
+    # Determine target model name — priority: explicit arg > stored frozen name > auto-derive
+    stored_entry = load_modelfiles().get(harness_id, {})
+    stored_target = stored_entry.get("target_model", "")
+    if target_name:
+        target_model = target_name.strip()
+    elif stored_target:
+        target_model = stored_target  # frozen from last push — don't change it
+    else:
+        base_name = model.split(":")[0] if ":" in model else model
+        target_model = f"{base_name}:{role}" if role else model
+
+    # The base model to pull weights from — always the harness model field, never the pushed name
+    base_model = stored_entry.get("base_model") or model
+
+    existing = await fetch_modelfile_from_ollama(base_model, ollama_host)
     existing_fetched = bool(existing)
     if not existing:
-        existing = f"FROM {model}\n"
+        existing = f"FROM {base_model}\n"
     else:
-        # Normalize FROM: blob paths / absolute paths don't work on /api/create
         import re as _re
-        existing = _re.sub(r'(?m)^FROM\s+\S+', f'FROM {model}', existing)
+        existing = _re.sub(r'(?m)^FROM\s+\S+', f'FROM {base_model}', existing)
 
     system = _build_system_block(harness, role) if role else (
         "You are an AI worker in the Fleet Command pipeline.\n\n"
@@ -806,7 +843,6 @@ async def generate_modelfile(harness_id: str, ollama_host: str, output_type: str
         "- Output only what is requested — no explanations, no preamble"
     )
 
-    # Build full parameter set: role defaults → harness overrides
     h_params = harness.get("params", {})
     params: dict[str, Any] = {}
     if role:
@@ -827,21 +863,13 @@ async def generate_modelfile(harness_id: str, ollama_host: str, output_type: str
         if k in h_params:
             params[k] = h_params[k]
 
-    # Stop sequences
     stops = _ROLE_STOPS.get(role or "", [])
 
-    # MESSAGE few-shot examples — selected by output type + model tier
     ctx_window = harness.get("context_window") or 0
     messages = _get_messages(role or "", ctx_window, output_type)
 
-    # Role-suffixed target model name — e.g. gemma4:reviewer, qwen-ha:generator
-    base_model = model.split(":")[0] if ":" in model else model
-    target_model = f"{base_model}:{role}" if role else model
-
-    # Build final content, merging into base model's existing Modelfile
     content = _merge_modelfile(existing, system, params, messages)
 
-    # Insert stop sequences as a JSON array — Ollama 0.22.1+ rejects repeated PARAMETER stop lines
     if stops:
         stop_block = f"PARAMETER stop {json.dumps(stops)}"
         if "\nMESSAGE " in content:
@@ -859,7 +887,7 @@ async def generate_modelfile(harness_id: str, ollama_host: str, output_type: str
         "already_pushed": already_pushed,
         "role": role,
         "target_model": target_model,
-        "base_model": model,
+        "base_model": base_model,
     }
 
 
@@ -964,8 +992,7 @@ def _modelfile_to_api_payload(model_name: str, content: str) -> dict:
 
 async def push_modelfile_to_ollama(harness_id: str, ollama_host: str) -> tuple[bool, str]:
     import httpx
-    from app.harnesses import get_harness, save_user_harness
-    from app.roles import load_roles
+    from app.harnesses import get_harness
 
     entry = load_modelfiles().get(harness_id, {})
     content = entry.get("content", "")
@@ -974,35 +1001,20 @@ async def push_modelfile_to_ollama(harness_id: str, ollama_host: str) -> tuple[b
     harness = get_harness(harness_id)
     if not harness:
         return False, f"Harness '{harness_id}' not found"
-    base_model = harness.get("model", "")
-    if not base_model:
-        return False, "Harness has no model name"
 
-    # Compute role-suffixed target name
-    roles = load_roles()
-    role = next((r for r, a in roles.items() if a.get("harness_id") == harness_id), None)
-    if role:
-        base = base_model.split(":")[0] if ":" in base_model else base_model
-        target_model = f"{base}:{role}"
-    else:
-        target_model = base_model
+    # Use stored names from generate step — never re-derive on push
+    target_model = entry.get("target_model", "")
+    base_model = entry.get("base_model") or harness.get("model", "")
+    if not target_model or not base_model:
+        return False, "Generate the Modelfile first — target_model or base_model not stored"
 
     try:
         payload = _modelfile_to_api_payload(target_model, content)
-        # Push to base model so Ollama can inherit weights, but create as target_model
         payload["from"] = base_model
         async with httpx.AsyncClient(timeout=120) as client:
             resp = await client.post(f"{ollama_host}/api/create", json=payload)
             resp.raise_for_status()
-        mark_modelfile_pushed(harness_id)
-
-        # Update harness to point to the role-suffixed model
-        if target_model != base_model:
-            updated = dict(harness)
-            updated["model"] = target_model
-            updated.pop("_id", None)
-            save_user_harness(harness_id, updated)
-
+        mark_modelfile_pushed(harness_id, target_model)
         return True, f"Created {target_model}"
     except Exception as exc:
         return False, str(exc)
