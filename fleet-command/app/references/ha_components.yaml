@@ -1,0 +1,263 @@
+##############################################################################
+# HA LOVELACE CARD REFERENCE — Fleet Command Component Library
+# Organized by card type. Each section is a standalone copyable YAML block.
+# No prose — inline comments only where non-obvious.
+##############################################################################
+
+---
+# ===========================================================================
+# SECTION: entities-card
+# ===========================================================================
+entities-card:
+  type: entities
+  title: Room Status
+  entities:
+    - entity: light.living_room
+      name: Living Room Light
+      icon: mdi:lamp
+      secondary_info: last-changed     # options: last-changed, last-updated, entity-id, brightness
+      tap_action:
+        action: toggle
+    - entity: sensor.temperature_living
+      name: Temperature
+      secondary_info: state
+    - type: divider                    # visual separator — no entity needed
+    - entity: switch.ceiling_fan
+      name: Ceiling Fan
+      tap_action:
+        action: call-service
+        service: switch.toggle
+        target:
+          entity_id: switch.ceiling_fan
+
+# ===========================================================================
+# SECTION: glance-card
+# ===========================================================================
+glance-card:
+  type: glance
+  title: Hallway
+  columns: 4                           # entities per row
+  show_state: true
+  entities:
+    - entity: sensor.temperature_hall
+      name: Temp
+    - entity: sensor.humidity_hall
+      name: Humidity
+    - entity: binary_sensor.motion_hall
+      name: Motion
+    - entity: light.hall_light
+      name: Light
+      tap_action:
+        action: toggle
+
+# ===========================================================================
+# SECTION: gauge-card
+# ===========================================================================
+gauge-card:
+  type: gauge
+  entity: sensor.cpu_usage
+  name: CPU Usage
+  unit: "%"
+  min: 0
+  max: 100
+  needle: true                         # shows a pointer needle; false = filled arc
+  severity:
+    green: 0
+    yellow: 60
+    red: 85
+
+# ===========================================================================
+# SECTION: picture-glance-card
+# ===========================================================================
+picture-glance-card:
+  type: picture-glance
+  title: Front Door
+  camera_image: camera.front_door      # live feed thumbnail
+  entities:
+    - entity: binary_sensor.front_door_motion
+      name: Motion
+    - entity: lock.front_door
+      name: Lock
+  tap_action:
+    action: navigate
+    navigation_path: /lovelace/cameras # navigate to another dashboard view
+
+# ===========================================================================
+# SECTION: button-card
+# ===========================================================================
+button-card:
+  type: button
+  entity: light.office_desk
+  name: Desk Light
+  icon: mdi:desk-lamp
+  show_state: true
+  tap_action:
+    action: call-service
+    service: light.toggle
+    target:
+      entity_id: light.office_desk
+  hold_action:
+    action: more-info                  # long-press opens entity detail popup
+
+# ===========================================================================
+# SECTION: markdown-card
+# ===========================================================================
+markdown-card:
+  type: markdown
+  title: System Info
+  content: >
+    ## Hello {{ user }}
+
+    CPU: **{{ states('sensor.cpu_usage') }}%**
+
+    Uptime: {{ states('sensor.ha_uptime') }}
+
+    {% if states('binary_sensor.internet') == 'on' %}
+    Internet: Online ✅
+    {% else %}
+    Internet: Offline ❌
+    {% endif %}
+
+# ===========================================================================
+# SECTION: media-control-card
+# ===========================================================================
+media-control-card:
+  type: media-control
+  entity: media_player.living_room_speaker   # requires a media_player entity
+
+# ===========================================================================
+# SECTION: thermostat-card
+# ===========================================================================
+thermostat-card:
+  type: thermostat
+  entity: climate.living_room_ac             # requires a climate entity
+  name: Living Room AC
+  features:
+    - type: climate-hvac-modes               # shows mode selector (heat/cool/auto/off)
+
+# ===========================================================================
+# SECTION: weather-forecast-card
+# ===========================================================================
+weather-forecast-card:
+  type: weather-forecast
+  entity: weather.home
+  name: Tel Aviv Weather
+  forecast_type: daily                       # options: daily, hourly, twice_daily
+  show_forecast: true
+
+# ===========================================================================
+# SECTION: vertical-stack
+# ===========================================================================
+vertical-stack:
+  type: vertical-stack                       # stacks cards top-to-bottom in one column
+  cards:
+    - type: entities
+      title: Lights
+      entities:
+        - entity: light.living_room
+    - type: gauge
+      entity: sensor.cpu_usage
+      min: 0
+      max: 100
+
+# ===========================================================================
+# SECTION: horizontal-stack
+# ===========================================================================
+horizontal-stack:
+  type: horizontal-stack                     # cards side by side; each takes equal width
+  cards:
+    - type: button
+      entity: switch.garden_pump
+      name: Pump
+    - type: button
+      entity: switch.irrigation_zone_1
+      name: Zone 1
+    - type: button
+      entity: switch.irrigation_zone_2
+      name: Zone 2
+
+# ===========================================================================
+# SECTION: card-mod-basic
+# ===========================================================================
+card-mod-basic:
+  # card_mod applied to an entities card — $ selector targets the shadow DOM
+  type: entities
+  title: Styled Entities
+  entities:
+    - entity: light.living_room
+    - entity: sensor.temperature_living
+  card_mod:
+    style: |
+      ha-card {
+        background: rgba(30, 30, 50, 0.8) !important;
+        border-radius: 16px !important;
+        border: 1px solid rgba(255,255,255,0.1);
+      }
+      ha-card .card-header {
+        color: #88aaff;
+        font-size: 14px;
+      }
+
+# ===========================================================================
+# SECTION: card-mod-header
+# ===========================================================================
+card-mod-header:
+  # Targeting the card header specifically via card_mod
+  type: entities
+  title: Custom Header
+  entities:
+    - entity: sensor.temperature_living
+  card_mod:
+    style: |
+      ha-card {
+        --ha-card-header-font-size: 13px;
+        --ha-card-header-color: rgba(255,255,255,0.5);
+      }
+      .card-header {
+        padding-bottom: 0px;
+        border-bottom: 1px solid rgba(255,255,255,0.08);
+      }
+
+# ===========================================================================
+# SECTION: view-structure
+# ===========================================================================
+view-structure:
+  # A single complete view block — goes inside the `views` list of a dashboard
+  title: Home
+  path: home                           # URL slug: /lovelace/home
+  icon: mdi:home-outline
+  theme: default
+  type: masonry                        # layout type: masonry (default) | panel | sidebar
+  cards:
+    - type: entities
+      title: Overview
+      entities:
+        - entity: sensor.temperature_living
+    - type: weather-forecast
+      entity: weather.home
+      forecast_type: daily
+
+# ===========================================================================
+# SECTION: dashboard-structure
+# ===========================================================================
+dashboard-structure:
+  # Full dashboard wrapper — the root object pushed via ha_config_set_dashboard
+  title: My Dashboard
+  views:
+    - title: Home
+      path: home
+      icon: mdi:home-outline
+      cards:
+        - type: entities
+          title: Lights
+          entities:
+            - entity: light.living_room
+    - title: Security
+      path: security
+      icon: mdi:shield-home
+      cards:
+        - type: picture-glance
+          title: Front Door
+          camera_image: camera.front_door
+          entities:
+            - entity: binary_sensor.front_door_motion

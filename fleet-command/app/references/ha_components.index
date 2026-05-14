@@ -1,0 +1,15 @@
+entities-card | 11-31 | Entities list card with icon, secondary_info, tap_action, divider, and call-service
+glance-card | 36-51 | Compact multi-entity row with columns and toggle tap_action
+gauge-card | 56-67 | Gauge with min/max/needle/severity thresholds
+picture-glance-card | 72-83 | Camera snapshot card with entity overlays and navigate tap_action
+button-card | 88-100 | Single-entity button with call-service tap_action and hold_action more-info
+markdown-card | 105-119 | Markdown card with Jinja template string including states() and conditionals
+media-control-card | 124-126 | Media player control card (play/pause/volume) for a media_player entity
+thermostat-card | 131-136 | Climate entity thermostat card with HVAC mode selector feature
+weather-forecast-card | 141-146 | Weather forecast card with daily/hourly forecast_type option
+vertical-stack | 151-161 | Vertical stack wrapping an entities card and a gauge card
+horizontal-stack | 166-177 | Horizontal stack with three button cards side by side
+card-mod-basic | 182-199 | card_mod style block on an entities card targeting ha-card and .card-header
+card-mod-header | 204-219 | card_mod targeting header via CSS variables and .card-header selector
+view-structure | 224-238 | Complete single view block with title, path, icon, type, and cards list
+dashboard-structure | 243-263 | Full dashboard root object with two views for use with ha_config_set_dashboard

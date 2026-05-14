@@ -22,6 +22,7 @@ def _get_pipeline_sem() -> asyncio.Semaphore:
     return _PIPELINE_SEM
 
 _LOG_FILE = Path("/share/fleet_command.log")
+REFERENCES_DIR = Path(__file__).parent / "references"
 
 
 def _flog(msg: str) -> None:
@@ -252,6 +253,30 @@ def _auth_headers(harness: dict[str, Any]) -> dict[str, str]:
     return {}
 
 
+def _get_reference_index(filename: str) -> str:
+    idx = REFERENCES_DIR / (filename + ".index")
+    if idx.exists():
+        return idx.read_text(encoding="utf-8").strip()
+    return ""
+
+
+def _resolve_reference(filename: str, section_id: str) -> str:
+    idx_content = _get_reference_index(filename)
+    if not idx_content:
+        return f"Reference file '{filename}' not found."
+    for line in idx_content.splitlines():
+        parts = [p.strip() for p in line.split("|")]
+        if len(parts) >= 2 and parts[0] == section_id:
+            try:
+                start, end = (int(x) for x in parts[1].split("-"))
+                ref_file = REFERENCES_DIR / filename
+                lines = ref_file.read_text(encoding="utf-8").splitlines()
+                return "\n".join(lines[start - 1 : end])
+            except Exception:
+                return f"Could not extract section '{section_id}' from '{filename}'."
+    return f"Section '{section_id}' not found in '{filename}'."
+
+
 def _detect_comm(text: str) -> tuple[bool, str]:
     """Returns (is_comm, comm_content) if response starts with [COMM] tag."""
     stripped = text.strip()
@@ -330,6 +355,19 @@ async def _call_harness(
     model_override = pushed_model or ""
     ctx = harness.get("context_window", 0)
 
+    # Reference indexes to pre-seed for this stage (first call only)
+    def _ref_indexes_for_stage() -> list[tuple[str, str]]:
+        out = []
+        for ref in (job or {}).get("references", []):
+            if not isinstance(ref, dict):
+                continue
+            if ref.get("stages") and stage not in ref["stages"]:
+                continue
+            idx = _get_reference_index(ref["file"])
+            if idx:
+                out.append((ref["file"], idx))
+        return out
+
     # Build or extend conversation thread
     use_thread = stage in _THREAD_STAGES and job is not None
     if use_thread:
@@ -339,6 +377,9 @@ async def _call_harness(
             msgs: list[dict] = []
             if effective_system:
                 msgs.append({"role": "system", "content": effective_system})
+            for ref_file, ref_idx in _ref_indexes_for_stage():
+                msgs.append({"role": "user", "content": f"[COMM] pipeline → index: {ref_file}\n\n{ref_idx}"})
+                msgs.append({"role": "assistant", "content": "Reference index received."})
             msgs.append({"role": "user", "content": user})
             threads[stage] = msgs
             messages = msgs
@@ -352,6 +393,9 @@ async def _call_harness(
         msgs = []
         if effective_system:
             msgs.append({"role": "system", "content": effective_system})
+        for ref_file, ref_idx in _ref_indexes_for_stage():
+            msgs.append({"role": "user", "content": f"[COMM] pipeline → index: {ref_file}\n\n{ref_idx}"})
+            msgs.append({"role": "assistant", "content": "Reference index received."})
         msgs.append({"role": "user", "content": user})
         messages = msgs
 
@@ -439,7 +483,17 @@ async def _call_harness(
 
                 # Route to target worker — questions get a text answer, code requests get code back with location [COMM]
                 routed_context = ""
-                if job and recipient != "next":
+                if job and recipient == "pipeline" and "ref:" in comm_content:
+                    ref_match = re.search(r'ref:(\S+?),\s*section:(\S+)', comm_content)
+                    if ref_match:
+                        ref_file, section_id = ref_match.group(1).strip(), ref_match.group(2).strip()
+                        content = _resolve_reference(ref_file, section_id)
+                        append_log(job, stage, f"[COMM] ref lookup: {section_id} from {ref_file} — {len(content)} chars")
+                        _flog(f"  [COMM] ref lookup: {section_id} from {ref_file}")
+                        routed_context = f"[COMM] pipeline → ref:{section_id}\n\n{content}"
+                    else:
+                        routed_context = "[PIPELINE] Could not parse ref request — continue with best judgment."
+                elif job and recipient != "next":
                     from app.roles import load_roles as _lr, ROLE_META as _RM
                     from app.harnesses import get_harness as _gh
                     _target_assign = _lr().get(recipient, {})

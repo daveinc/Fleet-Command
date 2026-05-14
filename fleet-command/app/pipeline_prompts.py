@@ -513,6 +513,38 @@ _ROLE_MESSAGES_YAML: dict[str, list[tuple[str, str]]] = {
             "assistant",
             "*yaml card output here — this chunk only, no reference to other chunks*",
         ),
+        # Reference index received at stage start — look up section before building
+        (
+            "user",
+            "[COMM] pipeline → index: ha_components.yaml\n\n"
+            "entities-card | 11-31 | Entities list card with icon, secondary_info, tap_action, divider, and call-service\n"
+            "glance-card | 36-51 | Compact multi-entity row with columns and toggle tap_action\n"
+            "card-mod-basic | 182-199 | card_mod style block on an entities card targeting ha-card and .card-header",
+        ),
+        (
+            "assistant",
+            "Reference index received.",
+        ),
+        (
+            "user",
+            "Task: Build a styled entities card for the bedroom with card_mod dark background.\n"
+            "Block: Bedroom",
+        ),
+        (
+            "assistant",
+            "[COMM] to:pipeline — ref:ha_components.yaml, section:card-mod-basic",
+        ),
+        (
+            "user",
+            "[COMM] pipeline → ref:card-mod-basic\n\n"
+            "card-mod-basic:\n"
+            "  type: entities\n"
+            "  ...[section content]...",
+        ),
+        (
+            "assistant",
+            "type: entities\ntitle: Bedroom\nentities:\n  - entity: light.bedroom\ncard_mod:\n  style: |\n    ha-card { background: rgba(20,20,30,0.9) !important; }",
+        ),
     ],
     "manager": [
         # PM plan → structured BLOCK/task breakdown
@@ -722,6 +754,40 @@ _ROLE_MESSAGES_YAML: dict[str, list[tuple[str, str]]] = {
             "assistant",
             "ESCALATE: context too large — [N]-card dashboard cannot be reviewed in a single pass, chunking required",
         ),
+        # Reference index at stage start — look up structure when needed
+        (
+            "user",
+            "[COMM] pipeline → index: ha_components.yaml\n\n"
+            "view-structure | 224-238 | Complete single view block with title, path, icon, type, and cards list\n"
+            "dashboard-structure | 243-263 | Full dashboard root object with two views for use with ha_config_set_dashboard\n"
+            "card-mod-basic | 182-199 | card_mod style block on an entities card targeting ha-card and .card-header",
+        ),
+        (
+            "assistant",
+            "Reference index received.",
+        ),
+        (
+            "user",
+            "I need this reviewed:\n"
+            "Spec: [job description — dashboard with card_mod styling]\n\n"
+            "YAML to review:\n"
+            "*card_mod block with unfamiliar selector syntax*",
+        ),
+        (
+            "assistant",
+            "[COMM] to:pipeline — ref:ha_components.yaml, section:card-mod-basic",
+        ),
+        (
+            "user",
+            "[COMM] pipeline → ref:card-mod-basic\n\n"
+            "card-mod-basic:\n"
+            "  ...[section content]...",
+        ),
+        (
+            "assistant",
+            "# REVIEW: Fixed card_mod selector — corrected to ha-card { } pattern per reference.\n"
+            "*full corrected yaml here*",
+        ),
     ],
     "supervisor": [
         # Valid output matching spec → return unchanged
@@ -852,6 +918,10 @@ def _build_system_block(harness: dict[str, Any], role: str) -> str:
         f"\n  Example: [COMM] to:project_manager — question: spec requests 14 cards but pipeline limit is 12. Split sub-jobs or drop lower-priority cards?"
         f"\n- When you receive [COMM] pipeline → chunk <N>/<M>: you are receiving part <N> of <M>."
         f"\n  Process only this portion. Output only your result for this chunk. Do not reference other chunks."
+        f"\n- When you receive [COMM] pipeline → index: <filename>: a reference index has been loaded for you."
+        f"\n  Format per line: <section-id> | <line-range> | <summary>"
+        f"\n  To fetch a section: [COMM] to:pipeline — ref:<filename>, section:<section-id>"
+        f"\n  The pipeline will return [COMM] pipeline → ref:<section-id> with the exact content."
         f"\n- When you receive any [COMM] prefix: read it as context only — never echo it in your output."
         f"\n- In normal situations, send your output directly — no [COMM] needed."
         f"{cost_note}"
