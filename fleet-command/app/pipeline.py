@@ -267,6 +267,12 @@ def _parse_comm_recipient(comm_content: str) -> str:
     return m.group(1).lower() if m else "next"
 
 
+def _comm_is_question(comm_content: str) -> bool:
+    """Detect if a COMM message is a question requiring an answer from the target worker."""
+    lower = comm_content.lower()
+    return "?" in comm_content or "question" in lower or "clarif" in lower or "ask" in lower
+
+
 def _strip_fences(text: str) -> str:
     """Strip outer markdown code fences."""
     text = text.strip()
@@ -425,13 +431,42 @@ async def _call_harness(
             is_comm, comm_content = _detect_comm(result)
             if is_comm:
                 _flog(f"  [COMM] detected: {comm_content[:80]}")
+                recipient = _parse_comm_recipient(comm_content) if job else "next"
                 if job:
-                    recipient = _parse_comm_recipient(comm_content)
                     log_message(job, sender=stage, recipient=recipient,
                                 msg_type="comm", content=comm_content, stage=stage)
                     append_log(job, stage, f"[COMM] → {recipient}: {comm_content[:100]}")
 
-                follow_up_user = "[PIPELINE] Continue — send your output now."
+                # Question routing — if this is a question, call the target worker and return the answer
+                answer_context = ""
+                if job and _comm_is_question(comm_content):
+                    from app.roles import load_roles as _lr, ROLE_META as _RM
+                    from app.harnesses import get_harness as _gh
+                    _target_assign = _lr().get(recipient, {})
+                    _target_harness = _gh(_target_assign.get("harness_id", "")) if _target_assign.get("harness_id") else None
+                    if _target_harness:
+                        _tp = _RM.get(recipient, {}).get("persona", "You are a helpful AI assistant.")
+                        _tp = _tp.split(".")[0] + "."
+                        _qprompt = (
+                            f"A {stage} worker has a question for you:\n\n{comm_content}\n\n"
+                            "Provide a clear, direct answer. Be concise."
+                        )
+                        try:
+                            _ans, _atok = await _call_harness(_target_harness, _tp, _qprompt, job, recipient)
+                            tokens["input"] += _atok["input"]
+                            tokens["output"] += _atok["output"]
+                            log_message(job, sender=recipient, recipient=stage, msg_type="comm",
+                                        content=f"Answer: {_ans[:300]}", stage=recipient)
+                            append_log(job, stage, f"[COMM] answer from {recipient}: {_ans[:80]}")
+                            _flog(f"  [COMM] answer from {recipient}: {_ans[:80]}")
+                            answer_context = f"[PIPELINE] Answer from {recipient}:\n{_ans.strip()}\n\nNow send your output."
+                        except Exception as _qe:
+                            _flog(f"  [COMM] question to {recipient} failed: {_qe}")
+                            answer_context = f"[PIPELINE] Could not reach {recipient}. Continue with best judgment — send your output now."
+                    else:
+                        answer_context = f"[PIPELINE] Worker '{recipient}' unavailable. Continue with best judgment — send your output now."
+
+                follow_up_user = answer_context or "[PIPELINE] Continue — send your output now."
                 if use_thread and job is not None and stage in job.get("threads", {}):
                     job["threads"][stage].append({"role": "assistant", "content": result})
                     job["threads"][stage].append({"role": "user", "content": follow_up_user})
