@@ -437,9 +437,9 @@ async def _call_harness(
                                 msg_type="comm", content=comm_content, stage=stage)
                     append_log(job, stage, f"[COMM] → {recipient}: {comm_content[:100]}")
 
-                # Question routing — if this is a question, call the target worker and return the answer
-                answer_context = ""
-                if job and _comm_is_question(comm_content):
+                # Route to target worker — questions get a text answer, code requests get code back with location [COMM]
+                routed_context = ""
+                if job and recipient != "next":
                     from app.roles import load_roles as _lr, ROLE_META as _RM
                     from app.harnesses import get_harness as _gh
                     _target_assign = _lr().get(recipient, {})
@@ -447,26 +447,42 @@ async def _call_harness(
                     if _target_harness:
                         _tp = _RM.get(recipient, {}).get("persona", "You are a helpful AI assistant.")
                         _tp = _tp.split(".")[0] + "."
-                        _qprompt = (
-                            f"A {stage} worker has a question for you:\n\n{comm_content}\n\n"
-                            "Provide a clear, direct answer. Be concise."
-                        )
+                        is_question = _comm_is_question(comm_content)
+                        if is_question:
+                            _route_prompt = (
+                                f"A {stage} worker has a question for you:\n\n{comm_content}\n\n"
+                                "Provide a clear, direct answer. Be concise."
+                            )
+                        else:
+                            _route_prompt = (
+                                f"[COMM] pipeline → request from {stage}\n\n"
+                                f"{comm_content}\n\n"
+                                "Complete this task. Output only what is requested — no explanations, no preamble."
+                            )
                         try:
-                            _ans, _atok = await _call_harness(_target_harness, _tp, _qprompt, job, recipient)
-                            tokens["input"] += _atok["input"]
-                            tokens["output"] += _atok["output"]
-                            log_message(job, sender=recipient, recipient=stage, msg_type="comm",
-                                        content=f"Answer: {_ans[:300]}", stage=recipient)
-                            append_log(job, stage, f"[COMM] answer from {recipient}: {_ans[:80]}")
-                            _flog(f"  [COMM] answer from {recipient}: {_ans[:80]}")
-                            answer_context = f"[PIPELINE] Answer from {recipient}:\n{_ans.strip()}\n\nNow send your output."
-                        except Exception as _qe:
-                            _flog(f"  [COMM] question to {recipient} failed: {_qe}")
-                            answer_context = f"[PIPELINE] Could not reach {recipient}. Continue with best judgment — send your output now."
+                            _resp, _rtok = await _call_harness(_target_harness, _tp, _route_prompt, job, recipient)
+                            tokens["input"] += _rtok["input"]
+                            tokens["output"] += _rtok["output"]
+                            _resp_type = "comm" if is_question else "code"
+                            log_message(job, sender=recipient, recipient=stage, msg_type=_resp_type,
+                                        content=_resp[:300], stage=recipient)
+                            append_log(job, stage, f"[COMM] {'answer' if is_question else 'code'} from {recipient}: {_resp[:80]}")
+                            _flog(f"  [COMM] {'answer' if is_question else 'code'} from {recipient}: {_resp[:80]}")
+                            if is_question:
+                                routed_context = f"[PIPELINE] Answer from {recipient}:\n{_resp.strip()}\n\nNow send your output."
+                            else:
+                                routed_context = (
+                                    f"[COMM] pipeline → code from {recipient}, {comm_content[:120]}\n\n"
+                                    f"{_resp.strip()}\n\n"
+                                    "Incorporate this into your output and send your final result."
+                                )
+                        except Exception as _re:
+                            _flog(f"  [COMM] route to {recipient} failed: {_re}")
+                            routed_context = f"[PIPELINE] Could not reach {recipient}. Continue with best judgment — send your output now."
                     else:
-                        answer_context = f"[PIPELINE] Worker '{recipient}' unavailable. Continue with best judgment — send your output now."
+                        routed_context = f"[PIPELINE] Worker '{recipient}' unavailable. Continue with best judgment — send your output now."
 
-                follow_up_user = answer_context or "[PIPELINE] Continue — send your output now."
+                follow_up_user = routed_context or "[PIPELINE] Continue — send your output now."
                 if use_thread and job is not None and stage in job.get("threads", {}):
                     job["threads"][stage].append({"role": "assistant", "content": result})
                     job["threads"][stage].append({"role": "user", "content": follow_up_user})
@@ -618,11 +634,14 @@ async def _call_stage_chunked(
     from app.message_builder import chunk_to_fit
 
     batches = chunk_to_fit(items, harness, fixed_prefix=fixed_prefix)
+    total = len(batches)
     results = []
     for i, batch in enumerate(batches):
-        if len(batches) > 1:
-            append_log(job, stage, f"{chunk_label} {i + 1}/{len(batches)} ({len(batch)} items)")
+        if total > 1:
+            append_log(job, stage, f"{chunk_label} {i + 1}/{total} ({len(batch)} items)")
         user_prompt = prompt_fn("\n".join(batch))
+        if total > 1:
+            user_prompt = f"[COMM] pipeline → chunk {i + 1}/{total} — process only this portion, output your result for this chunk only\n\n{user_prompt}"
         raw, handled_by, tok = await _call_with_fallback(stage, harness, persona, user_prompt, roles, job)
         results.append((raw, handled_by, tok))
     return results
@@ -752,6 +771,28 @@ def _split_by_blocks(text: str) -> list[tuple[str, str]]:
     if current_lines:
         blocks.append((current_name, "\n".join(current_lines).strip()))
     return blocks
+
+
+def _combine_ha_view_chunks(chunks: list[str]) -> str:
+    """Combine chunked manager sign-off outputs into one HA dashboard YAML by merging views."""
+    try:
+        import yaml as _yaml
+        all_views: list = []
+        title = "Fleet Output"
+        for chunk in chunks:
+            try:
+                data = _yaml.safe_load(chunk.strip())
+                if isinstance(data, dict):
+                    if "title" in data:
+                        title = data["title"]
+                    all_views.extend(data.get("views", []))
+            except Exception:
+                pass
+        if all_views:
+            return _yaml.dump({"title": title, "views": all_views}, default_flow_style=False, allow_unicode=True)
+    except Exception:
+        pass
+    return "\n\n".join(c.strip() for c in chunks if c.strip())
 
 
 def _domains_in_text(text: str) -> set[str]:
@@ -1179,6 +1220,10 @@ async def _run_generator_loop(job_id: str, roles: dict[str, Any], job: dict[str,
     manager_output = read_stage_output(job_id, "manager")
     task_list = _parse_blocks_and_tasks(manager_output) if manager_output else []
 
+    if task_list:
+        job["manager_task_list"] = task_list
+        save_job(job)
+
     if len(task_list) < 2:
         # Manager didn't produce a task list — run generator with spec only, not the full manager dump
         _flog(f"  generator: no task list found, falling back to spec-only run")
@@ -1281,9 +1326,9 @@ def _parse_subjobs(output: str) -> list[str]:
 
 
 async def _run_manager_signoff(job_id: str, roles: dict[str, Any], job: dict[str, Any]) -> dict[str, Any]:
-    """Second manager pass: receives assembled fragments on its existing warm thread,
-    applies job-type-correct structure, and signs off the output for the reviewer.
-    Manager's thread already holds the spec + task breakdown from the first pass.
+    """Second manager pass: applies job-type-correct structure to assembled fragments.
+    Includes completeness check against the task list from planning.
+    Chunks if assembled output exceeds manager's context window.
     """
     assembled = read_stage_output(job_id, "assembler") or ""
     if not assembled.strip():
@@ -1297,38 +1342,77 @@ async def _run_manager_signoff(job_id: str, roles: dict[str, Any], job: dict[str
 
     persona = ROLE_META.get("manager", {}).get("persona", "You are a helpful AI assistant.")
     persona = persona.split(".")[0] + "."
-    spec = job.get("spec", "")
     job_type = job.get("type", "")
+    task_list = job.get("manager_task_list", [])
 
     if job_type == "ha_dashboard":
-        signoff_msg = (
-            "Generator has completed all tasks. Here are the assembled card fragments:\n\n"
-            f"{assembled}\n\n"
+        structure_instruction = (
             "Apply the correct Home Assistant Lovelace dashboard structure:\n"
             "title: \"Fleet Output\"\n"
             "views:\n"
             "  - title: [block name]\n"
             "    cards:\n"
             "      - [card yaml]\n\n"
-            "Each # Block becomes one view. Cards within a block go under that view's cards list. "
+            "Each # Block becomes one view. Cards within a block go under that view's cards list.\n"
             "Output the final structured YAML only. No fences. No explanation."
         )
     else:
-        signoff_msg = (
-            "Generator has completed all tasks. Here are the assembled fragments:\n\n"
-            f"{assembled}\n\n"
-            f"Apply the correct output structure for job type '{job_type}' per the original spec. "
+        structure_instruction = (
+            f"Apply the correct output structure for job type '{job_type}' per the original spec.\n"
             "Output the final structured result only. No fences. No explanation."
         )
+
+    task_context = ""
+    if task_list:
+        task_lines = [f"  - [{t['block']}] {t['task']}" for t in task_list]
+        task_context = (
+            "\nExpected tasks from planning:\n" + "\n".join(task_lines) +
+            "\n\nVerify all tasks are present in the assembled output. "
+            "If any are missing, send [COMM] to:generator with task number, block name, and what to build. "
+            "Once complete, apply structure.\n"
+        )
+
+    fixed_prefix = (
+        f"Generator has completed all tasks. Assembled fragments follow.\n"
+        f"{task_context}\n"
+        f"{structure_instruction}\n\nFragments:\n"
+    )
 
     append_log(job, "manager", "Sign-off pass — structuring assembled fragments")
     job["stages"]["manager"] = {"status": "running"}
     save_job(job)
 
+    from app.message_builder import chunk_to_fit
+    blocks = _split_by_blocks(assembled)
+    block_items = [f"# Block: {name}\n{content}" for name, content in blocks]
+    batches = chunk_to_fit(block_items, harness, fixed_prefix=fixed_prefix)
+    total = len(batches)
+
     try:
-        raw, handled_by, tok = await _call_with_fallback("manager", harness, persona, signoff_msg, roles, job)
-        _accum_tokens(job, "manager", tok)
-        output = _strip_all_fences(_strip_fences(raw))
+        if total == 1:
+            signoff_msg = fixed_prefix + assembled
+            raw, handled_by, tok = await _call_with_fallback("manager", harness, persona, signoff_msg, roles, job)
+            _accum_tokens(job, "manager", tok)
+            output = _strip_all_fences(_strip_fences(raw))
+        else:
+            append_log(job, "manager", f"Sign-off chunked — {total} chunks")
+            chunk_outputs: list[str] = []
+            handled_by = "manager"
+            for i, batch in enumerate(batches):
+                chunk_comm = (
+                    f"[COMM] pipeline → chunk {i + 1}/{total} — "
+                    "structure only these blocks, output only this chunk's structured result\n\n"
+                )
+                prompt = chunk_comm + fixed_prefix + "\n\n".join(batch)
+                append_log(job, "manager", f"Sign-off chunk {i + 1}/{total}")
+                raw, handled_by, tok = await _call_with_fallback("manager", harness, persona, prompt, roles, job)
+                _accum_tokens(job, "manager", tok)
+                chunk_outputs.append(_strip_all_fences(_strip_fences(raw)))
+            if job_type == "ha_dashboard":
+                output = _combine_ha_view_chunks(chunk_outputs)
+            else:
+                output = "\n\n".join(c.strip() for c in chunk_outputs if c.strip())
+
         write_stage_output(job_id, "manager", output)
         note = f" (handled by {handled_by})" if handled_by != "manager" else ""
         job["stages"]["manager"] = {

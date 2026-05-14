@@ -502,6 +502,17 @@ _ROLE_MESSAGES_YAML: dict[str, list[tuple[str, str]]] = {
             "assistant",
             "*corrected yaml card here — all rejection remarks addressed*",
         ),
+        # Chunked input — process only this portion
+        (
+            "user",
+            "[COMM] pipeline → chunk 2/3 — process only this portion, output your result for this chunk only\n\n"
+            "Task: [card type]\n"
+            "Block: [block name]",
+        ),
+        (
+            "assistant",
+            "*yaml card output here — this chunk only, no reference to other chunks*",
+        ),
     ],
     "manager": [
         # PM plan → structured BLOCK/task breakdown
@@ -559,6 +570,47 @@ _ROLE_MESSAGES_YAML: dict[str, list[tuple[str, str]]] = {
         (
             "assistant",
             "ESCALATE: plan too large — [N] blocks and [M]+ tasks exceeds single breakdown pass, recommend PM splits into separate sub-jobs per domain",
+        ),
+        # Sign-off with completeness check — missing piece detected
+        (
+            "user",
+            "Generator has completed all tasks. Assembled fragments follow.\n\n"
+            "Expected tasks from planning:\n"
+            "  - [Security] motion sensor card\n"
+            "  - [Security] door sensor card\n"
+            "  - [Weather] temperature card\n\n"
+            "Verify all tasks are present. If any are missing, send [COMM] to:generator for the missing piece.\n\n"
+            "Apply HA dashboard structure. Output final YAML only.\n\n"
+            "# Block: Security\n"
+            "[door sensor card yaml]\n\n"
+            "# Block: Weather\n"
+            "[temperature card yaml]",
+        ),
+        (
+            "assistant",
+            "[COMM] to:generator — task 1/3 missing, block: Security, purpose: motion sensor card showing binary_sensor state",
+        ),
+        # Sign-off after gap-fill returned
+        (
+            "user",
+            "[COMM] pipeline → code from generator, task 1/3, block: Security — missing card returned\n\n"
+            "[motion sensor card yaml]\n\n"
+            "Incorporate this and output your final structured result.",
+        ),
+        (
+            "assistant",
+            "title: Fleet Output\nviews:\n  - title: Security\n    cards:\n      - [motion sensor card]\n      - [door sensor card]\n  - title: Weather\n    cards:\n      - [temperature card]",
+        ),
+        # Chunked sign-off — process only this block portion
+        (
+            "user",
+            "[COMM] pipeline → chunk 1/2 — structure only these blocks as views, output only this chunk's YAML\n\n"
+            "# Block: Security\n"
+            "[card yaml]",
+        ),
+        (
+            "assistant",
+            "title: Fleet Output\nviews:\n  - title: Security\n    cards:\n      - [card yaml]",
         ),
     ],
     "project_manager": [
@@ -790,15 +842,18 @@ def _build_system_block(harness: dict[str, Any], role: str) -> str:
         f"\n- Never explain failures in prose — always use the signal format"
         f"\n- Output only what is requested — no explanations, no preamble, no fences unless explicitly asked"
         f"\n\nCommunication protocol:"
-        f"\n- In irregular situations (task unclear, sending back with issues, routing to a specific worker),"
+        f"\n- In irregular situations (task unclear, routing to a specific worker, or requesting a missing piece),"
         f"\n  start your response with: [COMM] to:<role> — <reason and context>"
-        f"\n  The pipeline will then prompt you to send your output. Send your output only — no [COMM] tag."
+        f"\n  The pipeline will route to that worker and return their response. Then send your output."
+        f"\n- When routing or requesting code from another worker, always include location context in your [COMM]:"
+        f"\n  [COMM] to:<role> — task <X>/<total>, block: <block name>, purpose: <what is needed>"
         f"\n- Questions must be about code/structure/scope decisions — never about entity IDs (reviewer handles entities)."
         f"\n  Example: [COMM] to:manager — question: spec says animated gauge but standard gauge has no animation. Use history-graph or custom card?"
         f"\n  Example: [COMM] to:project_manager — question: spec requests 14 cards but pipeline limit is 12. Split sub-jobs or drop lower-priority cards?"
+        f"\n- When you receive [COMM] pipeline → chunk <N>/<M>: you are receiving part <N> of <M>."
+        f"\n  Process only this portion. Output only your result for this chunk. Do not reference other chunks."
+        f"\n- When you receive any [COMM] prefix: read it as context only — never echo it in your output."
         f"\n- In normal situations, send your output directly — no [COMM] needed."
-        f"\n- When you receive a message starting with [COMM], treat it as a handoff note from the"
-        f"\n  previous worker — read it before processing your task, do not echo it back."
         f"{cost_note}"
     )
 
