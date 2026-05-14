@@ -951,14 +951,35 @@ def _modelfile_to_api_payload(model_name: str, content: str) -> dict:
         if upper.startswith("PARAMETER "):
             parts = stripped.split(None, 2)
             if len(parts) == 3:
-                key, val = parts[1], parts[2].strip('"')
-                try:
-                    params[key] = int(val)
-                except ValueError:
+                key, raw = parts[1], parts[2].strip()
+                # JSON array value (e.g. stop ["a","b"]) — parse directly
+                if raw.startswith("["):
                     try:
-                        params[key] = float(val)
+                        parsed = json.loads(raw)
+                        if key in params and isinstance(params[key], list):
+                            params[key].extend(parsed)
+                        else:
+                            params[key] = parsed
+                    except Exception:
+                        params[key] = raw
+                else:
+                    val = raw.strip('"')
+                    try:
+                        parsed_val = int(val)
                     except ValueError:
-                        params[key] = val
+                        try:
+                            parsed_val = float(val)
+                        except ValueError:
+                            parsed_val = val
+                    # accumulate repeated stop lines into a list
+                    if key == "stop":
+                        if key in params:
+                            existing = params[key]
+                            params[key] = (existing if isinstance(existing, list) else [existing]) + [parsed_val]
+                        else:
+                            params[key] = [parsed_val]
+                    else:
+                        params[key] = parsed_val
             continue
 
         if upper.startswith("MESSAGE "):
