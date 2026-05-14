@@ -46,15 +46,8 @@ from app.harnesses import get_harness
 # ── HA card reference baked in — enough for generator to produce valid YAML ──
 
 HA_REFERENCE = """
-YAML only. No fences. No explanations.
-Structure:
-title: "Title"
-views:
-  - title: "View"
-    cards:
-      - type: TYPE
-        entity: domain.name
-Cards: sensor, entities, gauge, weather-forecast, history-graph, button, markdown, grid, vertical-stack
+YAML only. No fences. No explanations. Output ONE card definition only — no views, no title, no dashboard wrapper.
+Valid card types: sensor, entities, gauge, weather-forecast, history-graph, button, markdown, grid, vertical-stack
 Rules: every card needs type. entities card uses list under entities key.
 """
 
@@ -137,33 +130,33 @@ def _overflow_message(info: dict[str, Any], harness: dict[str, Any]) -> str:
     )
 
 
-def _build_payload(harness: dict[str, Any], system: str, user: str, model_override: str = "") -> dict[str, Any]:
+def _build_payload(harness: dict[str, Any], messages: list[dict], model_override: str = "") -> dict[str, Any]:
+    """Build API payload from a messages list (multi-turn aware)."""
     model = model_override or harness.get("model", "")
     fmt = harness.get("request_format", "ollama_chat")
     params = harness.get("params", {})
     temp = params.get("temperature", 0)
-    out_budget = _safe_output_budget(harness, system, user)
+
+    system_content = next((m["content"] for m in messages if m["role"] == "system"), "")
+    last_user = next((m["content"] for m in reversed(messages) if m["role"] == "user"), "")
+    out_budget = _safe_output_budget(harness, system_content, last_user)
+    non_system = [m for m in messages if m["role"] != "system"]
 
     if fmt == "ollama_chat":
         return {
             "model": model,
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
+            "messages": messages,
             "stream": False,
             "options": {"temperature": temp, "num_predict": out_budget},
         }
     if fmt == "ollama_generate":
-        return {"model": model, "prompt": f"{system}\n\n{user}", "stream": False,
+        parts = [m.get("content", "") for m in messages]
+        return {"model": model, "prompt": "\n\n".join(parts), "stream": False,
                 "options": {"num_predict": out_budget}}
     if fmt == "openai_chat":
         return {
             "model": model,
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
+            "messages": messages,
             "temperature": temp,
             "max_tokens": out_budget,
         }
@@ -171,11 +164,12 @@ def _build_payload(harness: dict[str, Any], system: str, user: str, model_overri
         explicit = params.get("max_tokens", 4096)
         return {
             "model": model,
-            "system": system,
+            "system": system_content,
             "max_tokens": min(explicit, out_budget) if harness.get("context_window") else explicit,
-            "messages": [{"role": "user", "content": user}],
+            "messages": non_system,
         }
-    return {"model": model, "prompt": f"{system}\n\n{user}"}
+    parts = [m.get("content", "") for m in messages]
+    return {"model": model, "prompt": "\n\n".join(parts)}
 
 
 def _extract(response: httpx.Response, fmt: str) -> tuple[str, dict[str, int]]:
@@ -213,6 +207,30 @@ def _extract(response: httpx.Response, fmt: str) -> tuple[str, dict[str, int]]:
     except Exception:
         pass
     return response.text, tok
+
+
+# Stages that maintain a warm conversation thread across calls within a job.
+# All others get a fresh system+user message each call.
+_THREAD_STAGES = {"generator", "manager"}
+
+_THREAD_TRIM_AT = 0.70  # start trimming at 70% of context window
+
+
+def _trim_thread(thread: list[dict], context_window: int) -> list[dict]:
+    """Trim oldest non-founding pairs to keep thread under 70% of context window.
+    Always preserves messages[0] (system) and messages[1] (founding user/spec context).
+    """
+    if not context_window or len(thread) <= 2:
+        return thread
+    budget_chars = context_window * 4 * _THREAD_TRIM_AT  # 4 chars ≈ 1 token
+    while len(thread) > 2 and sum(len(m.get("content", "")) for m in thread) > budget_chars:
+        if len(thread) >= 4:
+            thread.pop(2)  # oldest non-founding assistant
+            if len(thread) > 2:
+                thread.pop(2)  # oldest non-founding user (now at index 2)
+        else:
+            break
+    return thread
 
 
 def _auth_headers(harness: dict[str, Any]) -> dict[str, str]:
@@ -281,41 +299,66 @@ async def _call_harness(
     job: dict[str, Any] | None = None,
     stage: str = "",
 ) -> tuple[str, dict[str, int]]:
-    """Returns (text, token_counts). Raises RuntimeError if input overflows context window."""
-    from app.message_builder import overflow_info
-
-    ctx = harness.get("context_window")
-    info = overflow_info(system, user, harness)
-
-    if info["overflows"]:
-        msg = _overflow_message(info, harness)
-        _flog(f"  OVERFLOW: {msg}")
-        if job and stage:
-            append_log(job, stage, f"⚠ {msg}")
-        raise RuntimeError(msg)
-
-    if ctx and info["pct"] >= 70:
-        _flog(f"  ctx usage ~{info['pct']}% before call — approaching limit")
-
-    from app.pipeline_prompts import is_modelfile_pushed, get_pushed_model, reset_modelfile_pushed
+    """Returns (text, token_counts). Raises RuntimeError if input overflows context window.
+    For stages in _THREAD_STAGES, maintains a warm conversation thread in job['threads'][stage].
+    """
+    from app.pipeline_prompts import get_pushed_model, reset_modelfile_pushed
     harness_id = harness.get("_id", "")
     pushed_model = get_pushed_model(harness_id) if harness_id else None
     effective_system = "" if pushed_model else system
     model_override = pushed_model or ""
+    ctx = harness.get("context_window", 0)
+
+    # Build or extend conversation thread
+    use_thread = stage in _THREAD_STAGES and job is not None
+    if use_thread:
+        threads = job.setdefault("threads", {})
+        thread = threads.get(stage)
+        if thread is None:
+            msgs: list[dict] = []
+            if effective_system:
+                msgs.append({"role": "system", "content": effective_system})
+            msgs.append({"role": "user", "content": user})
+            threads[stage] = msgs
+            messages = msgs
+        else:
+            if ctx:
+                thread = _trim_thread(thread, ctx)
+                threads[stage] = thread
+            thread.append({"role": "user", "content": user})
+            messages = thread
+    else:
+        msgs = []
+        if effective_system:
+            msgs.append({"role": "system", "content": effective_system})
+        msgs.append({"role": "user", "content": user})
+        messages = msgs
+
+    # Overflow check on full message set
+    total_chars = sum(len(m.get("content", "")) for m in messages)
+    estimated_tokens = total_chars // 4
+    if ctx and estimated_tokens > int(ctx * 0.9):
+        msg = (f"Input overflow: ~{estimated_tokens} tokens vs {ctx} ctx "
+               f"({int(estimated_tokens/ctx*100)}%) on {harness.get('display_name','?')}")
+        _flog(f"  OVERFLOW: {msg}")
+        if job and stage:
+            append_log(job, stage, f"⚠ {msg}")
+        raise RuntimeError(msg)
+    if ctx and estimated_tokens > int(ctx * 0.70):
+        _flog(f"  ctx usage ~{int(estimated_tokens/ctx*100)}% before call — approaching limit")
 
     endpoint = _resolve_endpoint(harness)
-    payload = _build_payload(harness, effective_system, user, model_override)
+    payload = _build_payload(harness, messages, model_override)
     auth_headers = _auth_headers(harness)
     headers = {"Content-Type": "application/json", **auth_headers}
     fmt = harness.get("request_format", "ollama_chat")
     effective_model = model_override or harness.get("model", "")
 
-    _flog(f"CALL model={effective_model}{' (pushed)' if pushed_model else ''} fmt={fmt}")
+    thread_note = f" [thread:{len(messages)}msgs]" if use_thread else ""
+    _flog(f"CALL model={effective_model}{' (pushed)' if pushed_model else ''} fmt={fmt}{thread_note}")
     _flog(f"  endpoint={endpoint}")
     _flog(f"  auth={'yes ('+harness.get('auth_type')+')' if auth_headers else 'none'}")
-    _flog(f"  payload_keys={list(payload.keys())}")
-    if "messages" in payload:
-        _flog(f"  messages={len(payload['messages'])} total_chars={sum(len(m.get('content','')) for m in payload['messages'])}")
+    _flog(f"  messages={len(messages)} total_chars={total_chars}")
 
     t0 = time.monotonic()
     try:
@@ -323,29 +366,38 @@ async def _call_harness(
             resp = await client.post(endpoint, headers=headers, json=payload)
             elapsed = time.monotonic() - t0
             _flog(f"  response status={resp.status_code} elapsed={elapsed:.1f}s size={len(resp.content)}b")
-            # If the pushed model no longer exists in Ollama, reset and retry with base model
+
+            # Pushed model missing — reset and retry with base model (stateless)
             if resp.status_code in (404, 500) and pushed_model and harness_id:
                 try:
                     err_text = resp.json().get("error", "")
                 except Exception:
                     err_text = resp.text
                 if "not found" in err_text.lower() or resp.status_code == 404:
-                    _flog(f"  pushed model {pushed_model!r} not found — resetting pushed flag, retrying with base model")
+                    _flog(f"  pushed model {pushed_model!r} not found — resetting, retrying with base model")
                     if job and stage:
-                        append_log(job, stage, f"⚠ Pushed model {pushed_model!r} missing from Ollama — resetting to base model {harness.get('model')!r}")
+                        append_log(job, stage, f"⚠ Pushed model {pushed_model!r} missing — resetting to base model {harness.get('model')!r}")
                     reset_modelfile_pushed(harness_id)
-                    base_payload = _build_payload(harness, system, user)
+                    base_msgs: list[dict] = []
+                    if system:
+                        base_msgs.append({"role": "system", "content": system})
+                    base_msgs.append({"role": "user", "content": user})
+                    base_payload = _build_payload(harness, base_msgs)
                     resp2 = await client.post(endpoint, headers=headers, json=base_payload)
                     elapsed = time.monotonic() - t0
                     _flog(f"  retry status={resp2.status_code} elapsed={elapsed:.1f}s size={len(resp2.content)}b")
                     resp2.raise_for_status()
                     result, tokens = _extract(resp2, fmt)
                     _flog(f"  extracted={len(result)} chars (base fallback) preview={result[:120].strip()!r}")
+                    if use_thread and stage in job.get("threads", {}):
+                        job["threads"][stage].append({"role": "assistant", "content": result})
+                        save_job(job)
                     return result, tokens
+
             resp.raise_for_status()
             result, tokens = _extract(resp, fmt)
             _flog(f"  extracted={len(result)} chars tokens=in:{tokens['input']} out:{tokens['output']} preview={result[:120].strip()!r}")
-            # Post-call: warn if actual input usage is high
+
             if ctx and tokens["input"] > 0:
                 actual_pct = int(tokens["input"] / ctx * 100)
                 if actual_pct >= 80:
@@ -353,6 +405,12 @@ async def _call_harness(
                     _flog(f"  WARNING: {warn}")
                     if job and stage:
                         append_log(job, stage, f"⚠ {warn}")
+
+            # Append assistant response to thread
+            if use_thread and stage in job.get("threads", {}):
+                job["threads"][stage].append({"role": "assistant", "content": result})
+                save_job(job)
+
             return result, tokens
     except Exception as exc:
         elapsed = time.monotonic() - t0
@@ -551,40 +609,25 @@ def _parse_blocks_and_tasks(text: str) -> list[dict[str, str]]:
 
 
 def _assemble_yaml_fragments(fragments: list[dict[str, str]]) -> str:
+    """Pure concatenation of card fragments grouped by block.
+    Outputs # Block: headers only — no structure wrapping. Structure is applied by the manager sign-off pass.
     """
-    Assemble card fragments grouped by block into a complete Lovelace YAML.
-    Each fragment dict has keys: block, task, yaml.
-    """
-    import yaml as _yaml
-
     blocks: dict[str, list[str]] = {}
     for f in fragments:
         blocks.setdefault(f["block"], []).append(f["yaml"])
 
-    views = []
+    sections = []
     for block_name, card_yamls in blocks.items():
-        cards = []
-        for raw in card_yamls:
-            try:
-                parsed = _yaml.safe_load(raw)
-                if isinstance(parsed, dict):
-                    cards.append(parsed)
-                elif isinstance(parsed, list):
-                    cards.extend(parsed)
-            except Exception:
-                # Keep raw string as markdown fallback
-                cards.append({"type": "markdown", "content": raw[:200]})
-        views.append({"title": block_name, "cards": cards})
-
-    dashboard = {"title": "Fleet Output", "views": views}
-    return _yaml.dump(dashboard, default_flow_style=False, allow_unicode=True, sort_keys=False)
+        cards = "\n---\n".join(c.strip() for c in card_yamls if c.strip())
+        sections.append(f"# Block: {block_name}\n{cards}")
+    return "\n\n".join(sections)
 
 
 _REVIEW_CHUNK_THRESHOLD = 1200  # chars — above this, review view-by-view
 
 
 def _split_yaml_views(yaml_text: str) -> list[tuple[str, str]]:
-    """Split assembled dashboard YAML into (view_title, view_block) pairs."""
+    """Split dashboard YAML (title+views structure) into (view_title, view_block) pairs."""
     views = []
     current_title = "View"
     current_lines: list[str] = []
@@ -595,7 +638,6 @@ def _split_yaml_views(yaml_text: str) -> list[tuple[str, str]]:
             continue
         if not in_views:
             continue
-        # Detect new view entry — handle 0 or 2 space indent (assembler uses 0)
         m = re.match(r'^\s{0,2}-\s+title:\s*(.+)', line)
         if m:
             if current_lines:
@@ -607,6 +649,25 @@ def _split_yaml_views(yaml_text: str) -> list[tuple[str, str]]:
     if current_lines:
         views.append((current_title, "\n".join(current_lines)))
     return views
+
+
+def _split_by_blocks(text: str) -> list[tuple[str, str]]:
+    """Split assembler output (# Block: headers) into (block_name, content) pairs."""
+    blocks = []
+    current_name = "Main"
+    current_lines: list[str] = []
+    for line in text.splitlines():
+        m = re.match(r'^# Block:\s*(.+)', line)
+        if m:
+            if current_lines:
+                blocks.append((current_name, "\n".join(current_lines).strip()))
+            current_name = m.group(1).strip()
+            current_lines = []
+        else:
+            current_lines.append(line)
+    if current_lines:
+        blocks.append((current_name, "\n".join(current_lines).strip()))
+    return blocks
 
 
 def _domains_in_text(text: str) -> set[str]:
@@ -684,8 +745,7 @@ async def _run_reviewer_3pass(
     roles: dict[str, Any],
     job: dict[str, Any],
 ) -> dict[str, Any]:
-    """3-pass reviewer with view-level chunking: entity IDs → structure → card_mod."""
-    import yaml as _yaml
+    """3-pass reviewer: entity IDs → structure → card_mod. Block-aware chunking, no HA wrapper assumptions."""
     from app.message_builder import chunk_to_fit
 
     harness_id = roles.get("reviewer", {}).get("harness_id", "reviewer")
@@ -693,46 +753,21 @@ async def _run_reviewer_3pass(
     job["stages"]["reviewer"] = {"status": "running"}
     save_job(job)
 
-    _STRUCTURE_RULE = (
-        "CRITICAL STRUCTURE RULE: A Lovelace dashboard root MUST have 'title:' and 'views:' keys. "
-        "NEVER output 'type:', 'cards:', or 'entities:' at root level. "
-        "If the input has correct title+views structure, preserve it exactly."
-    )
-
     def _safe(candidate: str, fallback: str) -> str:
-        if "views:" not in candidate:
+        if not candidate.strip():
             return fallback
-        # Reject truncated output — if candidate is less than 40% of fallback, treat as bad
         if fallback and len(candidate) < len(fallback) * 0.4:
             return fallback
         return candidate
 
-    def _reassemble(chunks: list[str], title: str) -> str:
-        all_views: list = []
-        for chunk in chunks:
-            try:
-                parsed = _yaml.safe_load(chunk)
-                if isinstance(parsed, dict):
-                    all_views.extend(parsed.get("views", []))
-            except Exception:
-                pass
-        if not all_views:
-            return chunks[0] if chunks else ""
-        return _yaml.dump({"title": title, "views": all_views},
-                          default_flow_style=False, allow_unicode=True, sort_keys=False)
+    def _reassemble(chunks: list[str]) -> str:
+        return "\n\n".join(c.strip() for c in chunks if c.strip()) or (chunks[0] if chunks else "")
 
-    def _view_items(yaml_text: str) -> list[str]:
-        views = _split_yaml_views(yaml_text)
-        return [f"  - title: {t}\n{c}" for t, c in views] if views else [yaml_text]
-
-    def _chunk_yaml(batch: list[str], title: str) -> str:
-        return f"title: {title}\nviews:\n" + "\n".join(batch)
-
-    try:
-        _p = _yaml.safe_load(yaml_input)
-        dash_title = _p.get("title", "Dashboard") if isinstance(_p, dict) else "Dashboard"
-    except Exception:
-        dash_title = "Dashboard"
+    def _block_items(text: str) -> list[str]:
+        blocks = _split_by_blocks(text)
+        if blocks:
+            return [f"# Block: {name}\n{content}" for name, content in blocks]
+        return [text]
 
     last_handled = "reviewer"
 
@@ -742,58 +777,50 @@ async def _run_reviewer_3pass(
         f"Spec: {spec}\n\nAvailable Home Assistant entities:\n{entity_list}\n\n"
         "Replace ALL placeholder or incorrect entity IDs with real entity IDs from the list above. "
         "Match by domain and purpose. If unsure, pick the closest available entity. "
-        "Do NOT change card structure, layout, or root dashboard structure. "
-        f"{_STRUCTURE_RULE} "
-        "Output corrected YAML only. No fences. No explanation.\n\nDashboard YAML:\n"
+        "Do NOT change card structure, layout, or overall code structure. "
+        "Output corrected code only. No fences. No explanation.\n\nCode:\n"
     )
-    items1 = _view_items(yaml_input)
+    items1 = _block_items(yaml_input)
     batches1 = chunk_to_fit(items1, harness, fixed_prefix=p1_fixed)
-    append_log(job, "reviewer", f"Pass 1: entity resolution — {len(items1)} views, {len(batches1)} chunk(s)")
+    append_log(job, "reviewer", f"Pass 1: entity resolution — {len(items1)} blocks, {len(batches1)} chunk(s)")
     yaml1 = yaml_input
     try:
         results1: list[str] = []
         for i, batch in enumerate(batches1):
             if len(batches1) > 1:
                 append_log(job, "reviewer", f"Pass 1 chunk {i+1}/{len(batches1)}")
-            prompt = p1_fixed + _chunk_yaml(batch, dash_title)
+            prompt = p1_fixed + "\n".join(batch)
             write_stage_input(job_id, "reviewer", f"[Pass 1 chunk {i+1}/{len(batches1)}]\n{prompt}")
             raw, last_handled, tok = await _call_with_fallback("reviewer", harness, persona, prompt, roles, job)
             _accum_tokens(job, "reviewer", tok)
             results1.append(_strip_all_fences(_strip_fences(raw)))
-        c1 = _reassemble(results1, dash_title) if len(results1) > 1 else (results1[0] if results1 else yaml_input)
+        c1 = _reassemble(results1) if len(results1) > 1 else (results1[0] if results1 else yaml_input)
         yaml1 = _safe(c1, yaml_input)
-        if "views:" not in c1:
-            append_log(job, "reviewer", "Pass 1 dropped views: — keeping input")
         append_log(job, "reviewer", f"Pass 1 done — {len(yaml1)} chars, model={harness.get('display_name', harness_id)}")
     except Exception as exc:
         append_log(job, "reviewer", f"Pass 1 failed: {exc} — using input")
 
-    # ── Pass 2 — Container / structure ─────────────────────────────────────
+    # ── Pass 2 — Structure / nesting ────────────────────────────────────────
     p2_fixed = (
-        "Review this Home Assistant Lovelace dashboard YAML for container and assembly issues.\n"
-        "Check: valid card types (sensor/entities/gauge/weather-forecast/history-graph/button/markdown/grid/vertical-stack), "
-        "correct nesting (entities card uses list under 'entities:' key, not 'entity:'), "
-        "no extra/invalid fields, proper view → cards hierarchy. "
-        f"{_STRUCTURE_RULE} "
-        "Fix all issues. Output corrected YAML only. No fences. No explanation.\n\nDashboard YAML:\n"
+        "Review this code for structural and assembly issues.\n"
+        "Check: valid types, correct nesting and key names, no extra/invalid fields, proper hierarchy. "
+        "Fix all issues. Output corrected code only. No fences. No explanation.\n\nCode:\n"
     )
-    items2 = _view_items(yaml1)
+    items2 = _block_items(yaml1)
     batches2 = chunk_to_fit(items2, harness, fixed_prefix=p2_fixed)
-    append_log(job, "reviewer", f"Pass 2: structure — {len(items2)} views, {len(batches2)} chunk(s)")
+    append_log(job, "reviewer", f"Pass 2: structure — {len(items2)} blocks, {len(batches2)} chunk(s)")
     yaml2 = yaml1
     try:
         results2: list[str] = []
         for i, batch in enumerate(batches2):
             if len(batches2) > 1:
                 append_log(job, "reviewer", f"Pass 2 chunk {i+1}/{len(batches2)}")
-            prompt = p2_fixed + _chunk_yaml(batch, dash_title)
+            prompt = p2_fixed + "\n".join(batch)
             raw, last_handled, tok = await _call_with_fallback("reviewer", harness, persona, prompt, roles, job)
             _accum_tokens(job, "reviewer", tok)
             results2.append(_strip_all_fences(_strip_fences(raw)))
-        c2 = _reassemble(results2, dash_title) if len(results2) > 1 else (results2[0] if results2 else yaml1)
+        c2 = _reassemble(results2) if len(results2) > 1 else (results2[0] if results2 else yaml1)
         yaml2 = _safe(c2, yaml1)
-        if "views:" not in c2:
-            append_log(job, "reviewer", "Pass 2 dropped views: — keeping pass 1")
         append_log(job, "reviewer", f"Pass 2 done — {len(yaml2)} chars, model={harness.get('display_name', harness_id)}")
     except Exception as exc:
         append_log(job, "reviewer", f"Pass 2 failed: {exc} — using pass 1")
@@ -804,29 +831,25 @@ async def _run_reviewer_3pass(
         append_log(job, "reviewer", "Pass 3: no card_mod — skipping")
     else:
         p3_fixed = (
-            "Review this Home Assistant Lovelace dashboard YAML for card_mod and style issues.\n"
-            "Check: card_mod sections have valid CSS syntax, style targets correct elements (card, :host, ha-card), "
-            "no invalid card_mod fields, all style blocks properly indented under card_mod. "
-            "If no card_mod sections present, output YAML unchanged. "
-            f"{_STRUCTURE_RULE} "
-            "Fix all issues. Output corrected YAML only. No fences. No explanation.\n\nDashboard YAML:\n"
+            "Review this code for card_mod and style issues.\n"
+            "Check: valid CSS syntax, correct style targets, no invalid fields, proper indentation. "
+            "If no card_mod sections present, output code unchanged. "
+            "Fix all issues. Output corrected code only. No fences. No explanation.\n\nCode:\n"
         )
-        items3 = _view_items(yaml2)
+        items3 = _block_items(yaml2)
         batches3 = chunk_to_fit(items3, harness, fixed_prefix=p3_fixed)
-        append_log(job, "reviewer", f"Pass 3: card_mod — {len(items3)} views, {len(batches3)} chunk(s)")
+        append_log(job, "reviewer", f"Pass 3: card_mod — {len(items3)} blocks, {len(batches3)} chunk(s)")
         try:
             results3: list[str] = []
             for i, batch in enumerate(batches3):
                 if len(batches3) > 1:
                     append_log(job, "reviewer", f"Pass 3 chunk {i+1}/{len(batches3)}")
-                prompt = p3_fixed + _chunk_yaml(batch, dash_title)
+                prompt = p3_fixed + "\n".join(batch)
                 raw, last_handled, tok = await _call_with_fallback("reviewer", harness, persona, prompt, roles, job)
                 _accum_tokens(job, "reviewer", tok)
                 results3.append(_strip_all_fences(_strip_fences(raw)))
-            c3 = _reassemble(results3, dash_title) if len(results3) > 1 else (results3[0] if results3 else yaml2)
+            c3 = _reassemble(results3) if len(results3) > 1 else (results3[0] if results3 else yaml2)
             yaml3 = _safe(c3, yaml2)
-            if "views:" not in c3:
-                append_log(job, "reviewer", "Pass 3 dropped views: — keeping pass 2")
             append_log(job, "reviewer", f"Pass 3 done — {len(yaml3)} chars, model={harness.get('display_name', harness_id)}")
         except Exception as exc:
             append_log(job, "reviewer", f"Pass 3 failed: {exc} — using pass 2")
@@ -928,11 +951,8 @@ async def _run_python_assembler(job_id: str, job: dict[str, Any]) -> dict[str, A
     save_job(job)
     try:
         prev = read_stage_output(job_id, "generator") or ""
-        if "views:" in prev:
-            result = prev
-        else:
-            fragments = _parse_fragments_text(prev)
-            result = _assemble_yaml_fragments(fragments)
+        fragments = _parse_fragments_text(prev)
+        result = _assemble_yaml_fragments(fragments)
         write_stage_output(job_id, "assembler", result)
         job["stages"]["assembler"] = {"status": "done", "preview": result[:400], "handled_by": "python"}
         append_log(job, "assembler", f"Done — {len(result)} chars")
@@ -977,12 +997,14 @@ async def run_stage(job_id: str, stage: str) -> dict[str, Any]:
             f"Address all rejection remarks in your output."
         )
 
-    # Each stage reads from its predecessor
+    # Each stage reads from its predecessor.
+    # reviewer reads from manager when manager ran a sign-off (second pass), else from assembler.
+    reviewer_prev = "manager" if read_stage_output(job_id, "manager") else "assembler"
     prev_stages = {
-        "manager":   "project_manager",
-        "generator": "manager",
-        "assembler": "generator",
-        "reviewer":  "assembler",
+        "manager":    "project_manager",
+        "generator":  "manager",
+        "assembler":  "generator",
+        "reviewer":   reviewer_prev,
         "supervisor": "reviewer",
     }
     prev = read_stage_output(job_id, prev_stages.get(stage, "")) if stage in prev_stages else None
@@ -1060,7 +1082,16 @@ async def run_stage(job_id: str, stage: str) -> dict[str, Any]:
 
 
 async def _run_generator_loop(job_id: str, roles: dict[str, Any], job: dict[str, Any]) -> dict[str, Any]:
-    """Run generator once per task from manager's block/task breakdown, then assemble."""
+    """Run generator once per task from manager's block/task breakdown, then assemble.
+
+    # THREAD DESIGN NOTE (2026-05-14):
+    # Generator keeps one warm conversation thread across all tasks in a job for consistency
+    # (same card style, entity naming, YAML structure throughout). Founding context (spec +
+    # manager task list) is anchored at top; oldest task pairs are trimmed if context_window
+    # is approached. Thread clears at job end. This assumption holds while jobs stay within
+    # a single model's context budget — revisit if large jobs or small-window models cause
+    # context bleed between blocks.
+    """
     manager_output = read_stage_output(job_id, "manager")
     task_list = _parse_blocks_and_tasks(manager_output) if manager_output else []
 
@@ -1165,6 +1196,72 @@ def _parse_subjobs(output: str) -> list[str]:
     return specs
 
 
+async def _run_manager_signoff(job_id: str, roles: dict[str, Any], job: dict[str, Any]) -> dict[str, Any]:
+    """Second manager pass: receives assembled fragments on its existing warm thread,
+    applies job-type-correct structure, and signs off the output for the reviewer.
+    Manager's thread already holds the spec + task breakdown from the first pass.
+    """
+    assembled = read_stage_output(job_id, "assembler") or ""
+    if not assembled.strip():
+        return {"ok": False, "error": "No assembler output to sign off"}
+
+    assignment = roles.get("manager", {})
+    harness_id = assignment.get("harness_id")
+    harness = get_harness(harness_id) if harness_id else None
+    if not harness:
+        return {"ok": False, "error": "No model assigned to role: manager"}
+
+    persona = ROLE_META.get("manager", {}).get("persona", "You are a helpful AI assistant.")
+    persona = persona.split(".")[0] + "."
+    spec = job.get("spec", "")
+    job_type = job.get("type", "")
+
+    if job_type == "ha_dashboard":
+        signoff_msg = (
+            "Generator has completed all tasks. Here are the assembled card fragments:\n\n"
+            f"{assembled}\n\n"
+            "Apply the correct Home Assistant Lovelace dashboard structure:\n"
+            "title: \"Fleet Output\"\n"
+            "views:\n"
+            "  - title: [block name]\n"
+            "    cards:\n"
+            "      - [card yaml]\n\n"
+            "Each # Block becomes one view. Cards within a block go under that view's cards list. "
+            "Output the final structured YAML only. No fences. No explanation."
+        )
+    else:
+        signoff_msg = (
+            "Generator has completed all tasks. Here are the assembled fragments:\n\n"
+            f"{assembled}\n\n"
+            f"Apply the correct output structure for job type '{job_type}' per the original spec. "
+            "Output the final structured result only. No fences. No explanation."
+        )
+
+    append_log(job, "manager", "Sign-off pass — structuring assembled fragments")
+    job["stages"]["manager"] = {"status": "running"}
+    save_job(job)
+
+    try:
+        raw, handled_by, tok = await _call_with_fallback("manager", harness, persona, signoff_msg, roles, job)
+        _accum_tokens(job, "manager", tok)
+        output = _strip_all_fences(_strip_fences(raw))
+        write_stage_output(job_id, "manager", output)
+        note = f" (handled by {handled_by})" if handled_by != "manager" else ""
+        job["stages"]["manager"] = {
+            "status": "done", "preview": output[:400], "handled_by": handled_by,
+            "model_name": harness.get("display_name", harness_id),
+            "ctx_window": harness.get("context_window"),
+        }
+        append_log(job, "manager", f"Sign-off done — {len(output)} chars{note}")
+        save_job(job)
+        return {"ok": True, "stage": "manager", "output": output, "handled_by": handled_by}
+    except Exception as exc:
+        job["stages"]["manager"] = {"status": "error", "error": str(exc)}
+        append_log(job, "manager", f"Sign-off ERROR: {exc}")
+        save_job(job)
+        return {"ok": False, "error": str(exc)}
+
+
 async def run_pipeline(job_id: str) -> None:
     job = load_job(job_id)
     if not job:
@@ -1193,8 +1290,12 @@ async def _run_pipeline_inner(job_id: str) -> None:
     roles = load_roles()
     pipeline = job.get("pipeline", ["generator"])
     prev_output: str | None = None
+    stage_run_counts: dict[str, int] = {}
 
     for stage in pipeline:
+        stage_run_counts[stage] = stage_run_counts.get(stage, 0) + 1
+        current_run = stage_run_counts[stage]
+
         if is_cancelled(job_id):
             job = load_job(job_id)
             job["status"] = "cancelled"
@@ -1205,14 +1306,16 @@ async def _run_pipeline_inner(job_id: str) -> None:
             result = await _run_generator_loop(job_id, roles, job)
         elif stage == "assembler" and "generator" in pipeline and "manager" in pipeline:
             # Assembler is run inside _run_generator_loop — skip the standalone stage call.
-            # Just read what the generator loop already wrote and continue.
             job = load_job(job_id)
             if job.get("stages", {}).get("assembler", {}).get("status") == "done":
                 assembler_out = read_stage_output(job_id, "assembler")
                 prev_output = assembler_out or prev_output
                 continue
-            # Assembler wasn't run (e.g., single-task fallback skipped it) — run it now
             result = await run_stage(job_id, stage)
+        elif stage == "manager" and current_run == 2:
+            # Second manager pass — sign-off: applies structure to assembled fragments
+            job = load_job(job_id)
+            result = await _run_manager_signoff(job_id, roles, job)
         else:
             result = await run_stage(job_id, stage)
         if not result["ok"]:
@@ -1279,7 +1382,10 @@ async def _run_pipeline_inner(job_id: str) -> None:
                 rerun_from_stage(job_id, target)
                 _flog(f"  REJECTED_AT={target} — re-running from {target}")
                 start_idx = pipeline.index(target)
+                rerun_counts: dict[str, int] = {}
                 for rerun_stage in pipeline[start_idx:]:
+                    rerun_counts[rerun_stage] = rerun_counts.get(rerun_stage, 0) + 1
+                    rerun_run = rerun_counts[rerun_stage]
                     if is_cancelled(job_id):
                         return
                     if rerun_stage == "generator" and "manager" in pipeline:
@@ -1289,6 +1395,8 @@ async def _run_pipeline_inner(job_id: str) -> None:
                         if rjob.get("stages", {}).get("assembler", {}).get("status") == "done":
                             continue
                         r = await run_stage(job_id, rerun_stage)
+                    elif rerun_stage == "manager" and rerun_run == 2:
+                        r = await _run_manager_signoff(job_id, roles, load_job(job_id))
                     else:
                         r = await run_stage(job_id, rerun_stage)
                     if not r["ok"]:
