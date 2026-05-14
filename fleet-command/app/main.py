@@ -2954,26 +2954,24 @@ function renderFleetDetail(j) {{
 
       ${{blockRows ? `<div class="section-title" style="font-size:0.65rem;margin:0.65rem 0 0.3rem">Blocks &amp; Tasks</div><div class="fblock-list">${{blockRows}}</div>` : ""}}
 
-      ${{(j.message_log && j.message_log.length) ? `
-        <div class="section-title" style="font-size:0.65rem;margin:0.65rem 0 0.3rem">Communications</div>
-        <div style="display:flex;flex-direction:column;gap:0.2rem;margin-bottom:0.4rem">
-          ${{j.message_log.map(m => {{
+      ${{(j.message_log && j.message_log.length) ? (
+        "<div class=\\"section-title\\" style=\\"font-size:0.65rem;margin:0.65rem 0 0.3rem\\">Communications</div>" +
+        "<div style=\\"display:flex;flex-direction:column;gap:0.2rem;margin-bottom:0.4rem\\">" +
+        j.message_log.map(m => {{
             const isComm = m.type === "comm";
             const bg = isComm ? "#1a0f2e" : "#0f1a2e";
             const border = isComm ? "#7c3aed" : "#1e3a5f";
-            const icon = isComm ? "📡" : "📦";
-            const label = isComm ? `<span style="color:#a78bfa;font-weight:600;font-size:0.62rem">[COMM]</span>` : `<span style="color:#60a5fa;font-size:0.62rem">[CODE]</span>`;
-            return `<div style="background:${{bg}};border:1px solid ${{border}};border-radius:4px;padding:0.3rem 0.5rem;font-size:0.65rem">
-              <div style="display:flex;align-items:center;gap:0.4rem;margin-bottom:${{isComm?"0.2rem":"0"}}">
-                <span>${{icon}}</span>
-                ${{label}}
-                <span style="color:#64748b">${{m.sender||"?"}} → ${{m.recipient||"?"}}</span>
-                <span style="color:#334155;margin-left:auto;font-size:0.6rem">${{m.ts?.slice(11,19)||""}}</span>
-              </div>
-              ${{isComm ? `<div style="color:#c4b5fd;word-break:break-word">${{m.content}}</div>` : ""}}
-            </div>`;
-          }}).join("")}}
-        </div>` : ""}}
+            const label = isComm ? "<span style=\\"color:#a78bfa;font-weight:600;font-size:0.62rem\\">[COMM]</span>" : "<span style=\\"color:#60a5fa;font-size:0.62rem\\">[CODE]</span>";
+            const content = isComm ? "<div style=\\"color:#c4b5fd;word-break:break-word\\">" + (m.content||"") + "</div>" : "";
+            return "<div style=\\"background:" + bg + ";border:1px solid " + border + ";border-radius:4px;padding:0.3rem 0.5rem;font-size:0.65rem\\">" +
+              "<div style=\\"display:flex;align-items:center;gap:0.4rem;margin-bottom:" + (isComm?"0.2rem":"0") + "\\">" +
+              label +
+              "<span style=\\"color:#64748b\\">" + (m.sender||"?") + " → " + (m.recipient||"?") + "</span>" +
+              "<span style=\\"color:#334155;margin-left:auto;font-size:0.6rem\\">" + ((m.ts||"").slice(11,19)) + "</span>" +
+              "</div>" + content + "</div>";
+        }}).join("") +
+        "</div>"
+      ) : ""}}
 
       <style>@keyframes _pulse{{0%,100%{{opacity:1}}50%{{opacity:0.25}}}}</style>
       <div class="section-title" style="font-size:0.65rem;margin:0.65rem 0 0.15rem">Activity${{isActive?" · live":""}}</div>
