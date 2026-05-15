@@ -1060,6 +1060,8 @@ def _dashboard_html(root: str) -> str:  # noqa: C901
       grid-row: 1;
       padding: 0 1rem;
       overflow-y: auto;
+      display: flex;
+      flex-direction: column;
     }}
     .fleet-right {{ display: none; }}
     .fleet-status-card {{
@@ -1105,6 +1107,11 @@ def _dashboard_html(root: str) -> str:  # noqa: C901
       border-radius: 10px;
       padding: 1rem;
       cursor: pointer;
+      flex: 1;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      overflow-x: hidden;
     }}
     .fleet-detail-card:hover {{ border-color: #4a5568; }}
     .fdetail-spec {{ font-size: 0.82rem; color: #94a3b8; margin: 0.3rem 0 0.5rem; line-height: 1.5; }}
@@ -1134,7 +1141,7 @@ def _dashboard_html(root: str) -> str:  # noqa: C901
     .flog-mini {{
       font-family: monospace; font-size: 0.68rem; color: #475569;
       background: #0f1117; border-radius: 5px; padding: 0.5rem;
-      max-height: 100px; overflow-y: auto; margin-top: 0.5rem; line-height: 1.6;
+      flex: 1; min-height: 80px; overflow-y: auto; margin-top: 0.5rem; line-height: 1.6;
     }}
     .fstat-top-row {{
       display: flex; gap: 0.3rem; margin-bottom: 0.5rem;
@@ -3087,7 +3094,7 @@ function renderFleetDetail(j) {{
 
   // ── Inline pipeline SVG ──────────────────────────────────────────────────
   const EDGE_LABEL = {{ manager:"plan", generator:"brief", reviewer:"YAML", supervisor:"reviewed", advisor:"escalation" }};
-  const containerW = (center.clientWidth || 700) - 32;
+  const containerW = (center.clientWidth || 700) - 50;
   const n = pipeline.length;
   const padX = 8, gapX = Math.max(16, Math.min(40, Math.floor(containerW * 0.04)));
   const nodeW = Math.floor((containerW - padX * 2 - (n - 1) * gapX) / n);
