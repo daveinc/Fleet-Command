@@ -899,258 +899,8 @@ def _domains_in_text(text: str) -> set[str]:
     }
 
 
-async def _fetch_ha_entities(spec: str, yaml_input: str = "", token_budget: int | None = None) -> str:
-    """Fetch dashboard-relevant entities from HA Supervisor API."""
-    import os
-    DASHBOARD_DOMAINS = {
-        "sensor", "binary_sensor", "switch", "light", "media_player",
-        "weather", "climate", "camera", "automation", "script",
-        "input_boolean", "input_number", "input_select", "input_text",
-        "input_datetime", "person", "device_tracker", "cover",
-        "fan", "vacuum", "water_heater", "alarm_control_panel",
-    }
-    requested_domains = (_domains_in_text(yaml_input) | _domains_in_text(spec)) & DASHBOARD_DOMAINS
-    token = os.environ.get("SUPERVISOR_TOKEN", "")
-    if not token:
-        return "(HA entity list unavailable — no SUPERVISOR_TOKEN)"
-    try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.get(
-                "http://supervisor/core/api/states",
-                headers={"Authorization": f"Bearer {token}"},
-            )
-            resp.raise_for_status()
-            states = resp.json()
-        prioritized: list[str] = []
-        fallback: list[str] = []
-        for s in states:
-            eid = s.get("entity_id", "")
-            domain = eid.split(".")[0] if "." in eid else ""
-            if domain not in DASHBOARD_DOMAINS:
-                continue
-            state = s.get("state", "")
-            attrs = s.get("attributes", {})
-            friendly = attrs.get("friendly_name", "")
-            label = eid
-            if friendly and friendly.lower() != eid.replace("_", " ").lower():
-                label += f" ({friendly})"
-            label += f" — {state}"
-            if not requested_domains or domain in requested_domains:
-                prioritized.append(label)
-            else:
-                fallback.append(label)
-        lines = prioritized or fallback
-        if token_budget is not None:
-            token_budget = max(0, token_budget)
-            used = 0
-            trimmed = []
-            for line in lines:
-                line_tokens = _estimate_input_tokens("", line + "\n")
-                if used + line_tokens > token_budget:
-                    break
-                trimmed.append(line)
-                used += line_tokens
-            if len(trimmed) < len(lines):
-                trimmed.append(f"... ({len(trimmed)} shown, trimmed to fit reviewer context budget)")
-            lines = trimmed
-        return "\n".join(lines) if lines else "(no relevant entities found)"
-    except Exception as exc:
-        return f"(entity fetch failed: {exc})"
 
 
-async def _run_reviewer_3pass(
-    job_id: str,
-    harness: dict[str, Any],
-    persona: str,
-    spec: str,
-    yaml_input: str,
-    roles: dict[str, Any],
-    job: dict[str, Any],
-) -> dict[str, Any]:
-    """4-pass reviewer: entity IDs → HA structure wrap → structure/nesting → card_mod."""
-    from app.message_builder import chunk_to_fit
-
-    harness_id = roles.get("reviewer", {}).get("harness_id", "reviewer")
-    job_type = job.get("type", "")
-    append_log(job, "reviewer", "Starting 4-pass review...")
-    job["stages"]["reviewer"] = {"status": "running"}
-    save_job(job)
-
-    def _safe(candidate: str, fallback: str) -> str:
-        if not candidate.strip():
-            return fallback
-        if fallback and len(candidate) < len(fallback) * 0.4:
-            return fallback
-        return candidate
-
-    def _reassemble(chunks: list[str]) -> str:
-        return "\n\n".join(c.strip() for c in chunks if c.strip()) or (chunks[0] if chunks else "")
-
-    def _block_items(text: str) -> list[str]:
-        blocks = _split_by_blocks(text)
-        if blocks:
-            return [f"# Block: {name}\n{content}" for name, content in blocks]
-        return [text]
-
-    last_handled = "reviewer"
-
-    # ── Pass 1 — Entity ID resolution ──────────────────────────────────────
-    # Camouflage "# Block:" headers so the model doesn't enter planning mode.
-    # The literal string "# Block:" triggers gemma-family models to output task lists.
-    _P1_MARKER = "# yaml_block:"
-    p1_yaml_input = yaml_input.replace("# Block:", _P1_MARKER)
-    entity_list = await _fetch_ha_entities(spec, yaml_input=yaml_input, token_budget=None)
-    p1_fixed = (
-        f"Spec: {spec}\n\nAvailable Home Assistant entities:\n{entity_list}\n\n"
-        "Your input below is YAML code with section markers (lines starting with # yaml_block:). "
-        "Replace ALL placeholder or incorrect entity IDs with real entity IDs from the list above. "
-        "Match by domain and purpose. If unsure, pick the closest available entity. "
-        "Do NOT change card structure, layout, field names, section markers, or any code outside of entity ID values. "
-        "Output the corrected YAML only — preserve all # yaml_block: lines exactly as they appear in the input. "
-        "No fences. No explanation.\n\nCode:\n"
-    )
-    items1 = [p1_yaml_input]
-    batches1 = chunk_to_fit(items1, harness, fixed_prefix=p1_fixed)
-    append_log(job, "reviewer", f"Pass 1: entity resolution — {len(items1)} blocks, {len(batches1)} chunk(s)")
-    yaml1 = yaml_input
-    try:
-        results1: list[str] = []
-        for i, batch in enumerate(batches1):
-            if len(batches1) > 1:
-                append_log(job, "reviewer", f"Pass 1 chunk {i+1}/{len(batches1)}")
-            prompt = p1_fixed + "\n".join(batch)
-            write_stage_input(job_id, "reviewer", f"[Pass 1 chunk {i+1}/{len(batches1)}]\n{prompt}")
-            raw, last_handled, tok = await _call_with_fallback("reviewer", harness, persona, prompt, roles, job)
-            _accum_tokens(job, "reviewer", tok)
-            results1.append(_strip_all_fences(_strip_fences(raw)))
-        c1 = _reassemble(results1) if len(results1) > 1 else (results1[0] if results1 else p1_yaml_input)
-        # Restore # Block: headers from camouflaged markers
-        c1_restored = c1.replace(_P1_MARKER, "# Block:")
-        # If model stripped the markers entirely, fall back to re-injecting them from original
-        if "# Block:" not in c1_restored and "# Block:" in yaml_input:
-            append_log(job, "reviewer", "Pass 1: block headers stripped by model — re-injecting from original")
-            original_blocks = _split_by_blocks(yaml_input)
-            resolved_blocks = _split_by_blocks(c1_restored) if _split_by_blocks(c1_restored) else None
-            if original_blocks and resolved_blocks and len(original_blocks) == len(resolved_blocks):
-                c1_restored = "\n\n".join(f"# Block: {name}\n{content}" for name, (_, content) in zip(
-                    [n for n, _ in original_blocks], resolved_blocks))
-            else:
-                c1_restored = "\n\n".join(f"# Block: {name}\n{content}" for name, content in original_blocks)
-                c1_restored = c1_restored  # keep original structure, entity IDs unchanged
-        yaml1 = _safe(c1_restored, yaml_input)
-        append_log(job, "reviewer", f"Pass 1 done — {len(yaml1)} chars, model={harness.get('display_name', harness_id)}")
-    except Exception as exc:
-        append_log(job, "reviewer", f"Pass 1 failed: {exc} — using input")
-
-    # ── Pass 2 — HA structure wrap (ha_dashboard only, skipped if already structured) ──
-    yaml2 = yaml1
-    has_blocks = bool(re.search(r'^# Block:', yaml1, re.MULTILINE))
-    if job_type != "ha_dashboard" or not has_blocks:
-        append_log(job, "reviewer", "Pass 2: structure wrap — skipping (already structured or non-HA type)")
-    else:
-        p2_fixed = (
-            "Apply the correct Home Assistant Lovelace dashboard structure to these block fragments.\n"
-            "Convert each # Block: section into a view:\n"
-            "title: \"Fleet Output\"\n"
-            "views:\n"
-            "  - title: [block name]\n"
-            "    cards:\n"
-            "      - [cards from that block]\n\n"
-            "If the input already has title:/views: structure, output it unchanged.\n"
-            "Output complete structured YAML only. No fences. No explanation.\n\nCode:\n"
-        )
-        items2 = _block_items(yaml1)
-        batches2 = chunk_to_fit(items2, harness, fixed_prefix=p2_fixed)
-        append_log(job, "reviewer", f"Pass 2: HA structure wrap — {len(items2)} blocks, {len(batches2)} chunk(s)")
-        try:
-            results2: list[str] = []
-            total2 = len(batches2)
-            for i, batch in enumerate(batches2):
-                if total2 > 1:
-                    append_log(job, "reviewer", f"Pass 2 chunk {i+1}/{total2}")
-                chunk_prefix = f"[COMM] pipeline → chunk {i+1}/{total2} — structure only these blocks as views, output only this chunk's YAML\n\n" if total2 > 1 else ""
-                prompt = chunk_prefix + p2_fixed + "\n".join(batch)
-                raw, last_handled, tok = await _call_with_fallback("reviewer", harness, persona, prompt, roles, job)
-                _accum_tokens(job, "reviewer", tok)
-                results2.append(_strip_all_fences(_strip_fences(raw)))
-            c2 = _combine_ha_view_chunks(results2) if total2 > 1 else (results2[0] if results2 else yaml1)
-            yaml2 = _safe(c2, yaml1)
-            append_log(job, "reviewer", f"Pass 2 done — {len(yaml2)} chars")
-        except Exception as exc:
-            append_log(job, "reviewer", f"Pass 2 failed: {exc} — using pass 1")
-
-    # ── Pass 3 — Structure / nesting ────────────────────────────────────────
-    p3_fixed = (
-        "Review this code for structural and assembly issues.\n"
-        "Check: valid types, correct nesting and key names, no extra/invalid fields, proper hierarchy. "
-        "Fix all issues. Output corrected code only. No fences. No explanation.\n\nCode:\n"
-    )
-    items3 = _block_items(yaml2)
-    batches3 = chunk_to_fit(items3, harness, fixed_prefix=p3_fixed)
-    append_log(job, "reviewer", f"Pass 3: structure — {len(items3)} blocks, {len(batches3)} chunk(s)")
-    yaml3 = yaml2
-    try:
-        results3: list[str] = []
-        for i, batch in enumerate(batches3):
-            if len(batches3) > 1:
-                append_log(job, "reviewer", f"Pass 3 chunk {i+1}/{len(batches3)}")
-            prompt = p3_fixed + "\n".join(batch)
-            raw, last_handled, tok = await _call_with_fallback("reviewer", harness, persona, prompt, roles, job)
-            _accum_tokens(job, "reviewer", tok)
-            results3.append(_strip_all_fences(_strip_fences(raw)))
-        c3 = _reassemble(results3) if len(results3) > 1 else (results3[0] if results3 else yaml2)
-        yaml3 = _safe(c3, yaml2)
-        append_log(job, "reviewer", f"Pass 3 done — {len(yaml3)} chars, model={harness.get('display_name', harness_id)}")
-    except Exception as exc:
-        append_log(job, "reviewer", f"Pass 3 failed: {exc} — using pass 2")
-
-    # ── Pass 4 — card_mod / styles (conditional) ───────────────────────────
-    yaml4 = yaml3
-    if "card_mod" not in yaml3 and "card_mod" not in spec.lower():
-        append_log(job, "reviewer", "Pass 4: no card_mod — skipping")
-    else:
-        p4_fixed = (
-            "Review this code for card_mod and style issues.\n"
-            "Check: valid CSS syntax, correct style targets, no invalid fields, proper indentation. "
-            "If no card_mod sections present, output code unchanged. "
-            "Fix all issues. Output corrected code only. No fences. No explanation.\n\nCode:\n"
-        )
-        items4 = _block_items(yaml3)
-        batches4 = chunk_to_fit(items4, harness, fixed_prefix=p4_fixed)
-        append_log(job, "reviewer", f"Pass 4: card_mod — {len(items4)} blocks, {len(batches4)} chunk(s)")
-        try:
-            results4: list[str] = []
-            for i, batch in enumerate(batches4):
-                if len(batches4) > 1:
-                    append_log(job, "reviewer", f"Pass 4 chunk {i+1}/{len(batches4)}")
-                prompt = p4_fixed + "\n".join(batch)
-                raw, last_handled, tok = await _call_with_fallback("reviewer", harness, persona, prompt, roles, job)
-                _accum_tokens(job, "reviewer", tok)
-                results4.append(_strip_all_fences(_strip_fences(raw)))
-            c4 = _reassemble(results4) if len(results4) > 1 else (results4[0] if results4 else yaml3)
-            yaml4 = _safe(c4, yaml3)
-            append_log(job, "reviewer", f"Pass 4 done — {len(yaml4)} chars, model={harness.get('display_name', harness_id)}")
-        except Exception as exc:
-            append_log(job, "reviewer", f"Pass 4 failed: {exc} — using pass 3")
-
-    if not yaml4.strip():
-        yaml4 = yaml_input
-
-    write_stage_output(job_id, "reviewer", yaml4)
-    note = f" (handled by {last_handled})" if last_handled != "reviewer" else ""
-    stage_data: dict = {
-        "status": "done",
-        "preview": yaml4[:400],
-        "handled_by": last_handled,
-        "model_name": harness.get("display_name", harness_id),
-        "ctx_window": harness.get("context_window"),
-    }
-    if job.get("stages", {}).get("reviewer", {}).get("tokens"):
-        stage_data["tokens"] = job["stages"]["reviewer"]["tokens"]
-    job["stages"]["reviewer"] = stage_data
-    append_log(job, "reviewer", f"4-pass review complete — {len(yaml4)} chars{note}")
-    save_job(job)
-    return {"ok": True, "stage": "reviewer", "output": yaml4, "handled_by": last_handled}
 
 
 async def _handle_escalation(
@@ -1296,12 +1046,20 @@ async def run_stage(job_id: str, stage: str) -> dict[str, Any]:
     save_job(job)
 
     try:
-        if stage == "reviewer":
-            return await _run_reviewer_3pass(job_id, harness, persona, spec, prev or "", roles, job)
-
         raw, handled_by, tok = await _call_with_fallback(stage, harness, persona, user, roles, job)
         _accum_tokens(job, stage, tok)
         output = _strip_all_fences(_strip_fences(raw))
+
+        # Reviewer abort — input was not code
+        if stage == "reviewer" and output.lstrip().startswith("REVIEW_ABORT:"):
+            msg = output.strip().splitlines()[0]
+            append_log(job, stage, f"ABORT: {msg}")
+            job["stages"][stage] = {"status": "failed", "preview": msg,
+                                    "model_name": harness.get("display_name", harness_id)}
+            job["status"] = STATUS_FAILED
+            job["error"] = msg
+            save_job(job)
+            return {"ok": False, "stage": stage, "error": "review_abort", "output": ""}
 
         # Escalation: worker signals it cannot complete, or returned empty output
         from app.pipeline_rules import is_worker_signal, is_trigger_enabled

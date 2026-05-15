@@ -57,12 +57,7 @@ DEFAULT_PROMPTS: dict[str, str] = {
     ),
     "reviewer": (
         "Spec: {spec}\n\n"
-        "Output to review:\n{prev}\n\n"
-        "Review the output against the spec and any references. Fix small issues directly.\n"
-        "If you need clarification on structure or intent, send [COMM] to:manager before proceeding.\n"
-        "Return your result as two separate messages:\n"
-        "Message 1: [COMM] to:manager — review: [passed/fixed/failed] — [what was checked, what was fixed, or why it failed]\n"
-        "Message 2: corrected output only — no explanation, no fences"
+        "Output to review:\n{prev}"
     ),
     "supervisor": (
         "Job specification:\n{spec}\n\n"
@@ -392,21 +387,32 @@ _ROLE_MESSAGES_MINIMAL_YAML: dict[str, list[tuple[str, str]]] = {
         ),
     ],
     "reviewer": [
+        # Passed — no issues
         (
             "user",
-            "Spec: [job description]\n\nOutput to review:\n*assembled output here*",
+            "Spec: [job description]\n\nOutput to review:\ntype: grid\ncards:\n  - type: sensor\n    entity: sensor.temperature",
         ),
         (
             "assistant",
-            "[COMM] to:manager — review: [passed/fixed/failed] — [notes]",
+            "REVIEW: passed — structure valid, entities present\n---\ntype: grid\ncards:\n  - type: sensor\n    entity: sensor.temperature",
         ),
+        # Failed — issues found, code copied unchanged
         (
             "user",
-            "[COMM] pipeline → send output",
+            "Spec: [job description]\n\nOutput to review:\ntype: grid\ncards:\n  - type: sensor\n    entity: sensor.PLACEHOLDER_TEMP",
         ),
         (
             "assistant",
-            "*reviewed output here*",
+            "REVIEW: failed — placeholder entity IDs present (sensor.PLACEHOLDER_TEMP), not resolved\n---\ntype: grid\ncards:\n  - type: sensor\n    entity: sensor.PLACEHOLDER_TEMP",
+        ),
+        # Input is task descriptions, not code
+        (
+            "user",
+            "Spec: [job description]\n\nOutput to review:\nBLOCK 1: Layout\n- Task 1: Create grid card\n- Task 2: Add entity rows",
+        ),
+        (
+            "assistant",
+            "REVIEW_ABORT: input is not code — received task descriptions, cannot review",
         ),
     ],
     "supervisor": [
@@ -770,93 +776,81 @@ _ROLE_MESSAGES_YAML: dict[str, list[tuple[str, str]]] = {
         ),
     ],
     "reviewer": [
-        # Valid output — pass through unchanged
+        # 1. Passed — structure valid, entities look correct
         (
             "user",
             "Spec: [job description]\n\n"
             "Output to review:\n"
-            "*assembled output here — N blocks, M cards*",
+            "title: Fleet Output\n"
+            "views:\n"
+            "  - title: Main\n"
+            "    cards:\n"
+            "      - type: sensor\n"
+            "        entity: sensor.living_room_temperature\n"
+            "        name: Living Room Temp",
         ),
         (
             "assistant",
-            "[COMM] to:manager — review: passed — no issues found",
+            "REVIEW: passed — structure valid, entity IDs resolved, matches spec\n"
+            "---\n"
+            "title: Fleet Output\n"
+            "views:\n"
+            "  - title: Main\n"
+            "    cards:\n"
+            "      - type: sensor\n"
+            "        entity: sensor.living_room_temperature\n"
+            "        name: Living Room Temp",
         ),
+        # 2. Issues found — code copied unchanged, remarks describe what is wrong
         (
             "user",
-            "[COMM] pipeline → send output",
+            "Spec: [job description requiring sensor cards with real entity IDs]\n\n"
+            "Output to review:\n"
+            "title: Fleet Output\n"
+            "views:\n"
+            "  - title: Main\n"
+            "    cards:\n"
+            "      - type: sensor\n"
+            "        entity: sensor.PLACEHOLDER\n"
+            "        name: Temperature",
         ),
         (
             "assistant",
-            "*full output returned unchanged*",
+            "REVIEW: failed — placeholder entity ID (sensor.PLACEHOLDER) not resolved to a real entity\n"
+            "---\n"
+            "title: Fleet Output\n"
+            "views:\n"
+            "  - title: Main\n"
+            "    cards:\n"
+            "      - type: sensor\n"
+            "        entity: sensor.PLACEHOLDER\n"
+            "        name: Temperature",
         ),
-        # Fixable issues found — corrected
+        # 3. Escalate — input too large
         (
             "user",
             "Spec: [job description]\n\n"
             "Output to review:\n"
-            "*assembled output here — contains invalid fields, leaked fences, or wrong structure*",
+            "*very large assembled output — exceeds context capacity*",
         ),
         (
             "assistant",
-            "[COMM] to:manager — review: fixed — [brief description of what was corrected]",
+            "ESCALATE: context too large — output cannot be reviewed in one pass",
         ),
-        (
-            "user",
-            "[COMM] pipeline → send output",
-        ),
-        (
-            "assistant",
-            "*full corrected output here*",
-        ),
-        # Corrective brief injected — apply and fix
+        # 4. Input is task descriptions, not code
         (
             "user",
             "Spec: [job description]\n\n"
             "Output to review:\n"
-            "*assembled output here*\n\n"
-            "Additional instructions: [corrective brief — specific issues to look for and fix]",
+            "BLOCK 1: Layout\n"
+            "- Task 1: Create grid card\n"
+            "- Task 2: Add entity rows\n\n"
+            "BLOCK 2: Entities\n"
+            "- Task 1: Add sensor cards",
         ),
         (
             "assistant",
-            "[COMM] to:manager — review: fixed — applied corrective brief, [what was done]",
-        ),
-        (
-            "user",
-            "[COMM] pipeline → send output",
-        ),
-        (
-            "assistant",
-            "*full corrected output per brief*",
-        ),
-        # Failed — issues found that cannot be resolved by reviewer
-        (
-            "user",
-            "Spec: [job description]\n\n"
-            "Output to review:\n"
-            "*assembled output here — contains unresolvable structural errors*",
-        ),
-        (
-            "assistant",
-            "[COMM] to:manager — review: failed — [specific reason, what could not be fixed]",
-        ),
-        (
-            "user",
-            "[COMM] pipeline → send output",
-        ),
-        (
-            "assistant",
-            "*output with inline annotations marking failures*",
-        ),
-        # Context too large → escalate
-        (
-            "user",
-            "Spec: [job description]\n\n"
-            "Output to review:\n"
-            "*assembled output — very large, exceeds context capacity*",
-        ),
-        (
-            "assistant",
-            "ESCALATE: context too large — [N]-item output cannot be reviewed in a single pass, chunking required",
+            "REVIEW_ABORT: input is not code — received task descriptions, cannot review",
         ),
     ],
     "supervisor": [
