@@ -2799,7 +2799,7 @@ function renderFleetJobList() {{
     const dot = STATUS_DOT[j.status] || "#475569";
     const isActive = j.status === "running" || j.status === "pending";
     const isSel = j.id === _fleetSelectedId;
-    const rawTitle = (j.spec || "—").split(/[:\n]/)[0].trim();
+    const rawTitle = (j.spec || "—").split(/[:\\n]/)[0].trim();
     const title = rawTitle.length > 32 ? rawTitle.slice(0, 30) + "…" : rawTitle;
     const dateStr = j.created_at ? j.created_at.slice(5, 10) : "";
     const sub = [(j.type || ""), dateStr].filter(Boolean).join(" · ");
@@ -2808,7 +2808,7 @@ function renderFleetJobList() {{
       if (!c) return "";
       const cdot = STATUS_DOT[c.status] || "#475569";
       const cisSel = c.id === _fleetSelectedId;
-      const ct = (c.spec || "—").split(/[:\n]/)[0].trim();
+      const ct = (c.spec || "—").split(/[:\\n]/)[0].trim();
       const ctitle = ct.length > 28 ? ct.slice(0, 26) + "…" : ct;
       return `<div class="fjob-row${{cisSel?" selected":""}}${{c.status==="running"||c.status==="pending"?" active":""}}"
         style="margin-left:0.75rem;border-left:2px solid #1e3a5f;padding-left:0.5rem"
