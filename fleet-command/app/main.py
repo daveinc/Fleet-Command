@@ -3136,6 +3136,7 @@ function renderFleetDetail(j) {{
   }});
   psvg += `</svg>`;
 
+  const _savedCenterScroll = center.scrollTop;
   const _savedLogScroll = document.getElementById("flog-mini")?.scrollTop ?? null;
   center.innerHTML = `
     <div class="fleet-detail-card">
@@ -3183,10 +3184,9 @@ function renderFleetDetail(j) {{
         <button class="btn btn-ghost btn-sm" style="margin-left:auto;color:#f87171" onclick="fleetRemoveJob('${{j.id}}')">✕</button>
       </div>
     </div>`;
+  center.scrollTop = _savedCenterScroll;
   const logEl = document.getElementById("flog-mini");
-  if (logEl && _savedLogScroll !== null) {{
-    logEl.scrollTop = _savedLogScroll;
-  }}
+  if (logEl && _savedLogScroll !== null) logEl.scrollTop = _savedLogScroll;
 }}
 
 async function fleetShowStageOutput(jobId, stage, label) {{
