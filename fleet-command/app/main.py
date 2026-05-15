@@ -1024,8 +1024,8 @@ def _dashboard_html(root: str) -> str:  # noqa: C901
     /* ── Fleet 3-column dashboard ── */
     .fleet-4zone {{
       display: grid;
-      grid-template-columns: 22% 48% 30%;
-      grid-template-rows: 38% 62%;
+      grid-template-columns: 22% 78%;
+      grid-template-rows: auto 1fr;
       gap: 0;
       height: calc(100vh - 120px);
       overflow: hidden;
@@ -1044,7 +1044,7 @@ def _dashboard_html(root: str) -> str:  # noqa: C901
       overflow-x: auto;
       overflow-y: hidden;
       border-bottom: 1px solid #1e293b;
-      padding: 0.6rem 1rem 0.4rem;
+      padding: 0.4rem 0.75rem 0.3rem;
       display: flex;
       flex-direction: column;
     }}
