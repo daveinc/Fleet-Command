@@ -1266,15 +1266,14 @@ def _dashboard_html(root: str) -> str:  # noqa: C901
 
 <!-- ── Staff tab ── -->
 <div class="tab-panel" id="tab-staff">
-  <div class="section-title">Chief Advisor — On-Call Escalation</div>
-  <div id="advisor-card"></div>
-  <div style="text-align:center;color:#334155;font-size:0.7rem;padding:0.25rem 0 0.5rem">↕ escalation only</div>
 
-  <div class="section-title">Production Chain — Top Authority → Worker</div>
+  <div class="section-title">Pipeline Chain</div>
   <div class="roster" id="roster"></div>
 
-  <div class="section-title">Available (unassigned)</div>
-  <div class="pool" id="pool"></div>
+  <div style="border-top:1px solid #1e293b;margin:0.75rem 0 0.5rem;padding-top:0.75rem;display:flex;align-items:center;justify-content:space-between">
+    <div class="section-title" style="margin:0;font-size:0.75rem;color:#475569">Advisor — escalation only</div>
+  </div>
+  <div id="advisor-card"></div>
 
   <div class="save-bar">
     <span class="save-feedback" id="save-feedback">Chain saved</span>
@@ -1282,21 +1281,20 @@ def _dashboard_html(root: str) -> str:  # noqa: C901
     <button class="btn btn-primary" onclick="saveRoleChain()">Save Chain</button>
   </div>
 
-  <div style="display:flex;align-items:center;justify-content:space-between;margin:1.25rem 0 0.4rem">
-    <div class="section-title" style="margin:0">Model Registry</div>
-    <button class="btn btn-primary btn-sm" onclick="openNewWorker()">+ New Worker</button>
+  <div style="border-top:1px solid #1e293b;margin:0.75rem 0 0.5rem;padding-top:0.75rem;display:flex;align-items:center;justify-content:space-between">
+    <div class="section-title" style="margin:0;font-size:0.75rem;color:#475569">Unassigned models</div>
+    <button class="btn btn-ghost btn-sm" onclick="openNewWorker()">+ New</button>
   </div>
-  <div class="harness-grid" id="harness-grid"></div>
+  <div class="pool" id="pool"></div>
 
-  <div style="display:flex;align-items:center;gap:0.6rem;margin-top:1.1rem;padding:0.65rem 0.75rem;background:#0f172a;border:1px solid #1e293b;border-radius:8px">
-    <span style="font-size:0.75rem;color:#64748b;white-space:nowrap">Modelfile output type:</span>
-    <select id="mf-output-type" style="font-size:0.78rem;background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:5px;padding:0.2rem 0.4rem;flex:1;max-width:160px"
+  <div style="display:flex;align-items:center;gap:0.6rem;margin-top:1rem;padding:0.6rem 0.75rem;background:#0f172a;border:1px solid #1e293b;border-radius:8px">
+    <span style="font-size:0.75rem;color:#64748b;white-space:nowrap">Modelfile type:</span>
+    <select id="mf-output-type" style="font-size:0.78rem;background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:5px;padding:0.2rem 0.4rem;max-width:160px"
       onchange="localStorage.setItem('mf_output_type', this.value)">
       <option value="yaml">YAML / HA Dashboard</option>
       <option value="python">Python (coming soon)</option>
     </select>
-    <span style="font-size:0.7rem;color:#475569;flex:1">Examples baked into every pushed modelfile</span>
-    <button class="btn btn-primary btn-sm" onclick="pushAllModelfiles()" id="btn-push-all">Push All</button>
+    <button class="btn btn-primary btn-sm" style="margin-left:auto" onclick="pushAllModelfiles()" id="btn-push-all">Push All</button>
   </div>
   <div id="push-all-status" style="display:none;margin-top:0.5rem;font-size:0.75rem;color:#94a3b8"></div>
 </div>
@@ -1784,33 +1782,37 @@ function roleCard(role, idx, list) {{
     ? `<button class="btn btn-ghost btn-sm" onclick="swapRoles('${{role}}','${{list[idx+1]}}')" title="Demote">↓</button>`
     : "";
 
+  const fmtOpts = REQUEST_FORMATS.map(f => `<option value="${{f}}" ${{f === h?.request_format ? "selected" : ""}}>${{f}}</option>`).join("");
+  const authOpts = AUTH_TYPES.map(a => `<option value="${{a}}" ${{a === h?.auth_type ? "selected" : ""}}>${{a}}</option>`).join("");
+  const mfBtn = hid ? `<button class="btn btn-ghost btn-sm" onclick="openModelfileModal('${{hid}}')" title="Modelfile">📄</button>` : `<button class="btn btn-ghost btn-sm" style="opacity:0.3" disabled title="No model assigned">📄</button>`;
+
   return `
   <div class="role-card ${{hasModel ? "has-model" : "empty"}}" id="card-${{role}}">
     <div class="card-header">
       <div class="role-label-wrap">
         <div class="role-label">${{meta.label || role}}</div>
-        <div class="role-title">${{meta.title || ""}}</div>
+        <div class="role-title" style="color:#475569;font-size:0.68rem">${{meta.title || ""}}</div>
       </div>
       <select class="model-select" onchange="onModelChange('${{role}}', this.value)">
         <option value="">— unassigned —</option>
         ${{options}}
       </select>
-      <span style="cursor:pointer" onclick="if('${{hid}}') openHarnessDetail('${{hid}}')" title="View model config">${{costBadge(h)}}</span>
+      ${{costBadge(h)}}
+      <span style="font-size:0.72rem;color:#64748b">${{ctxLabel(h)}}</span>
       <div class="card-actions">
-        <button class="btn btn-ghost btn-sm" onclick="toggleParams('${{role}}')" title="Params">⚙</button>
+        ${{mfBtn}}
+        <button class="btn btn-ghost btn-sm" onclick="toggleParams('${{role}}')" title="Settings">⚙</button>
         ${{upBtn}}${{downBtn}}
       </div>
     </div>
     <div class="card-meta">
-      <span>${{ctxLabel(h)}}</span>
       <span>temp <b>${{temp}}</b></span>
-      ${{enrichScore ? `<span style="color:#64748b">${{enrichScore}}</span>` : ""}}
-      ${{enrichStatus ? `<span class="${{enrichStatusCls}}" style="font-size:0.66rem">${{enrichStatus}}</span>` : ""}}
+      ${{h?.reasoning ? '<span style="color:#818cf8;font-size:0.7rem">reasoning ✓</span>' : ""}}
       ${{enrichCaps.map(c=>`<span class="cap-tag">${{c}}</span>`).join("")}}
       ${{minWarn}}
-      ${{meta.description ? `<span style="color:#374151;font-style:italic">${{meta.description}}</span>` : ""}}
     </div>
     <div class="params-panel" id="params-${{role}}">
+      <div style="font-size:0.72rem;color:#64748b;margin-bottom:0.4rem">Call params</div>
       <div class="params-grid">
         <div class="param-row">
           <label>temperature</label>
@@ -1833,6 +1835,39 @@ function roleCard(role, idx, list) {{
             onchange="onParamChange('${{role}}', 'num_predict', parseInt(this.value) || null)">
         </div>
       </div>
+      ${{hid ? `
+      <div style="font-size:0.72rem;color:#64748b;margin:0.75rem 0 0.4rem">Model settings</div>
+      <div class="params-grid" style="margin-bottom:0.5rem">
+        <div class="param-row"><label>Format</label>
+          <select id="hf-fmt-${{hid}}" style="background:#0f1117;border:1px solid #334155;border-radius:4px;color:#e2e8f0;font-size:0.82rem;padding:0.2rem 0.35rem;width:100%">${{fmtOpts}}</select>
+        </div>
+        <div class="param-row"><label>Auth</label>
+          <select id="hf-auth-${{hid}}" style="background:#0f1117;border:1px solid #334155;border-radius:4px;color:#e2e8f0;font-size:0.82rem;padding:0.2rem 0.35rem;width:100%">${{authOpts}}</select>
+        </div>
+        <div class="param-row"><label>Ctx window</label>
+          <input type="number" id="hf-ctx-${{hid}}" min="1" step="1" value="${{h?.context_window || ""}}" placeholder="auto"
+            style="background:#0f1117;border:1px solid #334155;border-radius:4px;color:#e2e8f0;font-size:0.82rem;padding:0.2rem 0.35rem;width:100%">
+        </div>
+        <div class="param-row"><label>Token allow.</label>
+          <input type="number" id="hf-token-allowance-${{hid}}" min="1" step="1" value="${{h?.token_allowance || ""}}" placeholder="auto"
+            style="background:#0f1117;border:1px solid #334155;border-radius:4px;color:#e2e8f0;font-size:0.82rem;padding:0.2rem 0.35rem;width:100%">
+        </div>
+        <div class="param-row"><label>Concurrency</label>
+          <input type="number" id="hf-conc-${{hid}}" min="1" step="1" value="${{h?.concurrency ?? 1}}"
+            style="background:#0f1117;border:1px solid #334155;border-radius:4px;color:#e2e8f0;font-size:0.82rem;padding:0.2rem 0.35rem;width:100%">
+        </div>
+      </div>
+      <div class="param-row" style="margin-bottom:0.35rem"><label>Endpoint</label>
+        <input type="text" id="hf-ep-${{hid}}" value="${{h?.endpoint || ""}}"
+          style="background:#0f1117;border:1px solid #334155;border-radius:4px;color:#e2e8f0;font-size:0.82rem;padding:0.2rem 0.35rem;width:100%">
+      </div>
+      <div class="param-row" style="margin-bottom:0.5rem"><label>API path</label>
+        <input type="text" id="hf-path-${{hid}}" value="${{h?.api_path || ""}}"
+          style="background:#0f1117;border:1px solid #334155;border-radius:4px;color:#e2e8f0;font-size:0.82rem;padding:0.2rem 0.35rem;width:100%">
+      </div>
+      <div style="display:flex;justify-content:flex-end">
+        <button class="btn btn-primary btn-sm" onclick="saveHarness('${{hid}}')">Save model</button>
+      </div>` : ""}}
     </div>
   </div>`;
 }}
@@ -1945,86 +1980,8 @@ function formatTokens(value) {{
 function renderHarnesses() {{
   const sel = document.getElementById("mf-output-type");
   if (sel) sel.value = localStorage.getItem("mf_output_type") || "yaml";
-  const el = document.getElementById("harness-grid");
-  el.innerHTML = Object.entries(harnesses).map(([id, h]) => {{
-    const ctx = formatTokens(h.context_window);
-    const allowance = formatTokens(h.token_allowance);
-    const ctxSource = h.context_window_source === "manual" ? "manual" : (h.context_window_source ? "auto" : "");
-    const caps = harnessRoleMinTags(h);
-    const costBadgeHtml = h.cost_type === "local"
-      ? '<span class="cost-badge local">local</span>'
-      : h.cost_type === "cloud_metered"
-        ? '<span class="cost-badge cloud">metered</span>'
-        : '<span class="cost-badge cloud">cloud</span>';
-    const fmtOpts = REQUEST_FORMATS.map(f => `<option value="${{f}}" ${{f === h.request_format ? "selected" : ""}}>${{f}}</option>`).join("");
-    const authOpts = AUTH_TYPES.map(a => `<option value="${{a}}" ${{a === h.auth_type ? "selected" : ""}}>${{a}}</option>`).join("");
-    return `
-    <div class="harness-card" style="flex-direction:column;gap:0">
-      <div style="display:flex;align-items:flex-start;gap:1rem">
-        <div class="harness-info" style="flex:1">
-          <div class="harness-name">${{h.display_name}}</div>
-          <div class="harness-meta">
-            ${{costBadgeHtml}}
-            <span>ctx ${{ctx}}${{ctxSource ? " " + ctxSource : ""}}</span>
-            <span>allow ${{allowance}}</span>
-            <span>temp ${{h.params?.temperature ?? "?"}}</span>
-            <span>concurrency ${{h.concurrency ?? "?"}}</span>
-            ${{h.reasoning ? '<span style="color:#818cf8">reasoning ✓</span>' : ""}}
-          </div>
-          <div style="margin-top:0.35rem;display:flex;gap:0.3rem;flex-wrap:wrap">${{caps}}</div>
-          ${{h.notes ? `<div class="harness-notes">${{h.notes}}</div>` : ""}}
-        </div>
-        <button class="btn btn-ghost btn-sm" onclick="openModelfileModal('${{id}}')" title="Modelfile">📄</button>
-        <button class="btn btn-ghost btn-sm" onclick="toggleHarnessEdit('${{id}}')" title="Edit">⚙</button>
-      </div>
-      <div id="hedit-${{id}}" style="display:none;margin-top:0.75rem;border-top:1px solid #1e293b;padding-top:0.75rem">
-        <div class="params-grid" style="margin-bottom:0.6rem">
-          <div class="param-row">
-            <label>Request Format</label>
-            <select id="hf-fmt-${{id}}" style="background:#0f1117;border:1px solid #334155;border-radius:4px;color:#e2e8f0;font-size:0.82rem;padding:0.25rem 0.4rem;width:100%">${{fmtOpts}}</select>
-          </div>
-          <div class="param-row">
-            <label>Auth Type</label>
-            <select id="hf-auth-${{id}}" style="background:#0f1117;border:1px solid #334155;border-radius:4px;color:#e2e8f0;font-size:0.82rem;padding:0.25rem 0.4rem;width:100%">${{authOpts}}</select>
-          </div>
-          <div class="param-row">
-            <label>Temperature</label>
-            <input type="number" id="hf-temp-${{id}}" min="0" max="2" step="0.1" value="${{h.params?.temperature ?? 0}}"
-              style="background:#0f1117;border:1px solid #334155;border-radius:4px;color:#e2e8f0;font-size:0.82rem;padding:0.25rem 0.4rem;width:100%">
-          </div>
-          <div class="param-row">
-            <label>Concurrency</label>
-            <input type="number" id="hf-conc-${{id}}" min="1" step="1" value="${{h.concurrency ?? 1}}"
-              style="background:#0f1117;border:1px solid #334155;border-radius:4px;color:#e2e8f0;font-size:0.82rem;padding:0.25rem 0.4rem;width:100%">
-          </div>
-          <div class="param-row">
-            <label>Context Window</label>
-            <input type="number" id="hf-ctx-${{id}}" min="1" step="1" value="${{h.context_window || ""}}" placeholder="optional"
-              style="background:#0f1117;border:1px solid #334155;border-radius:4px;color:#e2e8f0;font-size:0.82rem;padding:0.25rem 0.4rem;width:100%">
-          </div>
-          <div class="param-row">
-            <label>Token Allowance</label>
-            <input type="number" id="hf-token-allowance-${{id}}" min="1" step="1" value="${{h.token_allowance || ""}}" placeholder="optional"
-              style="background:#0f1117;border:1px solid #334155;border-radius:4px;color:#e2e8f0;font-size:0.82rem;padding:0.25rem 0.4rem;width:100%">
-          </div>
-        </div>
-        <div class="param-row" style="margin-bottom:0.5rem">
-          <label>Endpoint</label>
-          <input type="text" id="hf-ep-${{id}}" value="${{h.endpoint || ""}}"
-            style="background:#0f1117;border:1px solid #334155;border-radius:4px;color:#e2e8f0;font-size:0.82rem;padding:0.25rem 0.4rem;width:100%">
-        </div>
-        <div class="param-row" style="margin-bottom:0.6rem">
-          <label>API Path</label>
-          <input type="text" id="hf-path-${{id}}" value="${{h.api_path || ""}}"
-            style="background:#0f1117;border:1px solid #334155;border-radius:4px;color:#e2e8f0;font-size:0.82rem;padding:0.25rem 0.4rem;width:100%">
-        </div>
-        <div style="display:flex;justify-content:flex-end;gap:0.5rem">
-          <button class="btn btn-ghost btn-sm" onclick="toggleHarnessEdit('${{id}}')">Cancel</button>
-          <button class="btn btn-primary btn-sm" onclick="saveHarness('${{id}}')">Save</button>
-        </div>
-      </div>
-    </div>`;
-  }}).join("");
+  renderRoster();
+  renderPool();
 }}
 
 function toggleHarnessEdit(id) {{

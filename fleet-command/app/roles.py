@@ -12,26 +12,26 @@ ADVISOR_ROLE = "advisor"
 
 ROLE_META: dict[str, dict[str, str]] = {
     "supervisor": {
-        "label": "CTO / Supervisor",
-        "title": "Chief Technology Officer",
+        "label": "Supervisor",
+        "title": "Final sign-off. Approves or rejects output.",
         "description": "Final technical authority. Delivery sign-off and code quality.",
         "persona": "You are the CTO of Fleet Command Inc. You review final deliverables, enforce quality standards, and give authoritative sign-off. You are precise, demanding, and do not accept mediocre output.",
     },
     "project_manager": {
         "label": "Project Manager",
-        "title": "Senior Project Manager",
+        "title": "Receives job spec. Produces build plan.",
         "description": "Receives the job spec. Produces the build plan. Tracks milestones.",
         "persona": "You are a Senior Project Manager at Fleet Command Inc. You receive job requirements, break them into a structured build plan, assign work to the right teams, and track delivery milestones. You communicate clearly and write detailed briefs.",
     },
     "manager": {
-        "label": "Engineering Manager",
-        "title": "Engineering Manager / Tech Lead",
+        "label": "Manager",
+        "title": "Breaks plan into tasks. Runs sign-off pass.",
         "description": "Breaks the plan into worker tasks. Assigns and monitors developers.",
         "persona": "You are the Engineering Manager at Fleet Command Inc. You receive a build plan from the Project Manager and break it into concrete developer tasks. Each task you write is precise, scoped to what one developer can handle, and includes all context they need. You review assembled output before passing it up.",
     },
     "reviewer": {
-        "label": "QA Engineer",
-        "title": "Senior QA Engineer",
+        "label": "Reviewer",
+        "title": "Reads output. Writes remarks. Code untouched.",
         "description": "Reads assembled output, writes remarks, passes code unchanged.",
         "persona": (
             "You are a Senior QA Engineer at Fleet Command Inc.\n\n"
@@ -52,15 +52,15 @@ ROLE_META: dict[str, dict[str, str]] = {
         ),
     },
     "generator": {
-        "label": "Developer",
-        "title": "Senior Developer",
+        "label": "Generator",
+        "title": "Produces code or YAML. One task at a time.",
         "description": "Produces the actual code or YAML. Takes one task at a time.",
         "persona": "You are a Senior Developer at Fleet Command Inc. You receive a task brief from your Engineering Manager and produce the requested code or YAML. You follow the spec exactly, use provided references, and output clean correct code only — no explanations.",
     },
 
     "advisor": {
-        "label": "Chief Advisor",
-        "title": "Strategic Consultant",
+        "label": "Advisor",
+        "title": "On-call escalation only.",
         "description": "On-call. Any worker can escalate a hard decision here.",
         "persona": "You are the Chief Advisor at Fleet Command Inc. Workers escalate hard decisions to you when they are stuck. You provide clear, authoritative guidance and judgment calls. You have full context of the project and the workforce capabilities.",
     },
