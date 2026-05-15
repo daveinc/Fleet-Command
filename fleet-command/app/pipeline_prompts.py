@@ -404,23 +404,31 @@ _ROLE_MESSAGES_MINIMAL_YAML: dict[str, list[tuple[str, str]]] = {
         ),
     ],
     "reviewer": [
-        # Passed — no issues
+        # Passed — code matches plan
         (
             "user",
-            "Spec: [job description]\n\nOutput to review:\ntype: grid\ncards:\n  - type: sensor\n    entity: sensor.temperature",
+            "Spec: Build a temperature dashboard\n\n"
+            "Build plan (reference):\nBLOCK 1: Climate\n- Task 1: Temperature sensor card\n\n"
+            "Code to review:\ntype: sensor\nentity: sensor.living_room_temperature\nname: Living Room",
         ),
         (
             "assistant",
-            "REVIEW: passed — structure valid, entities present\n---\ntype: grid\ncards:\n  - type: sensor\n    entity: sensor.temperature",
+            "REVIEW: passed — sensor card present, entity resolved, matches plan\n"
+            "---\n"
+            "type: sensor\nentity: sensor.living_room_temperature\nname: Living Room",
         ),
-        # Failed — issues found, code copied unchanged
+        # Failed — placeholder entity, code copied unchanged
         (
             "user",
-            "Spec: [job description]\n\nOutput to review:\ntype: grid\ncards:\n  - type: sensor\n    entity: sensor.PLACEHOLDER_TEMP",
+            "Spec: Build a temperature dashboard\n\n"
+            "Build plan (reference):\nBLOCK 1: Climate\n- Task 1: Temperature sensor card\n\n"
+            "Code to review:\ntype: sensor\nentity: sensor.PLACEHOLDER_TEMP\nname: Living Room",
         ),
         (
             "assistant",
-            "REVIEW: failed — placeholder entity IDs present (sensor.PLACEHOLDER_TEMP), not resolved\n---\ntype: grid\ncards:\n  - type: sensor\n    entity: sensor.PLACEHOLDER_TEMP",
+            "REVIEW: failed — placeholder entity (sensor.PLACEHOLDER_TEMP) not resolved to real entity\n"
+            "---\n"
+            "type: sensor\nentity: sensor.PLACEHOLDER_TEMP\nname: Living Room",
         ),
     ],
     "supervisor": [
@@ -822,61 +830,85 @@ _ROLE_MESSAGES_YAML: dict[str, list[tuple[str, str]]] = {
         ),
     ],
     "reviewer": [
-        # 1. Passed — structure valid, entities look correct
+        # 1. Passed — code matches plan, entities resolved
         (
             "user",
-            "Spec: [job description]\n\n"
-            "Output to review:\n"
-            "title: Fleet Output\n"
-            "views:\n"
-            "  - title: Main\n"
-            "    cards:\n"
-            "      - type: sensor\n"
-            "        entity: sensor.living_room_temperature\n"
-            "        name: Living Room Temp",
+            "Spec: Build a climate dashboard\n\n"
+            "Build plan (reference):\n"
+            "BLOCK 1: Climate\n"
+            "- Task 1: Temperature sensor card for living room\n"
+            "- Task 2: Humidity gauge\n\n"
+            "Code to review:\n"
+            "type: sensor\n"
+            "entity: sensor.living_room_temperature\n"
+            "name: Living Room Temp\n"
+            "---\n"
+            "type: gauge\n"
+            "entity: sensor.living_room_humidity\n"
+            "name: Humidity\n"
+            "min: 0\n"
+            "max: 100",
         ),
         (
             "assistant",
-            "REVIEW: passed — structure valid, entity IDs resolved, matches spec\n"
+            "REVIEW: passed — both cards present, entities resolved, matches plan\n"
             "---\n"
-            "title: Fleet Output\n"
-            "views:\n"
-            "  - title: Main\n"
-            "    cards:\n"
-            "      - type: sensor\n"
-            "        entity: sensor.living_room_temperature\n"
-            "        name: Living Room Temp",
+            "type: sensor\n"
+            "entity: sensor.living_room_temperature\n"
+            "name: Living Room Temp\n"
+            "---\n"
+            "type: gauge\n"
+            "entity: sensor.living_room_humidity\n"
+            "name: Humidity\n"
+            "min: 0\n"
+            "max: 100",
         ),
-        # 2. Issues found — code copied unchanged, remarks describe what is wrong
+        # 2. Failed — placeholder entities, code copied unchanged
         (
             "user",
-            "Spec: [job description requiring sensor cards with real entity IDs]\n\n"
-            "Output to review:\n"
-            "title: Fleet Output\n"
-            "views:\n"
-            "  - title: Main\n"
-            "    cards:\n"
-            "      - type: sensor\n"
-            "        entity: sensor.PLACEHOLDER\n"
-            "        name: Temperature",
+            "Spec: Build a climate dashboard\n\n"
+            "Build plan (reference):\n"
+            "BLOCK 1: Climate\n"
+            "- Task 1: Temperature sensor card\n\n"
+            "Code to review:\n"
+            "type: sensor\n"
+            "entity: sensor.PLACEHOLDER\n"
+            "name: Temperature",
         ),
         (
             "assistant",
-            "REVIEW: failed — placeholder entity ID (sensor.PLACEHOLDER) not resolved to a real entity\n"
+            "REVIEW: failed — placeholder entity ID (sensor.PLACEHOLDER) not resolved\n"
             "---\n"
-            "title: Fleet Output\n"
-            "views:\n"
-            "  - title: Main\n"
-            "    cards:\n"
-            "      - type: sensor\n"
-            "        entity: sensor.PLACEHOLDER\n"
-            "        name: Temperature",
+            "type: sensor\n"
+            "entity: sensor.PLACEHOLDER\n"
+            "name: Temperature",
         ),
-        # 3. Escalate — input too large
+        # 3. Failed — code missing a task from the plan, code still copied unchanged
+        (
+            "user",
+            "Spec: Build a media dashboard\n\n"
+            "Build plan (reference):\n"
+            "BLOCK 1: Media\n"
+            "- Task 1: Now-playing card\n"
+            "- Task 2: Volume slider\n\n"
+            "Code to review:\n"
+            "type: media-control\n"
+            "entity: media_player.living_room",
+        ),
+        (
+            "assistant",
+            "REVIEW: failed — plan requires 2 cards (now-playing + volume), only 1 present (volume slider missing)\n"
+            "---\n"
+            "type: media-control\n"
+            "entity: media_player.living_room",
+        ),
+        # 4. Escalate — input too large
         (
             "user",
             "Spec: [job description]\n\n"
-            "Output to review:\n"
+            "Build plan (reference):\n"
+            "[plan]\n\n"
+            "Code to review:\n"
             "*very large assembled output — exceeds context capacity*",
         ),
         (
