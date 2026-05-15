@@ -498,45 +498,86 @@ async def _call_harness(
                 elif job and recipient != "next":
                     from app.roles import load_roles as _lr, ROLE_META as _RM
                     from app.harnesses import get_harness as _gh
-                    _target_assign = _lr().get(recipient, {})
-                    _target_harness = _gh(_target_assign.get("harness_id", "")) if _target_assign.get("harness_id") else None
-                    if _target_harness:
-                        _tp = _RM.get(recipient, {}).get("persona", "You are a helpful AI assistant.")
-                        _tp = _tp.split(".")[0] + "."
-                        is_question = _comm_is_question(comm_content)
-                        if is_question:
-                            _route_prompt = (
-                                f"A {stage} worker has a question for you:\n\n{comm_content}\n\n"
-                                "Provide a clear, direct answer. Be concise."
-                            )
-                        else:
-                            _route_prompt = (
-                                f"[COMM] pipeline → request from {stage}\n\n"
-                                f"{comm_content}\n\n"
-                                "Complete this task. Output only what is requested — no explanations, no preamble."
-                            )
-                        try:
-                            _resp, _rtok = await _call_harness(_target_harness, _tp, _route_prompt, job, recipient)
-                            tokens["input"] += _rtok["input"]
-                            tokens["output"] += _rtok["output"]
-                            _resp_type = "comm" if is_question else "code"
-                            log_message(job, sender=recipient, recipient=stage, msg_type=_resp_type,
-                                        content=_resp[:300], stage=recipient)
-                            append_log(job, stage, f"[COMM] {'answer' if is_question else 'code'} from {recipient}: {_resp[:80]}")
-                            _flog(f"  [COMM] {'answer' if is_question else 'code'} from {recipient}: {_resp[:80]}")
-                            if is_question:
-                                routed_context = f"[PIPELINE] Answer from {recipient}:\n{_resp.strip()}\n\nNow send your output."
-                            else:
-                                routed_context = (
-                                    f"[COMM] pipeline → code from {recipient}, {comm_content[:120]}\n\n"
-                                    f"{_resp.strip()}\n\n"
-                                    "Incorporate this into your output and send your final result."
+                    # 2-hop: reviewer → manager is a rework request — manager re-briefs, generator executes
+                    if stage == "reviewer" and recipient == "manager":
+                        _mgr_assign = _lr().get("manager", {})
+                        _mgr_harness = _gh(_mgr_assign.get("harness_id", "")) if _mgr_assign.get("harness_id") else None
+                        _gen_assign = _lr().get("generator", {})
+                        _gen_harness = _gh(_gen_assign.get("harness_id", "")) if _gen_assign.get("harness_id") else None
+                        if _mgr_harness and _gen_harness:
+                            _mgr_persona = _RM.get("manager", {}).get("persona", "")
+                            _gen_persona = _RM.get("generator", {}).get("persona", "")
+                            try:
+                                _mgr_prompt = (
+                                    f"[COMM] pipeline → rework request from reviewer\n\n{comm_content}\n\n"
+                                    "Write a corrected task brief for the generator. "
+                                    "Specify the correct card type, all required properties, and entity IDs. "
+                                    "Output the task brief only — no preamble."
                                 )
-                        except Exception as _re:
-                            _flog(f"  [COMM] route to {recipient} failed: {_re}")
-                            routed_context = f"[PIPELINE] Could not reach {recipient}. Continue with best judgment — send your output now."
+                                _mgr_resp, _mgr_tok = await _call_harness(_mgr_harness, _mgr_persona, _mgr_prompt, job, "manager")
+                                tokens["input"] += _mgr_tok["input"]
+                                tokens["output"] += _mgr_tok["output"]
+                                append_log(job, stage, f"[COMM] rework brief from manager: {_mgr_resp[:80]}")
+                                _gen_prompt = (
+                                    f"[COMM] pipeline → rework task from manager\n\n{_mgr_resp.strip()}\n\n"
+                                    "Output the corrected YAML card only. No fences. No explanation."
+                                )
+                                _gen_resp, _gen_tok = await _call_harness(_gen_harness, _gen_persona, _gen_prompt, job, "generator")
+                                tokens["input"] += _gen_tok["input"]
+                                tokens["output"] += _gen_tok["output"]
+                                append_log(job, stage, f"[COMM] rework fragment from generator: {_gen_resp[:80]}")
+                                # Include the original comm_content summary so reviewer knows which fragment this is
+                                _rework_ref = comm_content.split("—")[0].strip() if "—" in comm_content else "requested fragment"
+                                routed_context = (
+                                    f"[COMM] pipeline → rework complete ({_rework_ref})\n\n{_gen_resp.strip()}\n\n"
+                                    "This is the corrected fragment for the task you flagged. "
+                                    "Integrate it into your output replacing the previous version, then send the complete reviewed YAML."
+                                )
+                            except Exception as _re:
+                                _flog(f"  [COMM] rework 2-hop failed: {_re}")
+                                routed_context = "[PIPELINE] Rework failed — continue with best judgment and send your output."
+                        else:
+                            routed_context = "[PIPELINE] Rework routing unavailable — continue with best judgment."
                     else:
-                        routed_context = f"[PIPELINE] Worker '{recipient}' unavailable. Continue with best judgment — send your output now."
+                        _target_assign = _lr().get(recipient, {})
+                        _target_harness = _gh(_target_assign.get("harness_id", "")) if _target_assign.get("harness_id") else None
+                        if _target_harness:
+                            _tp = _RM.get(recipient, {}).get("persona", "You are a helpful AI assistant.")
+                            _tp = _tp.split(".")[0] + "."
+                            is_question = _comm_is_question(comm_content)
+                            if is_question:
+                                _route_prompt = (
+                                    f"A {stage} worker has a question for you:\n\n{comm_content}\n\n"
+                                    "Provide a clear, direct answer. Be concise."
+                                )
+                            else:
+                                _route_prompt = (
+                                    f"[COMM] pipeline → request from {stage}\n\n"
+                                    f"{comm_content}\n\n"
+                                    "Complete this task. Output only what is requested — no explanations, no preamble."
+                                )
+                            try:
+                                _resp, _rtok = await _call_harness(_target_harness, _tp, _route_prompt, job, recipient)
+                                tokens["input"] += _rtok["input"]
+                                tokens["output"] += _rtok["output"]
+                                _resp_type = "comm" if is_question else "code"
+                                log_message(job, sender=recipient, recipient=stage, msg_type=_resp_type,
+                                            content=_resp[:300], stage=recipient)
+                                append_log(job, stage, f"[COMM] {'answer' if is_question else 'code'} from {recipient}: {_resp[:80]}")
+                                _flog(f"  [COMM] {'answer' if is_question else 'code'} from {recipient}: {_resp[:80]}")
+                                if is_question:
+                                    routed_context = f"[PIPELINE] Answer from {recipient}:\n{_resp.strip()}\n\nNow send your output."
+                                else:
+                                    routed_context = (
+                                        f"[COMM] pipeline → code from {recipient}, {comm_content[:120]}\n\n"
+                                        f"{_resp.strip()}\n\n"
+                                        "Incorporate this into your output and send your final result."
+                                    )
+                            except Exception as _re:
+                                _flog(f"  [COMM] route to {recipient} failed: {_re}")
+                                routed_context = f"[PIPELINE] Could not reach {recipient}. Continue with best judgment — send your output now."
+                        else:
+                            routed_context = f"[PIPELINE] Worker '{recipient}' unavailable. Continue with best judgment — send your output now."
 
                 follow_up_user = routed_context or "[PIPELINE] Continue — send your output now."
                 if use_thread and job is not None and stage in job.get("threads", {}):
@@ -954,17 +995,21 @@ async def _run_reviewer_3pass(
     last_handled = "reviewer"
 
     # ── Pass 1 — Entity ID resolution ──────────────────────────────────────
+    # Camouflage "# Block:" headers so the model doesn't enter planning mode.
+    # The literal string "# Block:" triggers gemma-family models to output task lists.
+    _P1_MARKER = "# yaml_block:"
+    p1_yaml_input = yaml_input.replace("# Block:", _P1_MARKER)
     entity_list = await _fetch_ha_entities(spec, yaml_input=yaml_input, token_budget=None)
     p1_fixed = (
         f"Spec: {spec}\n\nAvailable Home Assistant entities:\n{entity_list}\n\n"
-        "Your input below is YAML code. Replace ALL placeholder or incorrect entity IDs with real entity IDs from the list above. "
+        "Your input below is YAML code with section markers (lines starting with # yaml_block:). "
+        "Replace ALL placeholder or incorrect entity IDs with real entity IDs from the list above. "
         "Match by domain and purpose. If unsure, pick the closest available entity. "
-        "Do NOT change card structure, layout, field names, or any code outside of entity ID values. "
-        "Output the corrected YAML only — same structure as input. "
-        "NEVER output task lists, block breakdowns, planning text, or any non-YAML format. "
+        "Do NOT change card structure, layout, field names, section markers, or any code outside of entity ID values. "
+        "Output the corrected YAML only — preserve all # yaml_block: lines exactly as they appear in the input. "
         "No fences. No explanation.\n\nCode:\n"
     )
-    items1 = _block_items(yaml_input)
+    items1 = [p1_yaml_input]
     batches1 = chunk_to_fit(items1, harness, fixed_prefix=p1_fixed)
     append_log(job, "reviewer", f"Pass 1: entity resolution — {len(items1)} blocks, {len(batches1)} chunk(s)")
     yaml1 = yaml_input
@@ -978,8 +1023,21 @@ async def _run_reviewer_3pass(
             raw, last_handled, tok = await _call_with_fallback("reviewer", harness, persona, prompt, roles, job)
             _accum_tokens(job, "reviewer", tok)
             results1.append(_strip_all_fences(_strip_fences(raw)))
-        c1 = _reassemble(results1) if len(results1) > 1 else (results1[0] if results1 else yaml_input)
-        yaml1 = _safe(c1, yaml_input)
+        c1 = _reassemble(results1) if len(results1) > 1 else (results1[0] if results1 else p1_yaml_input)
+        # Restore # Block: headers from camouflaged markers
+        c1_restored = c1.replace(_P1_MARKER, "# Block:")
+        # If model stripped the markers entirely, fall back to re-injecting them from original
+        if "# Block:" not in c1_restored and "# Block:" in yaml_input:
+            append_log(job, "reviewer", "Pass 1: block headers stripped by model — re-injecting from original")
+            original_blocks = _split_by_blocks(yaml_input)
+            resolved_blocks = _split_by_blocks(c1_restored) if _split_by_blocks(c1_restored) else None
+            if original_blocks and resolved_blocks and len(original_blocks) == len(resolved_blocks):
+                c1_restored = "\n\n".join(f"# Block: {name}\n{content}" for name, (_, content) in zip(
+                    [n for n, _ in original_blocks], resolved_blocks))
+            else:
+                c1_restored = "\n\n".join(f"# Block: {name}\n{content}" for name, content in original_blocks)
+                c1_restored = c1_restored  # keep original structure, entity IDs unchanged
+        yaml1 = _safe(c1_restored, yaml_input)
         append_log(job, "reviewer", f"Pass 1 done — {len(yaml1)} chars, model={harness.get('display_name', harness_id)}")
     except Exception as exc:
         append_log(job, "reviewer", f"Pass 1 failed: {exc} — using input")
@@ -1540,6 +1598,9 @@ async def run_pipeline(job_id: str) -> None:
         await _run_pipeline_inner(job_id)
 
 
+MAX_AUTO_RERUNS = 2  # cap automatic supervisor-triggered reruns per job
+
+
 async def _run_pipeline_inner(job_id: str) -> None:
     job = load_job(job_id)
     if not job:
@@ -1619,18 +1680,43 @@ async def _run_pipeline_inner(job_id: str) -> None:
             save_job(job)
             return
 
-        # Supervisor rejection — check for REJECTED_AT routing
-        if stage == "supervisor" and prev_output and re.search(r'REJECTED_AT:', prev_output, re.IGNORECASE):
+        # Supervisor rejection — handle both REJECTED_AT: <stage> and bare REJECTED:
+        _is_rejected = stage == "supervisor" and prev_output and re.search(r'\bREJECTED[\b_]', prev_output, re.IGNORECASE)
+        if _is_rejected:
+            job = load_job(job_id)
+            # Enforce max auto-rerun cap before doing anything
+            rerun_total = job.get("auto_rerun_count", 0)
+            if rerun_total >= MAX_AUTO_RERUNS:
+                job["rejection_feedback"] = prev_output
+                append_log(job, "supervisor", f"Rejected — max auto-reruns ({MAX_AUTO_RERUNS}) reached, use ↺ Retry")
+                job["status"] = STATUS_FAILED
+                save_job(job)
+                from app.sensor_push import push_pipeline_sensors
+                await push_pipeline_sensors()
+                return
+
             match = re.search(r'REJECTED_AT:\s*(\w+)', prev_output, re.IGNORECASE)
             target = match.group(1).strip().lower() if match else None
             if target and target not in pipeline:
                 target = _remap_rejection_target(target, pipeline)
                 if target:
                     append_log(job, "supervisor", f"Remapped invalid REJECTED_AT to: {target}")
+            # No REJECTED_AT — infer target from corrective brief content
+            if not target:
+                _brief_text = (brief_match.group(1) if brief_match else prev_output).lower()
+                _entity_kw = ["entity_id", "entity id", "sensor.", "switch.", "light.", "binary_sensor.", "climate.", "media_player.", "wrong entity", "invalid entity"]
+                _structure_kw = ["structure", "nesting", "views:", "cards:", "yaml structure", "malformed", "indentation"]
+                _content_kw = ["card type", "forecast_type", "missing property", "missing field", "wrong type", "content", "template", "icon", "service call", "tap_action"]
+                if any(k in _brief_text for k in _entity_kw) or any(k in _brief_text for k in _structure_kw):
+                    target = "reviewer" if "reviewer" in pipeline else "manager"
+                else:
+                    target = "manager" if "manager" in pipeline else "generator"
+                if target:
+                    append_log(job, "supervisor", f"Inferred rerun target from brief: {target}")
+
             if target and target in pipeline:
-                job = load_job(job_id)
                 job["rejection_feedback"] = prev_output
-                # Extract CORRECTIVE_BRIEF and inject as stage_instructions for the target
+                job["auto_rerun_count"] = rerun_total + 1
                 brief_match = re.search(r'CORRECTIVE_BRIEF:\s*(.+)', prev_output, re.IGNORECASE | re.DOTALL)
                 if brief_match:
                     corrective_brief = brief_match.group(1).strip()
@@ -1640,7 +1726,7 @@ async def _run_pipeline_inner(job_id: str) -> None:
                     append_log(job, "supervisor", f"Corrective brief → {target} ({len(corrective_brief)} chars)")
                 save_job(job)
                 rerun_from_stage(job_id, target)
-                _flog(f"  REJECTED_AT={target} — re-running from {target}")
+                _flog(f"  REJECTED → re-running from {target} (attempt {rerun_total + 1}/{MAX_AUTO_RERUNS})")
                 start_idx = pipeline.index(target)
                 rerun_counts: dict[str, int] = {}
                 for rerun_stage in pipeline[start_idx:]:
@@ -1665,29 +1751,37 @@ async def _run_pipeline_inner(job_id: str) -> None:
                         save_job(job)
                         return
                     job = load_job(job_id)
-                # Keep rejection_feedback in job so manual reruns can still use it
                 prev_output = r.get("output")
-                # If the rerun supervisor also rejected, fail — don't swallow it as done
-                if prev_output and re.search(r'REJECTED_AT:', prev_output, re.IGNORECASE):
+                # If the rerun supervisor also rejected, fail — don't loop endlessly
+                if prev_output and re.search(r'\bREJECTED[\b_]', prev_output, re.IGNORECASE):
                     job = load_job(job_id)
                     job["rejection_feedback"] = prev_output
-                    append_log(job, "supervisor", "Second rejection after rerun — use ↺ Retry")
+                    append_log(job, "supervisor", "Rejection after rerun — use ↺ Retry")
                     job["status"] = STATUS_FAILED
                     save_job(job)
                     from app.sensor_push import push_pipeline_sensors
                     await push_pipeline_sensors()
                     return
             else:
-                job = load_job(job_id)
                 job["rejection_feedback"] = prev_output
-                append_log(job, stage, "Rejected — use ↺ Retry to rerun with adjusted settings")
+                append_log(job, stage, "Rejected — no valid rerun target, use ↺ Retry")
                 job["status"] = STATUS_FAILED
                 save_job(job)
                 from app.sensor_push import push_pipeline_sensors
                 await push_pipeline_sensors()
                 return
 
-    # All stages passed
+    # All stages passed — final sanity check
+    if prev_output and re.search(r'\bREJECTED[\b_]', prev_output, re.IGNORECASE):
+        job = load_job(job_id)
+        job["rejection_feedback"] = prev_output
+        append_log(job, "pipeline", "Final output contains REJECTED — marking failed, use ↺ Retry")
+        job["status"] = STATUS_FAILED
+        save_job(job)
+        from app.sensor_push import push_pipeline_sensors
+        await push_pipeline_sensors()
+        return
+
     if prev_output:
         write_stage_output(job_id, "final", prev_output)
         job = load_job(job_id)

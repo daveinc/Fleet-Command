@@ -1022,25 +1022,41 @@ def _dashboard_html(root: str) -> str:  # noqa: C901
     .modal-actions {{ display: flex; gap: 0.5rem; justify-content: flex-end; margin-top: 0.25rem; }}
 
     /* ── Fleet 3-column dashboard ── */
-    .fleet-3col {{
+    .fleet-4zone {{
       display: grid;
-      grid-template-columns: 30% 40% 30%;
+      grid-template-columns: 22% 48% 30%;
+      grid-template-rows: 38% 62%;
       gap: 0;
       height: calc(100vh - 120px);
       overflow: hidden;
     }}
     .fleet-left {{
+      grid-row: 1 / 3;
       display: flex;
       flex-direction: column;
       overflow: hidden;
       border-right: 1px solid #1e293b;
       padding-right: 1rem;
     }}
+    .fleet-pipeline {{
+      grid-column: 2 / 4;
+      grid-row: 1;
+      overflow-x: auto;
+      overflow-y: hidden;
+      border-bottom: 1px solid #1e293b;
+      padding: 0.6rem 1rem 0.4rem;
+      display: flex;
+      flex-direction: column;
+    }}
     .fleet-center {{
+      grid-column: 2;
+      grid-row: 2;
       padding: 0 1rem;
       overflow-y: auto;
     }}
     .fleet-right {{
+      grid-column: 3;
+      grid-row: 2;
       border-left: 1px solid #1e293b;
       padding-left: 1rem;
       overflow-y: auto;
@@ -1115,12 +1131,15 @@ def _dashboard_html(root: str) -> str:  # noqa: C901
       background: #0f1117; border-radius: 5px; padding: 0.5rem;
       max-height: 100px; overflow-y: auto; margin-top: 0.5rem; line-height: 1.6;
     }}
-    .fstat-card {{
-      background: #1e2330; border: 1px solid #2d3748; border-radius: 8px;
-      padding: 0.65rem 0.75rem; margin-bottom: 0.5rem;
+    .fstat-grid {{
+      display: grid; grid-template-columns: 1fr 1fr; gap: 0.4rem; margin-bottom: 0.75rem;
     }}
-    .fstat-num {{ font-size: 1.4rem; font-weight: 700; color: #e2e8f0; line-height: 1; }}
-    .fstat-lbl {{ font-size: 0.68rem; color: #475569; margin-top: 0.15rem; }}
+    .fstat-cube {{
+      background: #1e2330; border: 1px solid #2d3748; border-radius: 7px;
+      padding: 0.45rem 0.55rem; display: flex; flex-direction: column; gap: 0.1rem;
+    }}
+    .fstat-num {{ font-size: 1.1rem; font-weight: 700; color: #e2e8f0; line-height: 1; }}
+    .fstat-lbl {{ font-size: 0.6rem; color: #475569; }}
 
     /* ── Mobile ── */
     @media (max-width: 700px) {{
@@ -1132,11 +1151,12 @@ def _dashboard_html(root: str) -> str:  # noqa: C901
       .tabs::-webkit-scrollbar {{ display: none; }}
       .tab {{ white-space: nowrap; padding: 0.45rem 0.85rem; font-size: 0.78rem; flex-shrink: 0; }}
 
-      /* Fleet 3-col → single column stack */
-      .fleet-3col {{
+      /* Fleet 4-zone → single column stack */
+      .fleet-4zone {{
         display: flex; flex-direction: column;
         height: auto; overflow: visible; gap: 0;
       }}
+      .fleet-pipeline {{ border-bottom: 1px solid #1e293b; padding: 0.5rem 0; overflow-x: auto; }}
       .fleet-left {{
         border-right: none;
         border-bottom: 1px solid #1e293b;
@@ -1199,27 +1219,27 @@ def _dashboard_html(root: str) -> str:  # noqa: C901
   <div class="tab active" onclick="switchTab('fleet', this)">Fleet</div>
   <div class="tab" onclick="switchTab('staff', this); renderHarnesses()">Staff</div>
   <div class="tab" onclick="switchTab('jobs', this)">Projects</div>
-  <div class="tab" onclick="switchTab('templates', this); loadMessageTemplates(); loadRoleMinimums(); loadEscalationConfig()">Templates</div>
-  <div class="tab" onclick="switchTab('pipeline', this); loadPipelineTab()">Pipeline</div>
+  <div class="tab" onclick="switchTab('templates', this); loadMessageTemplates(); loadRoleMinimums(); loadEscalationConfig(); loadStageInstructions(); loadRulesPanel()">Templates</div>
 </div>
 
 <!-- ── Fleet tab ── -->
 <div class="tab-panel active" id="tab-fleet">
-  <div class="fleet-3col">
+  <div class="fleet-4zone">
 
-    <!-- Left: fleet status + job list -->
+    <!-- Left: job list -->
     <div class="fleet-left">
-      <div class="fleet-status-card">
-        <div class="fleet-kv"><span class="fleet-kv-label">Running</span><span class="fleet-kv-val" id="fstat-running">—</span></div>
-        <div class="fleet-kv"><span class="fleet-kv-label">Done</span><span class="fleet-kv-val" id="fstat-done">—</span></div>
-        <div class="fleet-kv"><span class="fleet-kv-label">Failed</span><span class="fleet-kv-val" id="fstat-failed">—</span></div>
-        <div class="fleet-kv"><span class="fleet-kv-label">Pass rate</span><span class="fleet-kv-val" id="fstat-passrate">—</span></div>
-        <button class="btn btn-primary btn-sm" style="width:100%;margin-top:0.65rem" onclick="openNewJob()">+ New Job</button>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.5rem">
+        <div class="section-title" style="margin:0">Projects</div>
+        <button class="btn btn-primary btn-sm" onclick="openNewJob()">+ New</button>
       </div>
-      <div class="section-title">Projects</div>
       <div class="fleet-job-list" id="fleet-job-list">
         <div style="color:#374151;font-size:0.78rem">Loading…</div>
       </div>
+    </div>
+
+    <!-- Pipeline: spans middle+right, top row -->
+    <div class="fleet-pipeline" id="fleet-pipeline">
+      <div style="color:#1e293b;font-size:0.75rem;text-align:center;padding-top:0.75rem;pointer-events:none">← select a project to view pipeline</div>
     </div>
 
     <!-- Center: selected job detail -->
@@ -1285,8 +1305,8 @@ def _dashboard_html(root: str) -> str:  # noqa: C901
 <!-- ── Harnesses tab (hidden — content merged into Staff) ── -->
 <div class="tab-panel" id="tab-harnesses" style="display:none!important"></div>
 
-<!-- ── Pipeline tab ── -->
-<div class="tab-panel" id="tab-pipeline">
+<!-- ── Pipeline tab (gutted — content moved to Fleet + Templates) ── -->
+<div class="tab-panel" id="tab-pipeline" style="display:none!important">
   <div class="section-title">Pipeline Visualizer</div>
   <div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:1rem;flex-wrap:wrap">
     <label style="font-size:0.82rem;color:#94a3b8">Job</label>
@@ -1308,6 +1328,18 @@ def _dashboard_html(root: str) -> str:  # noqa: C901
     <div class="section-title" style="font-size:0.82rem">Escalation Rules</div>
     <div id="pl-rules-list" style="display:grid;gap:0.5rem;margin-top:0.5rem"></div>
     <button class="btn btn-ghost btn-sm" style="margin-top:0.5rem" onclick="loadRulesPanel()">↺ Reload Rules</button>
+  </div>
+</div>
+
+<!-- Stage output popup -->
+<div class="modal-overlay" id="modal-stage-output">
+  <div class="modal" style="width:min(720px,96vw);max-height:82vh;display:flex;flex-direction:column">
+    <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.6rem;flex-shrink:0">
+      <h3 id="modal-so-title" style="margin:0;font-size:0.95rem"></h3>
+      <div id="modal-so-tabs" style="display:flex;gap:0.3rem;margin-left:0.75rem"></div>
+      <button class="btn btn-ghost btn-sm" style="margin-left:auto" onclick="closeModal('modal-stage-output')">✕</button>
+    </div>
+    <pre id="modal-so-code" style="background:#0f172a;color:#94a3b8;padding:0.75rem;border-radius:8px;font-size:0.73rem;overflow:auto;white-space:pre-wrap;border:1px solid #334155;flex:1;margin:0"></pre>
   </div>
 </div>
 
@@ -1368,6 +1400,25 @@ def _dashboard_html(root: str) -> str:  # noqa: C901
       style="width:72px;background:#0f1117;border:1px solid #334155;border-radius:4px;color:#e2e8f0;font-size:0.82rem;padding:0.25rem 0.5rem">
     <span style="font-size:0.75rem;color:#475569">tasks — PM splits jobs larger than this automatically</span>
   </div>
+
+  <!-- Stage Instructions -->
+  <div style="margin-top:1.75rem;display:flex;justify-content:space-between;align-items:center">
+    <div class="section-title" style="margin:0">Stage Instructions — Per-Job Overrides</div>
+    <div style="display:flex;gap:0.5rem">
+      <select id="si-job-select" style="font-size:0.78rem;background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:5px;padding:0.2rem 0.4rem" onchange="loadStageInstructions()">
+        <option value="">— select job —</option>
+      </select>
+      <button class="btn btn-primary btn-sm" onclick="saveStageInstructions()">Save</button>
+    </div>
+  </div>
+  <div id="pl-instructions" style="margin-top:0.6rem;display:grid;gap:0.5rem"></div>
+
+  <!-- Escalation Rules -->
+  <div style="margin-top:1.75rem;display:flex;justify-content:space-between;align-items:center">
+    <div class="section-title" style="margin:0">Escalation Rules</div>
+    <button class="btn btn-ghost btn-sm" onclick="loadRulesPanel()">↺ Reload</button>
+  </div>
+  <div id="pl-rules-list" style="display:grid;gap:0.5rem;margin-top:0.5rem"></div>
 </div>
 
 <!-- ── Modals ── -->
@@ -2716,6 +2767,7 @@ async function loadFleetTab() {{
   _fleetJobs = (res.jobs || []).slice().reverse(); // newest first
   renderFleetJobList();
   renderFleetStats();
+  renderFleetPipeline();
   if (_fleetSelectedId) {{
     const j = _fleetJobs.find(j => j.id === _fleetSelectedId);
     if (j) renderFleetDetail(j);
@@ -2746,17 +2798,22 @@ function renderFleetJobList() {{
   el.innerHTML = _fleetJobs.filter(j => !childIds.has(j.id)).map(j => {{
     const dot = STATUS_DOT[j.status] || "#475569";
     const isActive = j.status === "running" || j.status === "pending";
-    const stageCount = Object.keys(j.stages || {{}}).length;
     const isSel = j.id === _fleetSelectedId;
+    const rawTitle = (j.spec || "—").split(/[:\n]/)[0].trim();
+    const title = rawTitle.length > 32 ? rawTitle.slice(0, 30) + "…" : rawTitle;
+    const dateStr = j.created_at ? j.created_at.slice(5, 10) : "";
+    const sub = [(j.type || ""), dateStr].filter(Boolean).join(" · ");
     const children = (j.child_job_ids || []).map(cid => {{
       const c = _fleetJobs.find(x => x.id === cid);
       if (!c) return "";
       const cdot = STATUS_DOT[c.status] || "#475569";
       const cisSel = c.id === _fleetSelectedId;
+      const ct = (c.spec || "—").split(/[:\n]/)[0].trim();
+      const ctitle = ct.length > 28 ? ct.slice(0, 26) + "…" : ct;
       return `<div class="fjob-row${{cisSel?" selected":""}}${{c.status==="running"||c.status==="pending"?" active":""}}"
         style="margin-left:0.75rem;border-left:2px solid #1e3a5f;padding-left:0.5rem"
         onclick="event.stopPropagation();selectFleetJob('${{c.id}}')">
-        <div class="fjob-name" style="font-size:0.72rem">↳ ${{(c.spec||"—").slice(0,48)}}</div>
+        <div class="fjob-name">↳ ${{ctitle}}</div>
         <div class="fjob-meta">
           <span style="width:6px;height:6px;border-radius:50%;background:${{cdot}};display:inline-block;flex-shrink:0"></span>
           <span style="font-size:0.65rem;color:${{cdot}}">${{c.status}}</span>
@@ -2765,12 +2822,12 @@ function renderFleetJobList() {{
     }}).join("");
     return `<div class="fjob-row${{isSel?" selected":""}}${{isActive?" active":""}}"
       onclick="selectFleetJob('${{j.id}}')">
-      <div class="fjob-name">${{(j.spec||"—").slice(0,55)}}</div>
+      <div class="fjob-name">${{title}}</div>
       <div class="fjob-meta">
         <span style="width:7px;height:7px;border-radius:50%;background:${{dot}};display:inline-block;flex-shrink:0"></span>
         <span style="font-size:0.68rem;color:${{dot}}">${{j.status}}</span>
-        <span style="font-size:0.65rem;color:#334155;margin-left:auto">${{stageCount}} stages</span>
       </div>
+      <div style="font-size:0.62rem;color:#334155;margin-top:0.12rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${{sub}}</div>
     </div>${{children}}`;
   }}).join("");
   el.scrollTop = _savedListScroll;
@@ -2783,17 +2840,9 @@ function renderFleetStats() {{
   const total  = done + failed;
   const pass   = total > 0 ? Math.round(done / total * 100) : 0;
 
-  // Status bar mini
-  document.getElementById("fstat-running").textContent = running || "—";
-  document.getElementById("fstat-done").textContent = done || "—";
-  document.getElementById("fstat-failed").textContent = failed || "—";
-  document.getElementById("fstat-passrate").textContent = total > 0 ? pass + "%" : "—";
-
-  // Right stats panel
   const rEl = document.getElementById("fleet-stats-right");
   if (!rEl) return;
 
-  // Rejection breakdown by stage
   const rejByStage = {{}};
   _fleetJobs.forEach(j => {{
     Object.entries(j.stages || {{}}).forEach(([stage, s]) => {{
@@ -2807,19 +2856,103 @@ function renderFleetStats() {{
   ).join("") || '<div style="font-size:0.72rem;color:#334155">No rejections.</div>';
 
   rEl.innerHTML = `
-    <div class="fstat-card"><div class="fstat-num">${{_fleetJobs.length}}</div><div class="fstat-lbl">Total jobs</div></div>
-    <div class="fstat-card"><div class="fstat-num" style="color:#22c55e">${{done}}</div><div class="fstat-lbl">Completed</div></div>
-    <div class="fstat-card"><div class="fstat-num" style="color:#ef4444">${{failed}}</div><div class="fstat-lbl">Failed</div></div>
-    <div class="fstat-card"><div class="fstat-num" style="color:#6366f1">${{pass}}%</div><div class="fstat-lbl">Pass rate</div></div>
-    <div style="margin-top:0.75rem"><div class="section-title" style="margin-bottom:0.4rem">Rejections by stage</div>
-      <div style="background:#1e2330;border:1px solid #2d3748;border-radius:8px;padding:0.6rem">${{rejRows}}</div>
-    </div>`;
+    <div class="fstat-grid">
+      <div class="fstat-cube"><div class="fstat-num">${{_fleetJobs.length}}</div><div class="fstat-lbl">Total</div></div>
+      <div class="fstat-cube"><div class="fstat-num" style="color:#f59e0b">${{running || 0}}</div><div class="fstat-lbl">Running</div></div>
+      <div class="fstat-cube"><div class="fstat-num" style="color:#22c55e">${{done}}</div><div class="fstat-lbl">Done</div></div>
+      <div class="fstat-cube"><div class="fstat-num" style="color:#ef4444">${{failed}}</div><div class="fstat-lbl">Failed</div></div>
+    </div>
+    <div class="fstat-cube" style="margin-bottom:0.75rem;flex-direction:row;align-items:baseline;gap:0.4rem">
+      <div class="fstat-num" style="color:#6366f1">${{total > 0 ? pass + "%" : "—"}}</div>
+      <div class="fstat-lbl">pass rate (${{total}} ran)</div>
+    </div>
+    <div class="section-title" style="margin-bottom:0.4rem">Rejections by stage</div>
+    <div style="background:#1e2330;border:1px solid #2d3748;border-radius:8px;padding:0.6rem">${{rejRows}}</div>`;
+}}
+
+function renderFleetPipeline() {{
+  const el = document.getElementById("fleet-pipeline");
+  if (!el) return;
+  const job = _fleetJobs.find(j => j.id === _fleetSelectedId);
+  if (!job) {{
+    el.innerHTML = '<div style="color:#1e293b;font-size:0.75rem;text-align:center;padding-top:0.75rem">← select a project to view pipeline</div>';
+    return;
+  }}
+  const pipeline = job.pipeline || ["generator"];
+  const stages = job.stages || {{}};
+  const STATUS_COLOR = {{ running:"#f59e0b", done:"#22c55e", error:"#ef4444", pending:"#475569", reviewing:"#818cf8", split:"#38bdf8", failed:"#f87171" }};
+  const LABEL = {{ project_manager:"PM", manager:"Manager", generator:"Generator", reviewer:"Reviewer", supervisor:"Supervisor", advisor:"Advisor" }};
+  const EDGE_LABEL = {{ manager:"plan", generator:"brief", reviewer:"YAML", supervisor:"reviewed", advisor:"escalation" }};
+
+  const nodeW = 130, nodeH = 96, gapX = 70, padY = 12;
+  const totalW = pipeline.length * nodeW + (pipeline.length - 1) * gapX + 40;
+  const totalH = nodeH + padY * 2 + 20;
+
+  let svg = `<svg width="${{totalW}}" height="${{totalH}}" style="display:block;min-width:100%;overflow:visible">`;
+  pipeline.forEach((stage, i) => {{
+    if (i === 0) return;
+    const x1 = 20 + (i-1)*(nodeW+gapX) + nodeW, x2 = 20 + i*(nodeW+gapX);
+    const y = padY + nodeH/2, cx = (x1+x2)/2;
+    svg += `<path d="M${{x1}},${{y}} C${{cx}},${{y}} ${{cx}},${{y}} ${{x2}},${{y}}" stroke="#334155" stroke-width="2" fill="none"/>`;
+    svg += `<text x="${{cx}}" y="${{y-6}}" text-anchor="middle" font-size="9" fill="#64748b">${{EDGE_LABEL[stage]||""}}</text>`;
+    svg += `<circle cx="${{x1}}" cy="${{y}}" r="3" fill="#334155"/><circle cx="${{x2}}" cy="${{y}}" r="3" fill="#334155"/>`;
+  }});
+  pipeline.forEach((stage, i) => {{
+    const x = 20 + i*(nodeW+gapX), y = padY;
+    const s = stages[stage] || {{}};
+    const color = STATUS_COLOR[s.status] || STATUS_COLOR.pending;
+    const label = LABEL[stage] || stage;
+    const model = (s.handled_by && s.handled_by !== stage) ? `↑ ${{s.handled_by}}` : (s.model || "");
+    const statusTxt = s.progress || s.status || "pending";
+    const hasOutput = s.status === "done" || s.status === "error";
+    svg += `<g>
+      <rect x="${{x}}" y="${{y}}" width="${{nodeW}}" height="${{nodeH}}" rx="7" fill="#1e293b" stroke="${{color}}" stroke-width="2"/>
+      <rect x="${{x}}" y="${{y}}" width="${{nodeW}}" height="22" rx="7" fill="${{color}}22"/>
+      <rect x="${{x}}" y="${{y+14}}" width="${{nodeW}}" height="8" fill="${{color}}22"/>
+      <text x="${{x+nodeW/2}}" y="${{y+15}}" text-anchor="middle" font-size="11" font-weight="bold" fill="${{color}}">${{label}}</text>
+      <text x="${{x+nodeW/2}}" y="${{y+32}}" text-anchor="middle" font-size="9" fill="#94a3b8">${{statusTxt}}</text>
+      <text x="${{x+nodeW/2}}" y="${{y+46}}" text-anchor="middle" font-size="8" fill="#64748b">${{model}}</text>
+      ${{hasOutput ? `<text x="${{x+nodeW/2}}" y="${{y+64}}" text-anchor="middle" font-size="9" fill="${{color}}" style="cursor:pointer;text-decoration:underline" onclick="fleetShowNodeOutput('${{job.id}}','${{stage}}','${{label}}')">▶ output</text>` : ""}}
+      ${{hasOutput ? `<text x="${{x+nodeW/2}}" y="${{y+80}}" text-anchor="middle" font-size="8" fill="#f59e0b" style="cursor:pointer" onclick="fleetRerunFromStage('${{job.id}}','${{stage}}')">↺ rerun</text>` : ""}}
+    </g>`;
+  }});
+  svg += `</svg>`;
+  el.innerHTML = svg;
+}}
+
+async function fleetShowNodeOutput(jobId, stage, label) {{
+  const res = await fetch(api(`/api/jobs/${{jobId}}/stage/${{stage}}`)).then(r => r.json());
+  const output = res.output || "(no output)";
+  const input = res.input || "";
+  let _showInput = false;
+  const tabsEl = document.getElementById("modal-so-tabs");
+  const codeEl = document.getElementById("modal-so-code");
+  document.getElementById("modal-so-title").textContent = label;
+  const render = () => {{
+    codeEl.textContent = _showInput ? input : output;
+    tabsEl.innerHTML = input ? `
+      <button class="btn btn-ghost btn-sm" style="font-size:0.62rem;padding:0 0.4rem;${{_showInput?"background:#1e3a5f;color:#60a5fa":"color:#64748b"}}" onclick="_soToggle(true)">Received</button>
+      <button class="btn btn-ghost btn-sm" style="font-size:0.62rem;padding:0 0.4rem;${{!_showInput?"background:#1e3a5f;color:#60a5fa":"color:#64748b"}}" onclick="_soToggle(false)">Produced</button>` : "";
+  }};
+  window._soToggle = (v) => {{ _showInput = v; render(); }};
+  render();
+  document.getElementById("modal-stage-output").classList.add("open");
+}}
+
+async function fleetRerunFromStage(jobId, stage) {{
+  const STAGE_LABELS = {{project_manager:"PM",manager:"Manager",generator:"Generator",assembler:"Assembler",reviewer:"Reviewer",supervisor:"Supervisor",advisor:"Advisor"}};
+  const job = _fleetJobs.find(j => j.id === jobId);
+  if (!confirm(`Re-run from "${{STAGE_LABELS[stage]||stage}}"?`)) return;
+  await fetch(api(`/api/jobs/${{jobId}}/rerun-from/${{stage}}`), {{method:"POST"}});
+  _fleetSelectedId = jobId;
+  await loadFleetTab();
 }}
 
 async function selectFleetJob(id) {{
   if (id !== _fleetSelectedId) _fleetDetailPanel = null;
   _fleetSelectedId = id;
-  renderFleetJobList(); // update selected highlight
+  renderFleetJobList();
+  renderFleetPipeline();
   const res = await fetch(api("/api/jobs/" + id)).then(r => r.json());
   if (!res.ok) return;
   renderFleetDetail(res.job);
@@ -3041,7 +3174,8 @@ async function fleetCancelJob(id) {{
 
 async function fleetRetryJob(id) {{
   await fetch(api("/api/jobs/" + id + "/restart"), {{method:"POST"}});
-  selectFleetJob(id);
+  _fleetSelectedId = id;
+  await loadFleetTab();
 }}
 
 async function fleetRemoveJob(id) {{
@@ -3238,8 +3372,13 @@ async function saveChain() {{
 const STAGE_LABELS = {{project_manager:"PM",manager:"Manager",generator:"Generator",assembler:"Assembler",reviewer:"Reviewer",supervisor:"Supervisor",advisor:"Advisor"}};
 
 async function loadStageInstructions() {{
-  const sel = document.getElementById("pl-job-select");
-  const job = _plJobs.find(j => j.id === sel.value);
+  const sel = document.getElementById("si-job-select");
+  if (sel) {{
+    sel.innerHTML = `<option value="">— select job —</option>` +
+      (_fleetJobs.length ? _fleetJobs.map(j => `<option value="${{j.id}}">${{j.id.slice(0,8)}} — ${{(j.spec||"").slice(0,40)}}</option>`).join("") : "");
+  }}
+  const jobId = sel?.value || (document.getElementById("pl-job-select")?.value);
+  const job = [..._fleetJobs, ..._plJobs].find(j => j.id === jobId);
   const container = document.getElementById("pl-instructions");
   if (!job || !container) return;
   const pipeline = job.pipeline || [];
@@ -3252,8 +3391,9 @@ async function loadStageInstructions() {{
 }}
 
 async function saveStageInstructions() {{
-  const sel = document.getElementById("pl-job-select");
-  const job = _plJobs.find(j => j.id === sel.value);
+  const sel = document.getElementById("si-job-select") || document.getElementById("pl-job-select");
+  const jobId = sel?.value;
+  const job = [..._fleetJobs, ..._plJobs].find(j => j.id === jobId);
   if (!job) return;
   const instructions = {{}};
   (job.pipeline||[]).forEach(s => {{

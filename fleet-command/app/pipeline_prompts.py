@@ -878,7 +878,8 @@ _ROLE_MESSAGES_YAML: dict[str, list[tuple[str, str]]] = {
         (
             "assistant",
             "REJECTED: [specific reason — fundamental spec violation, wrong scope, or unrecoverable failure]\n"
-            "CORRECTIVE_BRIEF: [exact instructions for retry — what must change, what to avoid, minimum acceptable output]",
+            "REJECTED_AT: [reviewer|manager|project_manager — where the fix must be applied]\n"
+            "CORRECTIVE_BRIEF: [exact instructions for that stage — what must change, what to avoid, minimum acceptable output]",
         ),
         # 4. PM asks supervisor for clarification → supervisor answers directly
         (
@@ -956,6 +957,36 @@ def _get_messages(role: str, ctx_window: int, output_type: str) -> list[tuple[st
     return _MESSAGES_BY_TYPE[t].get(role, [])
 
 
+def _role_specific_rules(role: str) -> str:
+    if role == "supervisor":
+        return (
+            f"\n\nRejection routing — ALWAYS include both lines when rejecting:"
+            f"\n  REJECTED: <specific reason>"
+            f"\n  REJECTED_AT: <stage>  ← mandatory — tells the pipeline where to route the fix"
+            f"\n  CORRECTIVE_BRIEF: <exact actionable instructions for that stage>"
+            f"\n"
+            f"\nStage routing table:"
+            f"\n  REJECTED_AT: reviewer    — entity IDs are wrong, YAML structure malformed, bad nesting, missing view/cards wrapper"
+            f"\n  REJECTED_AT: manager     — card content wrong, missing card property (e.g. forecast_type), wrong card type, task was misspecified"
+            f"\n  REJECTED_AT: project_manager — wrong scope, wrong number of views, spec violated at planning level"
+            f"\n"
+            f"\nIf unsure: use REJECTED_AT: manager — manager re-tasks the generator for the specific fragment."
+            f"\nNever reject without REJECTED_AT. Never send REJECTED_AT without CORRECTIVE_BRIEF."
+        )
+    if role == "reviewer":
+        return (
+            f"\n\nRework protocol — for content errors in a specific fragment (wrong card type, missing required property):"
+            f"\n  [COMM] to:manager — task <N>/<total>, block: <block name>: <specific problem and analysis>. Redefine this task and send corrected YAML."
+            f"\n  The pipeline will have manager re-brief and generator re-execute that exact task."
+            f"\n  You will receive: [COMM] pipeline → rework complete\\n<corrected fragment>"
+            f"\n  Integrate the corrected fragment into your output and continue review."
+            f"\n"
+            f"\nOnly use rework for content errors — not for entity IDs (Pass 1 handles those) and not for structure (Pass 2/3 handle those)."
+            f"\nOne rework COMM per review session — do not chain multiple rework requests."
+        )
+    return ""
+
+
 def _build_system_block(harness: dict[str, Any], role: str) -> str:
     from app.roles import ROLE_META
     from app.pipeline_rules import ESCALATION_CHAIN
@@ -1005,6 +1036,7 @@ def _build_system_block(harness: dict[str, Any], role: str) -> str:
         f"\n  The pipeline will return [COMM] pipeline → ref:<section-id> with the exact content."
         f"\n- When you receive any [COMM] prefix: read it as context only — never echo it in your output."
         f"\n- In normal situations, send your output directly — no [COMM] needed."
+        f"{_role_specific_rules(role)}"
         f"{cost_note}"
     )
 
