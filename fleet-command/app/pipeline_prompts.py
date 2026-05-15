@@ -12,7 +12,7 @@ PROMPT_VARIABLES: dict[str, list[str]] = {
     "manager":         ["{spec}", "{prev}"],
     "generator":       ["{spec}", "{task}", "{block}", "{prev}"],
 
-    "reviewer":        ["{spec}", "{prev}"],
+    "reviewer":        ["{spec}", "{plan}", "{prev}"],
     "supervisor":      ["{spec}", "{prev}"],
 }
 
@@ -57,7 +57,8 @@ DEFAULT_PROMPTS: dict[str, str] = {
     ),
     "reviewer": (
         "Spec: {spec}\n\n"
-        "Output to review:\n{prev}"
+        "Build plan (reference — what was supposed to be built):\n{plan}\n\n"
+        "Code to review:\n{prev}"
     ),
     "supervisor": (
         "Job specification:\n{spec}\n\n"

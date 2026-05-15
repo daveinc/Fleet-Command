@@ -758,7 +758,7 @@ def _count_rejection_issues(text: str) -> int:
     return len(re.findall(r'^\s*\d+[\.\)]\s+', text, re.MULTILINE))
 
 
-def _user_prompt(stage: str, spec: str, prev: str | None, task: str | None = None, block: str | None = None, extra: str | None = None, **_kwargs: Any) -> str:
+def _user_prompt(stage: str, spec: str, prev: str | None, task: str | None = None, block: str | None = None, extra: str | None = None, plan: str | None = None, **_kwargs: Any) -> str:
     from app.pipeline_prompts import render_prompt
     if stage == "generator" and task:
         prompt = render_prompt("generator", spec=spec, task=task, block=block or "", prev=prev or "")
@@ -769,6 +769,8 @@ def _user_prompt(stage: str, spec: str, prev: str | None, task: str | None = Non
     elif stage == "manager":
         prompt = render_prompt("manager", spec=spec, prev=(prev or "")[:800])
         prompt += "\n\nHard limit: maximum 12 tasks total across all blocks. If the spec requires more, group similar items into one task."
+    elif stage == "reviewer":
+        prompt = render_prompt("reviewer", spec=spec, plan=plan or "", prev=prev or "")
     else:
         prompt = render_prompt(stage, spec=spec, prev=prev or "")
     if extra:
@@ -1023,7 +1025,9 @@ async def run_stage(job_id: str, stage: str) -> dict[str, Any]:
     }
     prev = read_stage_output(job_id, prev_stages.get(stage, "")) if stage in prev_stages else None
 
-    user = _user_prompt(stage, spec, prev, extra=extra)
+    plan = read_stage_output(job_id, "project_manager") if stage == "reviewer" else None
+
+    user = _user_prompt(stage, spec, prev, extra=extra, plan=plan)
     write_stage_input(job_id, stage, user)
 
     append_log(job, stage, f"Calling {harness.get('display_name', harness_id)}...")
