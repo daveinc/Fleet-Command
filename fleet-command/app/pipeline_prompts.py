@@ -48,7 +48,7 @@ DEFAULT_PROMPTS: dict[str, str] = {
         "Task: {task}\n"
         "Block: {block}\n\n"
         "Output the requested code only. Follow the reference and structure provided in the task brief exactly.\n"
-        "No explanation. No fences. No wrapper."
+        "No explanation. No fences. No wrapper. No comments."
     ),
     "generator_single": (
         "Build this: {spec}\n\n"
@@ -404,6 +404,15 @@ _ROLE_MESSAGES_MINIMAL_YAML: dict[str, list[tuple[str, str]]] = {
         (
             "assistant",
             "REVIEW: failed — placeholder entity IDs present (sensor.PLACEHOLDER_TEMP), not resolved\n---\ntype: grid\ncards:\n  - type: sensor\n    entity: sensor.PLACEHOLDER_TEMP",
+        ),
+        # Code with # Block: comment headers — still code, do NOT abort
+        (
+            "user",
+            "Spec: [job description]\n\nOutput to review:\n# Block: Layout\ntype: grid\ncolumns: 12\n---\n# Block: Entities\ntype: entities\nentities:\n  - entity: sensor.temperature",
+        ),
+        (
+            "assistant",
+            "REVIEW: passed — structure valid, YAML keys present\n---\n# Block: Layout\ntype: grid\ncolumns: 12\n---\n# Block: Entities\ntype: entities\nentities:\n  - entity: sensor.temperature",
         ),
         # Input is task descriptions, not code
         (
@@ -837,7 +846,36 @@ _ROLE_MESSAGES_YAML: dict[str, list[tuple[str, str]]] = {
             "assistant",
             "ESCALATE: context too large — output cannot be reviewed in one pass",
         ),
-        # 4. Input is task descriptions, not code
+        # 4. Code with # Block: comment headers — still code, do NOT abort
+        (
+            "user",
+            "Spec: [job description]\n\n"
+            "Output to review:\n"
+            "# Block: Layout & Shell\n"
+            "type: grid\n"
+            "columns: 12\n"
+            "rows: 6\n"
+            "---\n"
+            "# Block: Media Player Core\n"
+            "type: entities\n"
+            "entities:\n"
+            "  - entity: media_player.living_room",
+        ),
+        (
+            "assistant",
+            "REVIEW: passed — structure valid, YAML keys present in all blocks\n"
+            "---\n"
+            "# Block: Layout & Shell\n"
+            "type: grid\n"
+            "columns: 12\n"
+            "rows: 6\n"
+            "---\n"
+            "# Block: Media Player Core\n"
+            "type: entities\n"
+            "entities:\n"
+            "  - entity: media_player.living_room",
+        ),
+        # 5. Input is task descriptions, not code
         (
             "user",
             "Spec: [job description]\n\n"
@@ -992,7 +1030,7 @@ def _role_specific_rules(role: str) -> str:
             f"\n  You will receive: [COMM] pipeline → rework complete\\n<corrected fragment>"
             f"\n  Integrate the corrected fragment into your output and continue review."
             f"\n"
-            f"\nOnly use rework for content errors — not for entity IDs (Pass 1 handles those) and not for structure (Pass 2/3 handle those)."
+            f"\nRework for content errors only — do not rework for placeholder entity IDs or minor structural issues."
             f"\nOne rework COMM per review session — do not chain multiple rework requests."
         )
     return ""
