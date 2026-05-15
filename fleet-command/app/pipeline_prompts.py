@@ -11,7 +11,7 @@ PROMPT_VARIABLES: dict[str, list[str]] = {
     "project_manager": ["{spec}"],
     "manager":         ["{spec}", "{prev}"],
     "generator":       ["{spec}", "{task}", "{block}", "{prev}"],
-    "assembler":       ["{spec}", "{fragments}"],
+
     "reviewer":        ["{spec}", "{prev}"],
     "supervisor":      ["{spec}", "{prev}"],
 }
@@ -20,88 +20,54 @@ DEFAULT_PROMPTS: dict[str, str] = {
     "project_manager": (
         "Job request: {spec}\n\n"
         "Max tasks per run: {max_tasks}\n\n"
-        "If total card count fits within {max_tasks} tasks: list the major UI blocks and what cards each contains. Plain text only. No YAML. Under 100 words.\n"
-        "If total card count exceeds {max_tasks} tasks: split into sub-jobs, each under {max_tasks} tasks. Output only:\n"
+        "Describe the project fully — intent, domain, scope, and what a successful output looks like.\n"
+        "If total task count fits within {max_tasks}: list the major blocks and what each contains. Plain text only. No code. Under 150 words.\n"
+        "If total task count exceeds {max_tasks}: split into self-contained sub-jobs, each under {max_tasks} tasks. Output only:\n"
         "SUB-JOB 1: [self-contained scope description]\n"
         "SUB-JOB 2: [self-contained scope description]\n"
-        "One line per sub-job. No extra text. No YAML."
+        "One line per sub-job. No extra text. No code."
     ),
     "manager": (
         "Original request: {spec}\n\n"
         "Plan:\n{prev}\n\n"
-        "Output ONLY a block/task list in this exact format. Nothing else:\n\n"
+        "Break the plan into blocks and tasks. For each task write a complete brief the worker can act on directly — "
+        "include what to build, the structure to follow, relevant reference examples or patterns, and any constraints.\n\n"
+        "Format:\n"
         "BLOCK 1: [name]\n"
-        "- Task 1: [card type] [brief purpose]\n"
-        "- Task 2: [card type] [brief purpose]\n\n"
+        "- Task 1: [type] — [purpose] — Reference: [pattern or example the worker should follow]\n"
+        "- Task 2: [type] — [purpose]\n\n"
         "BLOCK 2: [name]\n"
         "- Task 1: ...\n\n"
-        "Rules: one task = one card. Match the exact card count in the original request. No YAML. No explanations. No intro text."
+        "One task = one unit of work. No code output. No explanations outside task briefs."
     ),
     "generator": (
         "Task: {task}\n"
         "Block: {block}\n\n"
-        "Output ONE valid Home Assistant Lovelace card in YAML. Card definition only — no views, no title, no dashboard wrapper.\n\n"
-        "Card examples:\n"
-        "  Static markdown:\n"
-        "    type: markdown\n"
-        "    content: |\n"
-        "      ## Title\n"
-        "      Your text here.\n"
-        "  Markdown with live template:\n"
-        "    type: markdown\n"
-        "    content: |\n"
-        "      Current time: {{{{ now().strftime('%H:%M') }}}}\n"
-        "      Value: {{{{ states('sensor.example') }}}}\n"
-        "  Entities:\n"
-        "    type: entities\n"
-        "    title: Title\n"
-        "    entities:\n"
-        "      - entity: sensor.example\n\n"
-        "Rules:\n"
-        "- Placeholders (tip of the day, welcome text, etc.) use plain static text — no templates\n"
-        "- Live sensor data uses {{{{ states('sensor.x') }}}} inside content:\n"
-        "- Current date/time uses {{{{ now().strftime('%Y-%m-%d %H:%M') }}}} inside content:\n"
-        "- Never output sensor: definitions — Lovelace cards only\n\n"
-        "YAML only. No explanation. No fences."
+        "Output the requested code only. Follow the reference and structure provided in the task brief exactly.\n"
+        "No explanation. No fences. No wrapper."
     ),
     "generator_single": (
         "Build this: {spec}\n\n"
-        "Output complete valid Home Assistant Lovelace YAML. Include title, views, and all cards.\n"
-        "YAML only. No explanation. No fences."
-    ),
-    "assembler": (
-        "Job specification: {spec}\n\n"
-        "Card fragments:\n{fragments}\n\n"
-        "Combine into one complete Home Assistant Lovelace dashboard YAML.\n"
-        "Structure:\n"
-        "  title: Dashboard Title\n"
-        "  views:\n"
-        "    - title: View Name\n"
-        "      cards:\n"
-        "        - [card here]\n\n"
-        "Group cards under views by their block name. Fix any invalid card fields (e.g. markdown cards must use 'content:', not 'entity:').\n"
-        "Output complete YAML only. No explanations. No fences."
+        "Output complete valid code. Include all required structure.\n"
+        "No explanation. No fences."
     ),
     "reviewer": (
         "Spec: {spec}\n\n"
-        "YAML to review:\n{prev}\n\n"
-        "Fix any issues you find directly — do not just list them. Output the corrected YAML.\n"
-        "Issues to fix: markdown code fences (``` lines) anywhere in the YAML, invalid card types, "
-        "markdown cards using 'entity:' instead of 'content:', sensor definitions inside views, missing 'type:' fields.\n"
-        "First line MUST be: '# REVIEW: <one-sentence verdict>'\n"
-        "Examples: '# REVIEW: Fixed code fences and corrected 2 card types.' or '# REVIEW: Valid — no changes needed.'\n"
-        "Then output the complete corrected YAML. YAML only after the review line. No fences. No explanations."
+        "Output to review:\n{prev}\n\n"
+        "Review the output against the spec and any references. Fix small issues directly.\n"
+        "If you need clarification on structure or intent, send [COMM] to:manager before proceeding.\n"
+        "Return your result as two separate messages:\n"
+        "Message 1: [COMM] to:manager — review: [passed/fixed/failed] — [what was checked, what was fixed, or why it failed]\n"
+        "Message 2: corrected output only — no explanation, no fences"
     ),
     "supervisor": (
         "Job specification:\n{spec}\n\n"
         "Final output for sign-off:\n{prev}\n\n"
-        "If the YAML is a valid Home Assistant Lovelace dashboard that fulfils the spec, return it unchanged.\n"
-        "If not, output exactly three lines:\n"
-        "REJECTED_AT: <stage>\n"
-        "REJECTED: <specific reason what is wrong>\n"
-        "CORRECTIVE_BRIEF: <exact instructions for that stage to fix the problem — card types to use, entities, structure, what to avoid — be specific enough that the worker can act on it without asking questions>\n"
-        "Valid REJECTED_AT stages: project_manager, manager, generator, reviewer.\n"
-        "Choose the stage closest to where the error originated.\n"
+        "If the output fulfils the spec: approve and deliver.\n"
+        "If there are fixable issues: send [COMM] to:project_manager with reprocess instructions — route to the correct stage, specify exactly what to fix.\n"
+        "If the output has a fundamental failure (wrong scope, unrecoverable errors, spec completely missed): output:\n"
+        "REJECTED: <specific reason>\n"
+        "CORRECTIVE_BRIEF: <exact instructions for what must change before retry>\n"
         "Plain text only — no markdown, no bold, no bullet symbols."
     ),
 }
@@ -357,93 +323,91 @@ _ROLE_MESSAGES_MINIMAL_YAML: dict[str, list[tuple[str, str]]] = {
     "generator": [
         (
             "user",
-            "I need a card built — here's the task brief and block assignment.",
+            "Task: [task type and purpose]\nBlock: [block name]",
         ),
         (
             "assistant",
-            "Sure — *yaml card output here, card definition only*",
+            "*output here — definition only, no wrapper, no fences*",
         ),
         (
             "user",
-            "I need a card built:\nTask: [card type]\nBlock: [block name]\n\nAdditional instructions: [corrective brief — card types, entities, what to avoid]",
+            "Task: [task type]\nBlock: [block name]\n\nAdditional instructions: [corrective brief — structure to use, what to avoid]",
         ),
         (
             "assistant",
-            "*yaml card output here — following corrective instructions exactly*",
+            "*output here — all corrective instructions applied*",
         ),
     ],
     "manager": [
         (
             "user",
-            "I need a block/task breakdown — here's the spec and the PM plan.",
+            "Original request: [job description]\n\nPlan:\n[PM block summary]",
         ),
         (
             "assistant",
-            "BLOCK 1: [name]\n- Task 1: [card type and purpose]\n- Task 2: [card type and purpose]",
+            "BLOCK 1: [name]\n- Task 1: [task type and purpose]\n- Task 2: [task type and purpose]",
         ),
         (
             "user",
-            "I need a block/task breakdown.\n\nAdditional instructions: [corrective brief — how to restructure blocks or tasks]",
+            "Original request: [job description]\n\nPlan:\n[PM block summary]\n\nAdditional instructions: [corrective brief — how to restructure]",
         ),
         (
             "assistant",
-            "BLOCK 1: [restructured name]\n- Task 1: [adjusted card type per brief]",
+            "BLOCK 1: [restructured name per brief]\n- Task 1: [adjusted task type]",
         ),
     ],
     "project_manager": [
         (
             "user",
-            "I need a job scoped — here's the spec and the task limit.",
+            "Job request: [job description]\n\nMax tasks per run: [limit]",
         ),
         (
             "assistant",
-            "Block 1: [domain]\n- [card type]\n\nBlock 2: [domain]\n- [card type]",
+            "BLOCK 1: [domain]\n- [task type]\n\nBLOCK 2: [domain]\n- [task type]",
         ),
         (
             "user",
-            "I need a job scoped.\n\nAdditional instructions: [corrective brief — scope constraints, blocks to simplify]",
+            "Job request: [job description]\n\nMax tasks per run: [limit]\n\nAdditional instructions: [corrective brief — scope constraints]",
         ),
         (
             "assistant",
-            "Block 1: [rescoped domain per brief]\n- [card type per constraints]",
+            "BLOCK 1: [rescoped domain per brief]\n- [task type per constraints]",
         ),
     ],
     "reviewer": [
         (
             "user",
-            "I need this reviewed — here's the spec and the assembled output. *expect yaml code here*",
+            "Spec: [job description]\n\nOutput to review:\n*assembled output here*",
         ),
         (
             "assistant",
-            "# REVIEW: [verdict — fixed X / valid / escalating]\n*corrected yaml output here*",
+            "[COMM] to:manager — review: [passed/fixed/failed] — [notes]",
         ),
         (
             "user",
-            "I need this reviewed. *expect yaml code here*\n\nAdditional instructions: [corrective brief — specific issues to look for and fix]",
+            "[COMM] pipeline → send output",
         ),
         (
             "assistant",
-            "# REVIEW: Applied corrective brief — [what was fixed].\n*full corrected yaml here*",
+            "*reviewed output here*",
         ),
     ],
     "supervisor": [
         (
             "user",
-            "I need a final sign-off — here's the spec and the reviewed output. *expect yaml code here*",
+            "[COMM] project_manager → sign-off: approved — project: [ID], spec: [summary], chain: [stages ran]",
         ),
         (
             "assistant",
-            "*pass: yaml returned unchanged* or REJECTED_AT: [stage]\nREJECTED: [specific reason]\nCORRECTIVE_BRIEF: [exact fix instructions for that stage]",
+            "[COMM] pipeline → approved — delivering output",
         ),
-    ],
-    "advisor": [
         (
             "user",
-            "A supervisor worker is escalating to you — it cannot complete its task.\n\nReason: [escalation reason]\n\nTask context:\n[job summary]\n\nProvide clear, specific guidance.",
+            "[COMM] pipeline → send output",
         ),
         (
             "assistant",
-            "[direct actionable guidance — break loop / substitute / accept partial / flag for user]",
+            "[final approved output]",
         ),
     ],
 }
@@ -452,49 +416,33 @@ _ROLE_MESSAGES_MINIMAL_YAML: dict[str, list[tuple[str, str]]] = {
 
 _ROLE_MESSAGES_YAML: dict[str, list[tuple[str, str]]] = {
     "generator": [
-        # Normal task → output card YAML only
+        # 1. Normal build → output card YAML only
         (
             "user",
-            "I need a card built — here's the task brief and block assignment:\n"
             "Task: [card type and purpose]\n"
             "Block: [block name]",
         ),
         (
             "assistant",
-            "Sure — *yaml card output here, card definition only*",
+            "*yaml card output here — card definition only, no wrapper, no fences*",
         ),
-        # Missing entity → escalate, don't guess
+        # 2. Corrective brief injected — follow all instructions exactly
         (
             "user",
-            "I need a card built — here's the task:\n"
-            "Task: [card requiring entity ID that was not provided]\n"
-            "Block: [block name]",
+            "Task: [card type]\n"
+            "Block: [block name]\n\n"
+            "Additional instructions: [corrective brief — specific card types, structure to use, what to avoid]",
         ),
         (
             "assistant",
-            "ESCALATE: missing entity — [entity purpose] entity ID not provided, cannot build card without it",
+            "*yaml card output here — all corrective instructions applied*",
         ),
-        # Corrective brief injected after supervisor rejection
+        # 3. Retry after rejection — address all rejection remarks
         (
             "user",
-            "I need a card built:\n"
             "Task: [card type]\n"
             "Block: [block name]\n\n"
-            "Additional instructions: [corrective brief from supervisor — specific card types, entity IDs, structure to use, what to avoid]",
-        ),
-        (
-            "assistant",
-            "*yaml card output here — following all corrective instructions exactly*",
-        ),
-        # Retry after rejection
-        (
-            "user",
-            "I need a card rebuilt — previous attempt was rejected:\n"
-            "Task: [card type]\n"
-            "Block: [block name]\n\n"
-            "This is a retry. The original request was:\n"
-            "[original task spec]\n\n"
-            "The previous attempt was rejected with these remarks:\n"
+            "This is a retry. Previous attempt was rejected:\n"
             "[rejection reason]\n\n"
             "Address all rejection remarks in your output.",
         ),
@@ -502,55 +450,62 @@ _ROLE_MESSAGES_YAML: dict[str, list[tuple[str, str]]] = {
             "assistant",
             "*corrected yaml card here — all rejection remarks addressed*",
         ),
-        # Chunked input — process only this portion
+        # 4. Reference content pre-embedded by manager — use it, output card
         (
             "user",
-            "[COMM] pipeline → chunk 2/3 — process only this portion, output your result for this chunk only\n\n"
+            "Task: [card type and purpose]\n"
+            "Block: [block name]\n\n"
+            "Reference:\n"
+            "[relevant section content provided by manager]",
+        ),
+        (
+            "assistant",
+            "*yaml card output here — built using provided reference*",
+        ),
+        # 5a. [COMM] irregular — manager sends correction mid-task
+        (
+            "user",
+            "[COMM] manager → correction: [what was wrong and what to use instead]\n\n"
             "Task: [card type]\n"
             "Block: [block name]",
         ),
         (
             "assistant",
-            "*yaml card output here — this chunk only, no reference to other chunks*",
+            "*yaml card output here — correction applied*",
         ),
-        # Reference index received at stage start — look up section before building
+        # 5b. [COMM] irregular — generator asks structural question, manager answers, generator outputs
         (
             "user",
-            "[COMM] pipeline → index: ha_components.yaml\n\n"
-            "entities-card | 11-31 | Entities list card with icon, secondary_info, tap_action, divider, and call-service\n"
-            "glance-card | 36-51 | Compact multi-entity row with columns and toggle tap_action\n"
-            "card-mod-basic | 182-199 | card_mod style block on an entities card targeting ha-card and .card-header",
+            "Task: [card type with ambiguous structure]\n"
+            "Block: [block name]",
         ),
         (
             "assistant",
-            "Reference index received.",
+            "[COMM] to:manager — question: [structural or scope question — not about entity IDs]",
         ),
         (
             "user",
-            "Task: Build a styled entities card for the bedroom with card_mod dark background.\n"
-            "Block: Bedroom",
+            "[COMM] manager → [direct answer to structural question]",
         ),
         (
             "assistant",
-            "[COMM] to:pipeline — ref:ha_components.yaml, section:card-mod-basic",
+            "*yaml card output here — built using manager's answer*",
         ),
+        # 5c. [COMM] irregular — cross-worker, fragment received from another worker to fix or incorporate
         (
             "user",
-            "[COMM] pipeline → ref:card-mod-basic\n\n"
-            "card-mod-basic:\n"
-            "  type: entities\n"
-            "  ...[section content]...",
+            "[COMM] [worker role] → [context: what is being sent and why — fix request, answer, or fragment]\n\n"
+            "[content from the other worker]",
         ),
         (
             "assistant",
-            "type: entities\ntitle: Bedroom\nentities:\n  - entity: light.bedroom\ncard_mod:\n  style: |\n    ha-card { background: rgba(20,20,30,0.9) !important; }",
+            "*yaml card output here — incorporating content from [worker role]*",
         ),
     ],
     "manager": [
-        # PM plan → structured BLOCK/task breakdown
+        # 1. PM plan → structured BLOCK/task breakdown
         (
             "user",
-            "I need a block/task breakdown — here's the spec and the PM plan:\n"
             "Original request: [job description]\n\n"
             "Plan:\n"
             "[PM block summary]",
@@ -558,43 +513,45 @@ _ROLE_MESSAGES_YAML: dict[str, list[tuple[str, str]]] = {
         (
             "assistant",
             "BLOCK 1: [name]\n"
-            "- Task 1: [card type and purpose]\n"
-            "- Task 2: [card type and purpose]\n\n"
+            "- Task 1: [task type and purpose]\n"
+            "- Task 2: [task type and purpose]\n\n"
             "BLOCK 2: [name]\n"
-            "- Task 1: [card type and purpose]",
+            "- Task 1: [task type and purpose]",
         ),
-        # Corrective brief from supervisor — restructure failing block/tasks
+        # 2. Corrective brief — restructure failing blocks/tasks
         (
             "user",
-            "I need a block/task breakdown — here's the spec:\n"
             "Original request: [job description]\n\n"
             "Plan:\n"
             "[PM block summary]\n\n"
-            "Additional instructions: [corrective brief from supervisor — how to restructure blocks or tasks to fix the failure]",
+            "Additional instructions: [corrective brief — how to restructure blocks or tasks to fix the failure]",
         ),
         (
             "assistant",
             "BLOCK 1: [restructured name per corrective brief]\n"
-            "- Task 1: [adjusted card type and purpose]\n"
-            "- Task 2: [adjusted card type and purpose]",
+            "- Task 1: [adjusted task type and purpose]\n"
+            "- Task 2: [adjusted task type and purpose]",
         ),
-        # Generator escalated with missing entity
+        # 3. Generator [COMM] unclear instructions → manager clarifies → generator proceeds
         (
             "user",
-            "A generator worker is escalating to you — it cannot complete its task.\n\n"
-            "Reason: [escalation reason from generator]\n\n"
-            "Task context:\n"
-            "[task brief that was being worked on]\n\n"
-            "Provide clear, specific guidance on how to proceed.",
+            "[COMM] generator → unclear instructions: [what is ambiguous about the task brief]",
         ),
         (
             "assistant",
-            "[direct fix — supply missing info, correct the task, or specify a different approach]",
+            "[COMM] to:generator — clarification: [direct answer resolving the ambiguity]",
         ),
-        # Plan too large → escalate back to PM
         (
             "user",
-            "I need a block/task breakdown — here's the spec:\n"
+            "[COMM] pipeline → generator acknowledged, proceeding",
+        ),
+        (
+            "assistant",
+            "[COMM] to:project_manager — generator unblocked, task [N] continuing",
+        ),
+        # 4. Plan too large → ESCALATE to PM
+        (
+            "user",
             "Original request: [very large multi-domain job]\n\n"
             "Plan:\n"
             "[PM plan with too many blocks / tasks to break down in one pass]",
@@ -603,83 +560,125 @@ _ROLE_MESSAGES_YAML: dict[str, list[tuple[str, str]]] = {
             "assistant",
             "ESCALATE: plan too large — [N] blocks and [M]+ tasks exceeds single breakdown pass, recommend PM splits into separate sub-jobs per domain",
         ),
-        # Sign-off with completeness check — missing piece detected
+        # 5. Sign-off: all tasks present → approve and pass to PM
         (
             "user",
             "Generator has completed all tasks. Assembled fragments follow.\n\n"
-            "Expected tasks from planning:\n"
-            "  - [Security] motion sensor card\n"
-            "  - [Security] door sensor card\n"
-            "  - [Weather] temperature card\n\n"
-            "Verify all tasks are present. If any are missing, send [COMM] to:generator for the missing piece.\n\n"
-            "Apply HA dashboard structure. Output final YAML only.\n\n"
-            "# Block: Security\n"
-            "[door sensor card yaml]\n\n"
-            "# Block: Weather\n"
-            "[temperature card yaml]",
+            "Expected tasks:\n"
+            "  - [Block A] task 1\n"
+            "  - [Block A] task 2\n"
+            "  - [Block B] task 1\n\n"
+            "# Block: Block A\n"
+            "[task 1 output]\n"
+            "[task 2 output]\n\n"
+            "# Block: Block B\n"
+            "[task 1 output]",
         ),
         (
             "assistant",
-            "[COMM] to:generator — task 1/3 missing, block: Security, purpose: motion sensor card showing binary_sensor state",
+            "[COMM] to:project_manager — sign-off: approved — all [N] tasks present, [M] blocks complete",
         ),
-        # Sign-off after gap-fill returned
         (
             "user",
-            "[COMM] pipeline → code from generator, task 1/3, block: Security — missing card returned\n\n"
-            "[motion sensor card yaml]\n\n"
-            "Incorporate this and output your final structured result.",
+            "[COMM] pipeline → send assembled output",
         ),
         (
             "assistant",
-            "title: Fleet Output\nviews:\n  - title: Security\n    cards:\n      - [motion sensor card]\n      - [door sensor card]\n  - title: Weather\n    cards:\n      - [temperature card]",
+            "[assembled output structured by block]",
         ),
-        # Chunked sign-off — process only this block portion
+        # 6. Sign-off: missing task → gap-fill → incorporate → approve
         (
             "user",
-            "[COMM] pipeline → chunk 1/2 — structure only these blocks as views, output only this chunk's YAML\n\n"
-            "# Block: Security\n"
-            "[card yaml]",
+            "Generator has completed all tasks. Assembled fragments follow.\n\n"
+            "Expected tasks:\n"
+            "  - [Block A] task 1\n"
+            "  - [Block A] task 2\n\n"
+            "# Block: Block A\n"
+            "[task 2 output only — task 1 missing]",
         ),
         (
             "assistant",
-            "title: Fleet Output\nviews:\n  - title: Security\n    cards:\n      - [card yaml]",
+            "[COMM] to:generator — task 1/2 missing, block: Block A, purpose: [what is needed]",
+        ),
+        (
+            "user",
+            "[COMM] pipeline → generator returned missing task 1/2, block: Block A\n\n"
+            "[task 1 output]",
+        ),
+        (
+            "assistant",
+            "[COMM] to:project_manager — sign-off: approved — gap filled, all [N] tasks present",
+        ),
+        (
+            "user",
+            "[COMM] pipeline → send assembled output",
+        ),
+        (
+            "assistant",
+            "[assembled output with gap-fill incorporated]",
+        ),
+        # 7. Chunked sign-off — input too large, process this chunk only
+        (
+            "user",
+            "[COMM] pipeline → chunk 1/2 — structure only these blocks, output only this chunk\n\n"
+            "# Block: [Block A]\n"
+            "[task outputs]",
+        ),
+        (
+            "assistant",
+            "[assembled output for chunk 1 only]",
+        ),
+        # 8. [COMM] irregular — manager asks PM for clarification
+        (
+            "user",
+            "[original request or plan with ambiguous scope or conflicting instructions]",
+        ),
+        (
+            "assistant",
+            "[COMM] to:project_manager — question: [specific scope or structure question that cannot be resolved from the brief alone]",
+        ),
+        (
+            "user",
+            "[COMM] project_manager → [direct answer]",
+        ),
+        (
+            "assistant",
+            "BLOCK 1: [name resolved per PM answer]\n"
+            "- Task 1: [task type and purpose]",
         ),
     ],
     "project_manager": [
-        # Normal spec that fits within threshold → block list
+        # 1. Normal spec within task limit → block list to manager
         (
             "user",
-            "I need a job scoped — here's the spec and task limit:\n"
             "Job request: [job description that fits within max_tasks]\n\n"
             "Max tasks per run: [limit]",
         ),
         (
             "assistant",
-            "Block 1: [domain]\n"
-            "- [card type]\n"
-            "- [card type]\n\n"
-            "Block 2: [domain]\n"
-            "- [card type]",
+            "BLOCK 1: [domain]\n"
+            "- [task type]\n"
+            "- [task type]\n\n"
+            "BLOCK 2: [domain]\n"
+            "- [task type]",
         ),
-        # Corrective brief from supervisor — re-scope with specific constraints
+        # 2. Corrective brief from supervisor → re-scope and replan
         (
             "user",
-            "I need a job scoped — here's the spec:\n"
             "Job request: [job description]\n\n"
             "Max tasks per run: [limit]\n\n"
-            "Additional instructions: [corrective brief from supervisor — specific constraints on scope, blocks to remove or simplify, approach to take]",
+            "Additional instructions: [corrective brief — scope constraints, blocks to simplify or remove]",
         ),
         (
             "assistant",
-            "Block 1: [rescoped domain per corrective brief]\n"
-            "- [card type per constraints]\n\n"
-            "Block 2: [rescoped domain]\n"
-            "- [card type per constraints]",
+            "BLOCK 1: [rescoped domain per corrective brief]\n"
+            "- [task type per constraints]\n\n"
+            "BLOCK 2: [rescoped domain]\n"
+            "- [task type per constraints]",
         ),
-        # Scope exceeds threshold → split into sub-jobs
+        # 3. Scope exceeds limit → split into sub-jobs
         (
             "user",
-            "I need a job scoped — here's the spec:\n"
             "Job request: [multi-domain job that exceeds max_tasks]\n\n"
             "Max tasks per run: [limit]",
         ),
@@ -689,134 +688,216 @@ _ROLE_MESSAGES_YAML: dict[str, list[tuple[str, str]]] = {
             "SUB-JOB 2: [self-contained domain scope]\n"
             "SUB-JOB 3: [self-contained domain scope]",
         ),
-        # Single domain genuinely too large even after splitting → escalate
+        # 4. Single domain too large to split → ESCALATE to supervisor
         (
             "user",
-            "I need a job scoped — here's the spec:\n"
-            "Job request: [single domain so large it cannot be split into runs under the task limit]\n\n"
+            "Job request: [single domain so large it cannot be split under the task limit]\n\n"
             "Max tasks per run: [limit]",
         ),
         (
             "assistant",
             "ESCALATE: single domain exceeds run limit — [reason] cannot be split into sub-jobs each under [limit] tasks without losing coherence, requires manual scoping",
         ),
+        # 5. Manager sign-off received (approved) → PM approves, [COMM] to supervisor with project notes
+        (
+            "user",
+            "[COMM] manager → sign-off: approved — all [N] tasks present, [M] blocks complete",
+        ),
+        (
+            "assistant",
+            "[COMM] to:supervisor — sign-off: approved — project: [ID], spec: [one-line summary], chain: [stages that ran], flags: [any escalations or corrections that occurred — who flagged, what stage, what was done], substitutions: [anything replaced or skipped and why], open-items: [anything requiring user attention]",
+        ),
+        (
+            "user",
+            "[COMM] pipeline → send output",
+        ),
+        (
+            "assistant",
+            "[final assembled output]",
+        ),
+        # 6. Manager sign-off received (rejected) → PM rejects, [COMM] to supervisor with failure details
+        (
+            "user",
+            "[COMM] manager → sign-off: rejected — [stage], reason: [why it failed]",
+        ),
+        (
+            "assistant",
+            "[COMM] to:supervisor — sign-off: rejected — project: [ID], spec: [one-line summary], chain: [stages that ran], failed-at: [stage], flagged-by: [worker], reason: [specific failure], attempted: [corrective action tried], recommendation: [what needs to change before retry]",
+        ),
+        # 7. [COMM] irregular — manager asks PM for clarification
+        (
+            "user",
+            "[COMM] manager → question: [scope or structure question that cannot be resolved from the brief]",
+        ),
+        (
+            "assistant",
+            "[COMM] to:manager — clarification: [direct answer resolving the ambiguity]",
+        ),
+        # 8. [COMM] irregular — PM asks supervisor for clarification
+        (
+            "user",
+            "[job request or brief with conflicting requirements or unclear scope]",
+        ),
+        (
+            "assistant",
+            "[COMM] to:supervisor — question: [specific question about scope, priority, or constraints that cannot be resolved from the spec alone]",
+        ),
+        (
+            "user",
+            "[COMM] supervisor → [direct answer]",
+        ),
+        (
+            "assistant",
+            "BLOCK 1: [domain resolved per supervisor answer]\n"
+            "- [task type]",
+        ),
     ],
     "reviewer": [
-        # Valid assembled dashboard → pass through unchanged
+        # Valid output — pass through unchanged
         (
             "user",
-            "I need this reviewed — here's the spec and the assembled output.\n"
             "Spec: [job description]\n\n"
-            "YAML to review:\n"
-            "*assembled dashboard yaml here — N blocks, M cards across K views*",
+            "Output to review:\n"
+            "*assembled output here — N blocks, M cards*",
         ),
         (
             "assistant",
-            "# REVIEW: Valid — no changes needed.\n"
-            "*full yaml returned unchanged here*",
+            "[COMM] to:manager — review: passed — no issues found",
         ),
-        # Assembled dashboard with fixable issues
         (
             "user",
-            "I need this reviewed — assembled output has issues.\n"
+            "[COMM] pipeline → send output",
+        ),
+        (
+            "assistant",
+            "*full output returned unchanged*",
+        ),
+        # Fixable issues found — corrected
+        (
+            "user",
             "Spec: [job description]\n\n"
-            "YAML to review:\n"
-            "*assembled dashboard yaml here — contains invalid fields, leaked fences, or wrong card structure*",
+            "Output to review:\n"
+            "*assembled output here — contains invalid fields, leaked fences, or wrong structure*",
         ),
         (
             "assistant",
-            "# REVIEW: Fixed [N] issues — [brief description of what was corrected].\n"
-            "*full corrected yaml here*",
+            "[COMM] to:manager — review: fixed — [brief description of what was corrected]",
         ),
-        # Corrective brief injected — focus review on specific failure areas
         (
             "user",
-            "I need this reviewed:\n"
+            "[COMM] pipeline → send output",
+        ),
+        (
+            "assistant",
+            "*full corrected output here*",
+        ),
+        # Corrective brief injected — apply and fix
+        (
+            "user",
             "Spec: [job description]\n\n"
-            "YAML to review:\n"
-            "*assembled dashboard yaml here*\n\n"
-            "Additional instructions: [corrective brief from supervisor — specific issues to look for and fix, card types or fields to validate]",
+            "Output to review:\n"
+            "*assembled output here*\n\n"
+            "Additional instructions: [corrective brief — specific issues to look for and fix]",
         ),
         (
             "assistant",
-            "# REVIEW: Applied corrective brief — [what was fixed per instructions].\n"
-            "*full corrected yaml here*",
+            "[COMM] to:manager — review: fixed — applied corrective brief, [what was done]",
         ),
-        # Input too large for single pass
         (
             "user",
-            "I need this reviewed:\n"
+            "[COMM] pipeline → send output",
+        ),
+        (
+            "assistant",
+            "*full corrected output per brief*",
+        ),
+        # Failed — issues found that cannot be resolved by reviewer
+        (
+            "user",
             "Spec: [job description]\n\n"
-            "YAML to review:\n"
-            "*assembled dashboard yaml here — very large, exceeds context capacity*",
+            "Output to review:\n"
+            "*assembled output here — contains unresolvable structural errors*",
         ),
         (
             "assistant",
-            "ESCALATE: context too large — [N]-card dashboard cannot be reviewed in a single pass, chunking required",
-        ),
-        # Reference index at stage start — look up structure when needed
-        (
-            "user",
-            "[COMM] pipeline → index: ha_components.yaml\n\n"
-            "view-structure | 224-238 | Complete single view block with title, path, icon, type, and cards list\n"
-            "dashboard-structure | 243-263 | Full dashboard root object with two views for use with ha_config_set_dashboard\n"
-            "card-mod-basic | 182-199 | card_mod style block on an entities card targeting ha-card and .card-header",
-        ),
-        (
-            "assistant",
-            "Reference index received.",
+            "[COMM] to:manager — review: failed — [specific reason, what could not be fixed]",
         ),
         (
             "user",
-            "I need this reviewed:\n"
-            "Spec: [job description — dashboard with card_mod styling]\n\n"
-            "YAML to review:\n"
-            "*card_mod block with unfamiliar selector syntax*",
+            "[COMM] pipeline → send output",
         ),
         (
             "assistant",
-            "[COMM] to:pipeline — ref:ha_components.yaml, section:card-mod-basic",
+            "*output with inline annotations marking failures*",
         ),
+        # Context too large → escalate
         (
             "user",
-            "[COMM] pipeline → ref:card-mod-basic\n\n"
-            "card-mod-basic:\n"
-            "  ...[section content]...",
+            "Spec: [job description]\n\n"
+            "Output to review:\n"
+            "*assembled output — very large, exceeds context capacity*",
         ),
         (
             "assistant",
-            "# REVIEW: Fixed card_mod selector — corrected to ha-card { } pattern per reference.\n"
-            "*full corrected yaml here*",
+            "ESCALATE: context too large — [N]-item output cannot be reviewed in a single pass, chunking required",
         ),
     ],
     "supervisor": [
-        # Valid output matching spec → return unchanged
+        # 1. Output valid → approve and deliver, no chain notification
         (
             "user",
-            "I need a final sign-off — here's the spec and the reviewed output.\n"
-            "Job specification:\n"
-            "[job description]\n\n"
-            "Final output for sign-off:\n"
-            "*reviewed dashboard yaml here — complete, all views and cards*",
+            "[COMM] project_manager → sign-off: approved — project: [ID], spec: [summary], chain: [stages ran], flags: [any notable events]",
         ),
         (
             "assistant",
-            "*full yaml returned unchanged — output approved*",
+            "[COMM] pipeline → approved — delivering output",
         ),
-        # Output doesn't fulfil spec → reject with stage, reason, and corrective brief
         (
             "user",
-            "I need a final sign-off — output has problems.\n"
-            "Job specification:\n"
-            "[job description]\n\n"
-            "Final output for sign-off:\n"
-            "*reviewed dashboard yaml here — contains an error the reviewer missed*",
+            "[COMM] pipeline → send output",
         ),
         (
             "assistant",
-            "REJECTED_AT: [stage closest to where the error originated]\n"
-            "REJECTED: [specific reason — what is wrong]\n"
-            "CORRECTIVE_BRIEF: [exact fix instructions for that stage — card types, entity IDs, structure, what to avoid — specific enough to act on without questions]",
+            "[final approved output]",
+        ),
+        # 2. Fixable issues → route back to PM for reprocessing, do not reject
+        (
+            "user",
+            "[COMM] project_manager → sign-off: approved — project: [ID], spec: [summary], chain: [stages ran], flags: [escalations or corrections]\n\n"
+            "[output with issues that do not warrant full rejection]",
+        ),
+        (
+            "assistant",
+            "[COMM] to:project_manager — reprocess: [what needs fixing], route-to: [stage], instructions: [specific corrections to apply]",
+        ),
+        # 3. Acute failure → hard REJECTED, chain only involved if project fails
+        (
+            "user",
+            "[COMM] project_manager → sign-off: rejected — project: [ID], spec: [summary], chain: [stages ran], failed-at: [stage], reason: [failure], attempted: [what was tried]",
+        ),
+        (
+            "assistant",
+            "REJECTED: [specific reason — fundamental spec violation, wrong scope, or unrecoverable failure]\n"
+            "CORRECTIVE_BRIEF: [exact instructions for retry — what must change, what to avoid, minimum acceptable output]",
+        ),
+        # 4. PM asks supervisor for clarification → supervisor answers directly
+        (
+            "user",
+            "[COMM] project_manager → question: [scope, priority, or constraint question]",
+        ),
+        (
+            "assistant",
+            "[COMM] to:project_manager — [direct authoritative answer]",
+        ),
+        # 5. Supervisor hard judgment call → routes to PM, not advisor (advisor dormant)
+        (
+            "user",
+            "[COMM] project_manager → sign-off: [status] — project: [ID]\n\n"
+            "[output or situation requiring a judgment call beyond supervisor's scope]",
+        ),
+        (
+            "assistant",
+            "[COMM] to:project_manager — judgment-required: [what needs a decision], context: [relevant details], options: [possible approaches — supervisor does not decide unilaterally]",
         ),
     ],
     "advisor": [
