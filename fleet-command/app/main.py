@@ -606,7 +606,8 @@ def _dashboard_html(root: str) -> str:  # noqa: C901
       font-family: system-ui, -apple-system, sans-serif;
       background: #111318;
       color: #e2e8f0;
-      min-height: 100vh;
+      height: 100vh;
+      overflow: hidden;
       padding: 1.25rem;
     }}
 
@@ -1044,7 +1045,7 @@ def _dashboard_html(root: str) -> str:  # noqa: C901
       grid-template-columns: 22% 78%;
       grid-template-rows: 1fr;
       gap: 0;
-      height: calc(100vh - 120px);
+      height: calc(100vh - 180px);
       overflow: hidden;
     }}
     .fleet-left {{
