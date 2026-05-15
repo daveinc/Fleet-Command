@@ -335,11 +335,27 @@ _ROLE_MESSAGES_MINIMAL_YAML: dict[str, list[tuple[str, str]]] = {
     "generator": [
         (
             "user",
-            "Task: [task type and purpose]\nBlock: [block name]",
+            "Task: Temperature sensor display\nBlock: Climate",
         ),
         (
             "assistant",
-            "*output here — definition only, no wrapper, no fences*",
+            "type: sensor\nentity: sensor.living_room_temperature\nname: Living Room",
+        ),
+        (
+            "user",
+            "Task: Media player controls\nBlock: Media",
+        ),
+        (
+            "assistant",
+            "type: media-control\nentity: media_player.living_room",
+        ),
+        (
+            "user",
+            "Task: Entity list for lights\nBlock: Lighting",
+        ),
+        (
+            "assistant",
+            "type: entities\nentities:\n  - entity: light.living_room\n  - entity: light.bedroom",
         ),
         (
             "user",
@@ -347,7 +363,7 @@ _ROLE_MESSAGES_MINIMAL_YAML: dict[str, list[tuple[str, str]]] = {
         ),
         (
             "assistant",
-            "*output here — all corrective instructions applied*",
+            "type: [valid lovelace type]\n[required fields for that type]",
         ),
     ],
     "manager": [
@@ -448,90 +464,128 @@ _ROLE_MESSAGES_MINIMAL_YAML: dict[str, list[tuple[str, str]]] = {
 
 _ROLE_MESSAGES_YAML: dict[str, list[tuple[str, str]]] = {
     "generator": [
-        # 1. Normal build → output card YAML only
+        # 1. Normal build — sensor card
         (
             "user",
-            "Task: [card type and purpose]\n"
-            "Block: [block name]",
+            "Task: Now-Playing Display — show current media state\n"
+            "Block: Media Player Core",
         ),
         (
             "assistant",
-            "*yaml card output here — card definition only, no wrapper, no fences*",
+            "type: media-control\n"
+            "entity: media_player.living_room",
         ),
-        # 2. Corrective brief injected — follow all instructions exactly
+        # 2. Normal build — entities card
         (
             "user",
-            "Task: [card type]\n"
-            "Block: [block name]\n\n"
-            "Additional instructions: [corrective brief — specific card types, structure to use, what to avoid]",
+            "Task: Volume Sliders — list of room volume controls\n"
+            "Block: Audio Management",
         ),
         (
             "assistant",
-            "*yaml card output here — all corrective instructions applied*",
+            "type: entities\n"
+            "title: Room Volumes\n"
+            "entities:\n"
+            "  - entity: media_player.living_room\n"
+            "    name: Living Room\n"
+            "  - entity: media_player.bedroom\n"
+            "    name: Bedroom",
         ),
-        # 3. Retry after rejection — address all rejection remarks
+        # 3. Normal build — gauge card
         (
             "user",
-            "Task: [card type]\n"
-            "Block: [block name]\n\n"
+            "Task: Temperature Gauge — display living room temperature as gauge\n"
+            "Block: Climate",
+        ),
+        (
+            "assistant",
+            "type: gauge\n"
+            "entity: sensor.living_room_temperature\n"
+            "name: Living Room\n"
+            "min: 15\n"
+            "max: 35\n"
+            "unit: °C",
+        ),
+        # 4. Corrective brief — manager specifies wrong type, use closest valid one
+        (
+            "user",
+            "Task: Theme Header — implement CSS variable definition card for dashboard colors\n"
+            "Block: Layout & Shell\n\n"
+            "Additional instructions: Use type: css-variable-definition",
+        ),
+        (
+            "assistant",
+            "type: markdown\n"
+            "content: >",
+        ),
+        # 5. Retry after rejection
+        (
+            "user",
+            "Task: Playback Controls — transport controls for media player\n"
+            "Block: Media Player Core\n\n"
             "This is a retry. Previous attempt was rejected:\n"
-            "[rejection reason]\n\n"
+            "entity_id key used instead of entity — HA Lovelace uses entity, not entity_id\n\n"
             "Address all rejection remarks in your output.",
         ),
         (
             "assistant",
-            "*corrected yaml card here — all rejection remarks addressed*",
+            "type: media-control\n"
+            "entity: media_player.main",
         ),
-        # 4. Reference content pre-embedded by manager — use it, output card
+        # 6. Grid layout
         (
             "user",
-            "Task: [card type and purpose]\n"
-            "Block: [block name]\n\n"
-            "Reference:\n"
-            "[relevant section content provided by manager]",
+            "Task: Dashboard Grid — 3-column layout for main view\n"
+            "Block: Layout & Shell",
         ),
         (
             "assistant",
-            "*yaml card output here — built using provided reference*",
+            "type: grid\n"
+            "columns: 3\n"
+            "square: false\n"
+            "cards:\n"
+            "  - type: sensor\n"
+            "    entity: sensor.living_room_temperature\n"
+            "  - type: sensor\n"
+            "    entity: sensor.living_room_humidity\n"
+            "  - type: gauge\n"
+            "    entity: sensor.co2_level",
         ),
-        # 5a. [COMM] irregular — manager sends correction mid-task
+        # 7. [COMM] irregular — manager sends correction mid-task
         (
             "user",
-            "[COMM] manager → correction: [what was wrong and what to use instead]\n\n"
-            "Task: [card type]\n"
-            "Block: [block name]",
+            "[COMM] manager → correction: use media-control not media_player_card — media_player_card is not a valid Lovelace type\n\n"
+            "Task: Now-Playing Display\n"
+            "Block: Media Player Core",
         ),
         (
             "assistant",
-            "*yaml card output here — correction applied*",
+            "type: media-control\n"
+            "entity: media_player.main",
         ),
-        # 5b. [COMM] irregular — generator asks structural question, manager answers, generator outputs
+        # 8. [COMM] irregular — generator asks structural question, manager answers
         (
             "user",
-            "Task: [card type with ambiguous structure]\n"
-            "Block: [block name]",
+            "Task: Speaker Group Selection — multi-select for speaker groups\n"
+            "Block: Speaker Grouping",
         ),
         (
             "assistant",
-            "[COMM] to:manager — question: [structural or scope question — not about entity IDs]",
+            "[COMM] to:manager — question: spec says multi-select for speaker groups but no standard Lovelace card supports multi-select. Use entities card with toggle rows, or a custom card?",
         ),
         (
             "user",
-            "[COMM] manager → [direct answer to structural question]",
+            "[COMM] manager → clarification: use entities card with toggle rows, one per speaker group entity",
         ),
         (
             "assistant",
-            "*yaml card output here — built using manager's answer*",
-        ),
-        # 5c. [COMM] irregular — cross-worker, fragment received from another worker to fix or incorporate
-        (
-            "user",
-            "[COMM] [worker role] → [context: what is being sent and why — fix request, answer, or fragment]\n\n"
-            "[content from the other worker]",
-        ),
-        (
-            "assistant",
-            "*yaml card output here — incorporating content from [worker role]*",
+            "type: entities\n"
+            "title: Speaker Groups\n"
+            "entities:\n"
+            "  - entity: media_player.group_living\n"
+            "    name: Living Room Group\n"
+            "  - entity: media_player.group_bedroom\n"
+            "    name: Bedroom Group",
         ),
     ],
     "manager": [
