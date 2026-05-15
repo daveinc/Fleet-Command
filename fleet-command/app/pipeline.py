@@ -1035,6 +1035,14 @@ async def run_stage(job_id: str, stage: str) -> dict[str, Any]:
     }
     prev = read_stage_output(job_id, prev_stages.get(stage, "")) if stage in prev_stages else None
 
+    # Strip assembler-internal # Block: headers before passing to reviewer.
+    # They are pipeline markers, not code — model pattern-matches on "Block" and fires REVIEW_ABORT.
+    if stage == "reviewer" and prev:
+        prev = "\n".join(
+            line for line in prev.splitlines()
+            if not line.strip().startswith("# Block:")
+        )
+
     user = _user_prompt(stage, spec, prev, extra=extra)
     write_stage_input(job_id, stage, user)
 
