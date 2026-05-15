@@ -3099,42 +3099,48 @@ function renderFleetDetail(j) {{
   const statusColor = STATUS_COLOR[j.status] || "#475569";
 
   // ── Inline pipeline SVG ──────────────────────────────────────────────────
-  const EDGE_LABEL = {{ manager:"plan", generator:"brief", reviewer:"YAML", supervisor:"reviewed", advisor:"escalation" }};
-  const containerW = (center.clientWidth || 700) - 50;
-  const n = pipeline.length;
-  const padX = 8, gapX = Math.max(16, Math.min(40, Math.floor(containerW * 0.04)));
-  const nodeW = Math.floor((containerW - padX * 2 - (n - 1) * gapX) / n);
-  const nodeH = 72, padY = 6, totalH = nodeH + padY * 2 + 16;
-  let psvg = `<svg width="${{containerW}}" height="${{totalH}}" style="display:block;margin-bottom:0.5rem">`;
-  pipeline.forEach((stage, i) => {{
-    if (i === 0) return;
-    const x1 = padX + (i-1)*(nodeW+gapX) + nodeW, x2 = padX + i*(nodeW+gapX);
-    const y = padY + nodeH/2, cx = (x1+x2)/2;
-    psvg += `<path d="M${{x1}},${{y}} C${{cx}},${{y}} ${{cx}},${{y}} ${{x2}},${{y}}" stroke="#334155" stroke-width="2" fill="none"/>`;
-    psvg += `<text x="${{cx}}" y="${{y-5}}" text-anchor="middle" font-size="8" fill="#64748b">${{EDGE_LABEL[stage]||""}}</text>`;
-    psvg += `<circle cx="${{x1}}" cy="${{y}}" r="3" fill="#334155"/><circle cx="${{x2}}" cy="${{y}}" r="3" fill="#334155"/>`;
-  }});
-  pipeline.forEach((stage, i) => {{
-    const x = padX + i*(nodeW+gapX), y = padY, mid = x + nodeW/2;
-    const s = (j.stages || {{}})[stage] || {{}};
-    const color = STATUS_COLOR[s.status] || STATUS_COLOR.pending;
-    const lbl = LABEL[stage] || stage;
-    const model = (s.handled_by && s.handled_by !== stage) ? `↑ ${{s.handled_by}}` : (s.model || "");
-    const sTxt = s.progress || s.status || "pending";
-    const hasOut = s.status === "done" || s.status === "error";
-    const r1 = nodeH*0.24, r2 = nodeH*0.37, r3 = nodeH*0.50, r4 = nodeH*0.67, r5 = nodeH*0.83;
-    psvg += `<g>
-      <rect x="${{x}}" y="${{y}}" width="${{nodeW}}" height="${{nodeH}}" rx="7" fill="#1e293b" stroke="${{color}}" stroke-width="2"/>
-      <rect x="${{x}}" y="${{y}}" width="${{nodeW}}" height="${{nodeH*0.26}}" rx="7" fill="${{color}}22"/>
-      <rect x="${{x}}" y="${{y+nodeH*0.18}}" width="${{nodeW}}" height="${{nodeH*0.08}}" fill="${{color}}22"/>
-      <text x="${{mid}}" y="${{y+r1}}" text-anchor="middle" font-size="10" font-weight="bold" fill="${{color}}">${{lbl}}</text>
-      <text x="${{mid}}" y="${{y+r2}}" text-anchor="middle" font-size="8" fill="#94a3b8">${{sTxt}}</text>
-      <text x="${{mid}}" y="${{y+r3}}" text-anchor="middle" font-size="7" fill="#64748b">${{model}}</text>
-      ${{hasOut ? `<text x="${{mid}}" y="${{y+r4}}" text-anchor="middle" font-size="8" fill="${{color}}" style="cursor:pointer;text-decoration:underline" onclick="fleetShowNodeOutput('${{j.id}}','${{stage}}','${{lbl}}')">▶ output</text>` : ""}}
-      ${{hasOut ? `<text x="${{mid}}" y="${{y+r5}}" text-anchor="middle" font-size="7" fill="#f59e0b" style="cursor:pointer" onclick="fleetRerunFromStage('${{j.id}}','${{stage}}')">↺ rerun</text>` : ""}}
-    </g>`;
-  }});
-  psvg += `</svg>`;
+  let psvg = "";
+  try {{
+    const EDGE_LABEL = {{ manager:"plan", generator:"brief", reviewer:"YAML", supervisor:"reviewed", advisor:"escalation" }};
+    const containerW = (center.clientWidth || 700) - 50;
+    const n = pipeline.length;
+    const padX = 8, gapX = Math.max(16, Math.min(40, Math.floor(containerW * 0.04)));
+    const nodeW = Math.floor((containerW - padX * 2 - (n - 1) * gapX) / n);
+    const nodeH = 72, padY = 6, totalH = nodeH + padY * 2 + 16;
+    let _svg = `<svg width="${{containerW}}" height="${{totalH}}" style="display:block;margin-bottom:0.5rem">`;
+    pipeline.forEach((stage, i) => {{
+      if (i === 0) return;
+      const x1 = padX + (i-1)*(nodeW+gapX) + nodeW, x2 = padX + i*(nodeW+gapX);
+      const y = padY + nodeH/2, cx = (x1+x2)/2;
+      _svg += `<path d="M${{x1}},${{y}} C${{cx}},${{y}} ${{cx}},${{y}} ${{x2}},${{y}}" stroke="#334155" stroke-width="2" fill="none"/>`;
+      _svg += `<text x="${{cx}}" y="${{y-5}}" text-anchor="middle" font-size="8" fill="#64748b">${{EDGE_LABEL[stage]||""}}</text>`;
+      _svg += `<circle cx="${{x1}}" cy="${{y}}" r="3" fill="#334155"/><circle cx="${{x2}}" cy="${{y}}" r="3" fill="#334155"/>`;
+    }});
+    pipeline.forEach((stage, i) => {{
+      const x = padX + i*(nodeW+gapX), y = padY, mid = x + nodeW/2;
+      const s = (j.stages || {{}})[stage] || {{}};
+      const color = STATUS_COLOR[s.status] || STATUS_COLOR.pending;
+      const lbl = LABEL[stage] || stage;
+      const model = (s.handled_by && s.handled_by !== stage) ? `↑ ${{s.handled_by}}` : (s.model || "");
+      const sTxt = s.progress || s.status || "pending";
+      const hasOut = s.status === "done" || s.status === "error";
+      const r1 = nodeH*0.24, r2 = nodeH*0.37, r3 = nodeH*0.50, r4 = nodeH*0.67, r5 = nodeH*0.83;
+      _svg += `<g>
+        <rect x="${{x}}" y="${{y}}" width="${{nodeW}}" height="${{nodeH}}" rx="7" fill="#1e293b" stroke="${{color}}" stroke-width="2"/>
+        <rect x="${{x}}" y="${{y}}" width="${{nodeW}}" height="${{nodeH*0.26}}" rx="7" fill="${{color}}22"/>
+        <rect x="${{x}}" y="${{y+nodeH*0.18}}" width="${{nodeW}}" height="${{nodeH*0.08}}" fill="${{color}}22"/>
+        <text x="${{mid}}" y="${{y+r1}}" text-anchor="middle" font-size="10" font-weight="bold" fill="${{color}}">${{lbl}}</text>
+        <text x="${{mid}}" y="${{y+r2}}" text-anchor="middle" font-size="8" fill="#94a3b8">${{sTxt}}</text>
+        <text x="${{mid}}" y="${{y+r3}}" text-anchor="middle" font-size="7" fill="#64748b">${{model}}</text>
+        ${{hasOut ? `<text x="${{mid}}" y="${{y+r4}}" text-anchor="middle" font-size="8" fill="${{color}}" style="cursor:pointer;text-decoration:underline" onclick="fleetShowNodeOutput('${{j.id}}','${{stage}}','${{lbl}}')">▶ output</text>` : ""}}
+        ${{hasOut ? `<text x="${{mid}}" y="${{y+r5}}" text-anchor="middle" font-size="7" fill="#f59e0b" style="cursor:pointer" onclick="fleetRerunFromStage('${{j.id}}','${{stage}}')">↺ rerun</text>` : ""}}
+      </g>`;
+    }});
+    _svg += `</svg>`;
+    psvg = _svg;
+  }} catch(e) {{
+    psvg = `<div style="font-size:0.65rem;color:#475569;margin-bottom:0.5rem">pipeline: ${{pipeline.join(" → ")}}</div>`;
+  }}
 
   const _savedCenterScroll = center.scrollTop;
   const _savedLogScroll = document.getElementById("flog-mini")?.scrollTop ?? null;
@@ -3184,9 +3190,11 @@ function renderFleetDetail(j) {{
         <button class="btn btn-ghost btn-sm" style="margin-left:auto;color:#f87171" onclick="fleetRemoveJob('${{j.id}}')">✕</button>
       </div>
     </div>`;
-  center.scrollTop = _savedCenterScroll;
-  const logEl = document.getElementById("flog-mini");
-  if (logEl && _savedLogScroll !== null) logEl.scrollTop = _savedLogScroll;
+  requestAnimationFrame(() => {{
+    center.scrollTop = _savedCenterScroll;
+    const logEl = document.getElementById("flog-mini");
+    if (logEl && _savedLogScroll !== null) logEl.scrollTop = _savedLogScroll;
+  }});
 }}
 
 async function fleetShowStageOutput(jobId, stage, label) {{
