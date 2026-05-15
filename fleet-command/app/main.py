@@ -2891,36 +2891,43 @@ function renderFleetPipeline() {{
   const LABEL = {{ project_manager:"PM", manager:"Manager", generator:"Generator", reviewer:"Reviewer", supervisor:"Supervisor", advisor:"Advisor" }};
   const EDGE_LABEL = {{ manager:"plan", generator:"brief", reviewer:"YAML", supervisor:"reviewed", advisor:"escalation" }};
 
-  const nodeW = 100, nodeH = 88, gapX = 36, padY = 10;
-  const totalW = pipeline.length * nodeW + (pipeline.length - 1) * gapX + 20;
-  const totalH = nodeH + padY * 2 + 20;
+  const n = pipeline.length;
+  const containerW = el.clientWidth || 700;
+  const padX = 8;
+  const gapX = Math.max(16, Math.min(40, Math.floor(containerW * 0.04)));
+  const nodeW = Math.floor((containerW - padX * 2 - (n - 1) * gapX) / n);
+  const nodeH = Math.round(nodeW * 0.82);
+  const padY = 8;
+  const totalH = nodeH + padY * 2 + 16;
 
-  let svg = `<svg width="${{totalW}}" height="${{totalH}}" style="display:block;overflow:visible">`;
+  let svg = `<svg width="${{containerW}}" height="${{totalH}}" style="display:block">`;
   pipeline.forEach((stage, i) => {{
     if (i === 0) return;
-    const x1 = 20 + (i-1)*(nodeW+gapX) + nodeW, x2 = 20 + i*(nodeW+gapX);
+    const x1 = padX + (i-1)*(nodeW+gapX) + nodeW, x2 = padX + i*(nodeW+gapX);
     const y = padY + nodeH/2, cx = (x1+x2)/2;
     svg += `<path d="M${{x1}},${{y}} C${{cx}},${{y}} ${{cx}},${{y}} ${{x2}},${{y}}" stroke="#334155" stroke-width="2" fill="none"/>`;
-    svg += `<text x="${{cx}}" y="${{y-6}}" text-anchor="middle" font-size="9" fill="#64748b">${{EDGE_LABEL[stage]||""}}</text>`;
+    svg += `<text x="${{cx}}" y="${{y-5}}" text-anchor="middle" font-size="8" fill="#64748b">${{EDGE_LABEL[stage]||""}}</text>`;
     svg += `<circle cx="${{x1}}" cy="${{y}}" r="3" fill="#334155"/><circle cx="${{x2}}" cy="${{y}}" r="3" fill="#334155"/>`;
   }});
   pipeline.forEach((stage, i) => {{
-    const x = 20 + i*(nodeW+gapX), y = padY;
+    const x = padX + i*(nodeW+gapX), y = padY;
+    const mid = x + nodeW/2;
     const s = stages[stage] || {{}};
     const color = STATUS_COLOR[s.status] || STATUS_COLOR.pending;
     const label = LABEL[stage] || stage;
     const model = (s.handled_by && s.handled_by !== stage) ? `↑ ${{s.handled_by}}` : (s.model || "");
     const statusTxt = s.progress || s.status || "pending";
     const hasOutput = s.status === "done" || s.status === "error";
+    const r1 = nodeH * 0.24, r2 = nodeH * 0.37, r3 = nodeH * 0.50, r4 = nodeH * 0.67, r5 = nodeH * 0.83;
     svg += `<g>
       <rect x="${{x}}" y="${{y}}" width="${{nodeW}}" height="${{nodeH}}" rx="7" fill="#1e293b" stroke="${{color}}" stroke-width="2"/>
-      <rect x="${{x}}" y="${{y}}" width="${{nodeW}}" height="22" rx="7" fill="${{color}}22"/>
-      <rect x="${{x}}" y="${{y+14}}" width="${{nodeW}}" height="8" fill="${{color}}22"/>
-      <text x="${{x+nodeW/2}}" y="${{y+15}}" text-anchor="middle" font-size="11" font-weight="bold" fill="${{color}}">${{label}}</text>
-      <text x="${{x+nodeW/2}}" y="${{y+32}}" text-anchor="middle" font-size="9" fill="#94a3b8">${{statusTxt}}</text>
-      <text x="${{x+nodeW/2}}" y="${{y+46}}" text-anchor="middle" font-size="8" fill="#64748b">${{model}}</text>
-      ${{hasOutput ? `<text x="${{x+nodeW/2}}" y="${{y+64}}" text-anchor="middle" font-size="9" fill="${{color}}" style="cursor:pointer;text-decoration:underline" onclick="fleetShowNodeOutput('${{job.id}}','${{stage}}','${{label}}')">▶ output</text>` : ""}}
-      ${{hasOutput ? `<text x="${{x+nodeW/2}}" y="${{y+80}}" text-anchor="middle" font-size="8" fill="#f59e0b" style="cursor:pointer" onclick="fleetRerunFromStage('${{job.id}}','${{stage}}')">↺ rerun</text>` : ""}}
+      <rect x="${{x}}" y="${{y}}" width="${{nodeW}}" height="${{nodeH*0.26}}" rx="7" fill="${{color}}22"/>
+      <rect x="${{x}}" y="${{y+nodeH*0.18}}" width="${{nodeW}}" height="${{nodeH*0.08}}" fill="${{color}}22"/>
+      <text x="${{mid}}" y="${{y+r1}}" text-anchor="middle" font-size="10" font-weight="bold" fill="${{color}}">${{label}}</text>
+      <text x="${{mid}}" y="${{y+r2}}" text-anchor="middle" font-size="8" fill="#94a3b8">${{statusTxt}}</text>
+      <text x="${{mid}}" y="${{y+r3}}" text-anchor="middle" font-size="7" fill="#64748b">${{model}}</text>
+      ${{hasOutput ? `<text x="${{mid}}" y="${{y+r4}}" text-anchor="middle" font-size="8" fill="${{color}}" style="cursor:pointer;text-decoration:underline" onclick="fleetShowNodeOutput('${{job.id}}','${{stage}}','${{label}}')">▶ output</text>` : ""}}
+      ${{hasOutput ? `<text x="${{mid}}" y="${{y+r5}}" text-anchor="middle" font-size="7" fill="#f59e0b" style="cursor:pointer" onclick="fleetRerunFromStage('${{job.id}}','${{stage}}')">↺ rerun</text>` : ""}}
     </g>`;
   }});
   svg += `</svg>`;
