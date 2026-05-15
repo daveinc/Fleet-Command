@@ -1106,7 +1106,11 @@ def _dashboard_html(root: str) -> str:  # noqa: C901
       cursor: pointer;
     }}
     .fleet-detail-card:hover {{ border-color: #4a5568; }}
-    .fdetail-spec {{ font-size: 0.82rem; color: #94a3b8; margin: 0.4rem 0 0.75rem; line-height: 1.5; }}
+    .fdetail-spec {{ font-size: 0.82rem; color: #94a3b8; margin: 0.3rem 0 0.5rem; line-height: 1.5; }}
+    .fstage-tabs {{ display:flex; gap:0.3rem; flex-wrap:wrap; margin:0.3rem 0 0.25rem; }}
+    .fstage-tab {{ padding:0.18rem 0.45rem; font-size:0.63rem; border-radius:4px; cursor:pointer; border:1px solid #334155; background:#0f172a; color:#64748b; white-space:nowrap; }}
+    .fstage-tab.active {{ background:#1e293b; color:#e2e8f0; }}
+    .fstage-panel {{ background:#0f172a; border:1px solid #334155; border-radius:6px; padding:0.4rem 0.6rem; margin-bottom:0.4rem; }}
     .fdetail-stages {{ display: flex; flex-direction: column; gap: 0.35rem; margin: 0.5rem 0; }}
     .fstage-row {{
       display: flex; align-items: center; gap: 0.5rem;
@@ -2896,8 +2900,8 @@ function renderFleetPipeline() {{
   const padX = 8;
   const gapX = Math.max(16, Math.min(40, Math.floor(containerW * 0.04)));
   const nodeW = Math.floor((containerW - padX * 2 - (n - 1) * gapX) / n);
-  const nodeH = Math.round(nodeW * 0.82);
-  const padY = 8;
+  const nodeH = 72;
+  const padY = 6;
   const totalH = nodeH + padY * 2 + 16;
 
   let svg = `<svg width="${{containerW}}" height="${{totalH}}" style="display:block">`;
@@ -2989,44 +2993,50 @@ function renderFleetDetail(j) {{
   const STATUS_COLOR = {{ running:"#f59e0b", done:"#22c55e", error:"#ef4444", pending:"#475569", reviewing:"#818cf8", split:"#38bdf8", failed:"#f87171" }};
   const LABEL = {{ project_manager:"PM", manager:"Manager", generator:"Generator", assembler:"Assembler", reviewer:"Reviewer", supervisor:"Supervisor", advisor:"Advisor" }};
 
-  const stageRows = (j.pipeline || Object.keys(j.stages || {{}})).map(stage => {{
+  // Stage tab strip + panel
+  const _selStage = (window._fleetSelStage && pipeline.includes(window._fleetSelStage))
+    ? window._fleetSelStage : (pipeline[0] || "");
+  const tabStrip = pipeline.map(stage => {{
     const s = (j.stages || {{}})[stage] || {{}};
     const color = STATUS_COLOR[s.status] || "#475569";
-    const model = s.handled_by && s.handled_by !== stage ? "↑ " + s.handled_by : "";
-    const progress = s.progress ? " · " + s.progress : "";
-    const hasOutput = s.status === "done" || s.status === "error";
-    const clickable = hasOutput ? `style="cursor:pointer" onclick="fleetShowStageOutput('${{j.id}}','${{stage}}','${{LABEL[stage]||stage}}')"` : "";
-    const active = _fleetDetailPanel?.key === stage ? "background:#1e293b;border-radius:4px;" : "";
-    const tok = s.tokens;
-    const ctx = s.ctx_window;
-    let ctxBar = "";
-    if (tok && ctx) {{
-      const inPct  = Math.min(100, Math.round(tok.input  / ctx * 100));
-      const outPct = Math.min(100, Math.round(tok.output / ctx * 100));
-      const totalPct = Math.min(100, inPct + outPct);
-      const barColor = totalPct > 80 ? "#ef4444" : totalPct > 50 ? "#f59e0b" : "#22c55e";
-      const overColor = totalPct > 80 ? "#ef4444" : "#334155";
-      ctxBar = `<div style="margin:0.15rem 0.75rem 0.3rem;display:flex;align-items:center;gap:0.4rem">
-        <div style="flex:1;height:4px;background:#1e293b;border-radius:2px;overflow:hidden;position:relative">
-          <div style="position:absolute;left:0;top:0;height:100%;width:${{inPct}}%;background:#3b82f6;border-radius:2px"></div>
-          <div style="position:absolute;left:${{inPct}}%;top:0;height:100%;width:${{outPct}}%;background:#f59e0b;border-radius:2px"></div>
-        </div>
-        <span style="font-size:0.6rem;color:${{overColor}};white-space:nowrap">${{totalPct}}% of ${{ctx>=1000?(ctx/1000).toFixed(0)+"k":ctx}} ctx</span>
-        <span style="font-size:0.58rem;color:#334155;white-space:nowrap">${{tok.input}}↑ ${{tok.output}}↓</span>
-      </div>`;
-    }} else if (tok) {{
-      ctxBar = `<div style="font-size:0.6rem;color:#475569;padding:0.1rem 0.75rem 0.25rem">${{tok.input}}↑ ${{tok.output}}↓ tokens</div>`;
-    }}
-    const reviewNote = (stage === "reviewer" && s.review_notes)
-      ? `<div style="font-size:0.65rem;color:#94a3b8;font-style:italic;padding:0.15rem 0.75rem 0.3rem;word-break:break-word">${{s.review_notes.slice(0,300)}}</div>`
-      : "";
-    return `<div class="fstage-row" ${{clickable}} style="${{active}}">
-      <span class="fstage-dot" style="background:${{color}}"></span>
-      <span class="fstage-name" style="color:${{hasOutput?"#e2e8f0":"#475569"}}">${{LABEL[stage]||stage}}</span>
-      <span class="fstage-model">${{s.model_name||model}}${{progress}}</span>
-      <span class="fstage-status" style="color:${{color}}">${{s.status||"pending"}}</span>
-    </div>${{ctxBar}}${{reviewNote}}`;
+    const isSel = stage === _selStage;
+    const lbl = LABEL[stage] || stage;
+    return `<button class="fstage-tab${{isSel?" active":""}}" style="border-color:${{isSel?color:"#334155"}}" onclick="window._fleetSelStage='${{stage}}';(function(){{const _j=(_fleetJobs||[]).find(j=>j.id==='${{j.id}}');if(_j)renderFleetDetail(_j);}})()">${{lbl}}</button>`;
   }}).join("");
+  const ss = (j.stages || {{}})[_selStage] || {{}};
+  const selColor = STATUS_COLOR[ss.status] || "#475569";
+  const selLabel = LABEL[_selStage] || _selStage;
+  const selModel = ss.model_name || (ss.handled_by && ss.handled_by !== _selStage ? "↑ "+ss.handled_by : (ss.model || ""));
+  const selStatusTxt = ss.progress || ss.status || "pending";
+  const selHasOutput = ss.status === "done" || ss.status === "error";
+  const sTok = ss.tokens, sCtx = ss.ctx_window;
+  let sTokBar = "";
+  if (sTok && sCtx) {{
+    const inPct = Math.min(100, Math.round(sTok.input/sCtx*100));
+    const outPct = Math.min(100, Math.round(sTok.output/sCtx*100));
+    const totalPct = Math.min(100, inPct+outPct);
+    const overColor = totalPct > 80 ? "#ef4444" : "#475569";
+    sTokBar = `<div style="display:flex;align-items:center;gap:0.4rem;margin:0.2rem 0">
+      <div style="flex:1;height:3px;background:#1e293b;border-radius:2px;overflow:hidden;position:relative">
+        <div style="position:absolute;left:0;top:0;height:100%;width:${{inPct}}%;background:#3b82f6"></div>
+        <div style="position:absolute;left:${{inPct}}%;top:0;height:100%;width:${{outPct}}%;background:#f59e0b"></div>
+      </div>
+      <span style="font-size:0.58rem;color:${{overColor}};white-space:nowrap">${{totalPct}}% · ${{sTok.input}}↑ ${{sTok.output}}↓</span>
+    </div>`;
+  }} else if (sTok) {{
+    sTokBar = `<span style="font-size:0.6rem;color:#475569">${{sTok.input}}↑ ${{sTok.output}}↓ tokens</span>`;
+  }}
+  const selNote = (_selStage === "reviewer" && ss.review_notes)
+    ? `<div style="font-size:0.62rem;color:#94a3b8;font-style:italic;margin-top:0.15rem;word-break:break-word">${{ss.review_notes.slice(0,180)}}</div>` : "";
+  const stagePanel = `<div class="fstage-panel">
+    <div style="display:flex;align-items:center;gap:0.4rem">
+      <span style="font-size:0.68rem;font-weight:600;color:${{selColor}}">${{selStatusTxt}}</span>
+      <span style="font-size:0.62rem;color:#475569;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${{selModel}}</span>
+      ${{selHasOutput ? `<button class="btn btn-ghost btn-sm" style="font-size:0.6rem;padding:0 0.35rem" onclick="fleetShowStageOutput('${{j.id}}','${{_selStage}}','${{selLabel}}')">▶ output</button>` : ""}}
+      ${{selHasOutput ? `<button class="btn btn-ghost btn-sm" style="font-size:0.6rem;padding:0 0.35rem;color:#f59e0b" onclick="fleetRerunFromStage('${{j.id}}','${{_selStage}}')">↺ rerun</button>` : ""}}
+    </div>
+    ${{sTokBar}}${{selNote}}
+  </div>`;
 
   // Parse blocks/tasks from generator log entries
   const taskEntries = (j.log || []).filter(l => l.stage === "generator" && l.msg.match(/^Task \d+\/\d+/));
@@ -3068,21 +3078,6 @@ function renderFleetDetail(j) {{
 
   const isActive = j.status === "running" || j.status === "pending";
   const statusColor = STATUS_COLOR[j.status] || "#475569";
-  const _pdp = _fleetDetailPanel;
-  const _pdpText = _pdp ? (_pdp.showInput ? (_pdp.input || "(no input recorded)") : (_pdp.content || "(empty)")) : "";
-  const _pdpHasInput = _pdp && _pdp.input;
-  const panelHtml = _pdp ? `
-    <div id="fdetail-panel" style="margin:0.5rem 0;background:#0f172a;border:1px solid #334155;border-radius:6px;padding:0.6rem;font-size:0.72rem">
-      <div style="display:flex;align-items:center;gap:0.4rem;margin-bottom:0.4rem">
-        <span style="color:#94a3b8;font-weight:600">${{_pdp.title}}</span>
-        ${{_pdpHasInput ? `
-          <button class="btn btn-ghost btn-sm" style="padding:0 0.4rem;font-size:0.62rem;${{_pdp.showInput?"background:#1e3a5f;color:#60a5fa":"color:#64748b"}}" onclick="_fleetDetailPanel.showInput=true;(function(){{const _j=(_fleetJobs||[]).find(j=>j.id===_fleetSelectedId);if(_j)renderFleetDetail(_j);}})()">Received</button>
-          <button class="btn btn-ghost btn-sm" style="padding:0 0.4rem;font-size:0.62rem;${{!_pdp.showInput?"background:#1e3a5f;color:#60a5fa":"color:#64748b"}}" onclick="_fleetDetailPanel.showInput=false;(function(){{const _j=(_fleetJobs||[]).find(j=>j.id===_fleetSelectedId);if(_j)renderFleetDetail(_j);}})()">Produced</button>
-        ` : ""}}
-        <button class="btn btn-ghost btn-sm" style="margin-left:auto;padding:0 0.3rem;font-size:0.65rem" onclick="_fleetDetailPanel=null;document.getElementById('fdetail-panel')?.remove()">✕</button>
-      </div>
-      <pre style="color:#94a3b8;white-space:pre-wrap;word-break:break-word;overflow-y:auto;margin:0">${{_pdpText}}</pre>
-    </div>` : "";
 
   const _savedLogScroll = document.getElementById("flog-mini")?.scrollTop ?? null;
   center.innerHTML = `
@@ -3094,12 +3089,10 @@ function renderFleetDetail(j) {{
       </div>
       <div class="fdetail-spec">${{j.spec||"—"}}</div>
 
-      <div class="section-title" style="font-size:0.65rem;margin-bottom:0.3rem">Pipeline</div>
-      <div class="fdetail-stages">${{stageRows}}</div>
+      <div class="fstage-tabs">${{tabStrip}}</div>
+      ${{stagePanel}}
 
-      ${{panelHtml}}
-
-      ${{blockRows ? `<div class="section-title" style="font-size:0.65rem;margin:0.65rem 0 0.3rem">Blocks &amp; Tasks</div><div class="fblock-list">${{blockRows}}</div>` : ""}}
+      ${{blockRows ? `<div class="section-title" style="font-size:0.65rem;margin:0.5rem 0 0.25rem">Blocks &amp; Tasks</div><div class="fblock-list">${{blockRows}}</div>` : ""}}
 
       ${{(j.message_log && j.message_log.length) ? (
         "<div class=\\"section-title\\" style=\\"font-size:0.65rem;margin:0.65rem 0 0.3rem\\">Communications</div>" +
@@ -3160,20 +3153,26 @@ async function fleetShowStageOutput(jobId, stage, label) {{
     }}
   }}
 
-  _fleetDetailPanel = {{
-    key: stage,
-    title: label,
-    content: outputContent,
-    input: inputTxt,
-    showInput: false,
+  document.getElementById("modal-so-title").textContent = label;
+  const codeEl = document.getElementById("modal-so-code");
+  const tabsEl = document.getElementById("modal-so-tabs");
+  let _showInput = false;
+  const renderModal = () => {{
+    codeEl.textContent = _showInput ? (inputTxt || "(no input recorded)") : outputContent;
+    tabsEl.innerHTML = inputTxt ? `
+      <button class="btn btn-ghost btn-sm" style="font-size:0.62rem;padding:0 0.4rem;${{_showInput?"background:#1e3a5f;color:#60a5fa":"color:#64748b"}}" onclick="_soToggle(true)">Received</button>
+      <button class="btn btn-ghost btn-sm" style="font-size:0.62rem;padding:0 0.4rem;${{!_showInput?"background:#1e3a5f;color:#60a5fa":"color:#64748b"}}" onclick="_soToggle(false)">Produced</button>` : "";
   }};
-  if (job) renderFleetDetail(job);
+  window._soToggle = (v) => {{ _showInput = v; renderModal(); }};
+  renderModal();
+  document.getElementById("modal-stage-output").classList.add("open");
 }}
 
 function fleetShowTaskText(fullText) {{
-  _fleetDetailPanel = {{ key: "task_" + fullText.slice(0,20), title: "Task", content: fullText }};
-  const job = (_fleetJobs || []).find(j => j.id === _fleetSelectedId);
-  if (job) renderFleetDetail(job);
+  document.getElementById("modal-so-title").textContent = "Task";
+  document.getElementById("modal-so-tabs").innerHTML = "";
+  document.getElementById("modal-so-code").textContent = fullText;
+  document.getElementById("modal-stage-output").classList.add("open");
 }}
 
 async function fleetRunJob(id) {{
