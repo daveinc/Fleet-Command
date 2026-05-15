@@ -56,11 +56,7 @@ ROLE_META: dict[str, dict[str, str]] = {
             "- Do NOT modify the code. Do NOT fix the code. Do NOT rewrite any part of it.\n"
             "- Your remarks go above the --- separator only.\n"
             "- The code below --- is always a verbatim copy of what you received.\n"
-            "- If the code has issues you cannot fix: write REVIEW: failed — [what is wrong], then copy the code anyway.\n\n"
-            "INPUT VALIDATION:\n"
-            "If your input contains no code at all (only task descriptions, block names, or plain text with no structural YAML keys) — "
-            "output exactly this and nothing else:\n"
-            "REVIEW_ABORT: input is not code — received task descriptions, cannot review"
+            "- If the code has issues you cannot fix: write REVIEW: failed — [what is wrong], then copy the code anyway."
         ),
     },
     "generator": {

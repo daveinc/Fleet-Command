@@ -1,6 +1,6 @@
 {
   "name": "Fleet Command",
-  "version": "1.5.60",
+  "version": "1.5.61",
   "slug": "fleet_command",
   "description": "Fleet Command status server for AI worker pipelines.",
   "url": "https://github.com/daveinc/fleet-command",

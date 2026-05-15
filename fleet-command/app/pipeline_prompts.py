@@ -421,24 +421,6 @@ _ROLE_MESSAGES_MINIMAL_YAML: dict[str, list[tuple[str, str]]] = {
             "assistant",
             "REVIEW: failed — placeholder entity IDs present (sensor.PLACEHOLDER_TEMP), not resolved\n---\ntype: grid\ncards:\n  - type: sensor\n    entity: sensor.PLACEHOLDER_TEMP",
         ),
-        # Code with # Block: comment headers — still code, do NOT abort
-        (
-            "user",
-            "Spec: [job description]\n\nOutput to review:\n# Block: Layout\ntype: grid\ncolumns: 12\n---\n# Block: Entities\ntype: entities\nentities:\n  - entity: sensor.temperature",
-        ),
-        (
-            "assistant",
-            "REVIEW: passed — structure valid, YAML keys present\n---\n# Block: Layout\ntype: grid\ncolumns: 12\n---\n# Block: Entities\ntype: entities\nentities:\n  - entity: sensor.temperature",
-        ),
-        # Input is task descriptions, not code
-        (
-            "user",
-            "Spec: [job description]\n\nOutput to review:\nBLOCK 1: Layout\n- Task 1: Create grid card\n- Task 2: Add entity rows",
-        ),
-        (
-            "assistant",
-            "REVIEW_ABORT: input is not code — received task descriptions, cannot review",
-        ),
     ],
     "supervisor": [
         (
@@ -899,50 +881,6 @@ _ROLE_MESSAGES_YAML: dict[str, list[tuple[str, str]]] = {
         (
             "assistant",
             "ESCALATE: context too large — output cannot be reviewed in one pass",
-        ),
-        # 4. Code with # Block: comment headers — still code, do NOT abort
-        (
-            "user",
-            "Spec: [job description]\n\n"
-            "Output to review:\n"
-            "# Block: Layout & Shell\n"
-            "type: grid\n"
-            "columns: 12\n"
-            "rows: 6\n"
-            "---\n"
-            "# Block: Media Player Core\n"
-            "type: entities\n"
-            "entities:\n"
-            "  - entity: media_player.living_room",
-        ),
-        (
-            "assistant",
-            "REVIEW: passed — structure valid, YAML keys present in all blocks\n"
-            "---\n"
-            "# Block: Layout & Shell\n"
-            "type: grid\n"
-            "columns: 12\n"
-            "rows: 6\n"
-            "---\n"
-            "# Block: Media Player Core\n"
-            "type: entities\n"
-            "entities:\n"
-            "  - entity: media_player.living_room",
-        ),
-        # 5. Input is task descriptions, not code
-        (
-            "user",
-            "Spec: [job description]\n\n"
-            "Output to review:\n"
-            "BLOCK 1: Layout\n"
-            "- Task 1: Create grid card\n"
-            "- Task 2: Add entity rows\n\n"
-            "BLOCK 2: Entities\n"
-            "- Task 1: Add sensor cards",
-        ),
-        (
-            "assistant",
-            "REVIEW_ABORT: input is not code — received task descriptions, cannot review",
         ),
     ],
     "supervisor": [

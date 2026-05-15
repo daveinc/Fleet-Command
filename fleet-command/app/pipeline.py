@@ -1055,17 +1055,6 @@ async def run_stage(job_id: str, stage: str) -> dict[str, Any]:
         _accum_tokens(job, stage, tok)
         output = _strip_all_fences(_strip_fences(raw))
 
-        # Reviewer abort — input was not code
-        if stage == "reviewer" and output.lstrip().startswith("REVIEW_ABORT:"):
-            msg = output.strip().splitlines()[0]
-            append_log(job, stage, f"ABORT: {msg}")
-            job["stages"][stage] = {"status": "failed", "preview": msg,
-                                    "model_name": harness.get("display_name", harness_id)}
-            job["status"] = STATUS_FAILED
-            job["error"] = msg
-            save_job(job)
-            return {"ok": False, "stage": stage, "error": "review_abort", "output": ""}
-
         # Escalation: worker signals it cannot complete, or returned empty output
         from app.pipeline_rules import is_worker_signal, is_trigger_enabled
         is_signal, signal_reason = is_worker_signal(output)
