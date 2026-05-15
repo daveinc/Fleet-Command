@@ -24,6 +24,10 @@ def _get_pipeline_sem() -> asyncio.Semaphore:
 _LOG_FILE = Path("/share/fleet_command.log")
 REFERENCES_DIR = Path(__file__).parent / "references"
 
+_JOB_TYPE_REFERENCES: dict[str, list[str]] = {
+    "ha_dashboard": ["ha_components.yaml"],
+}
+
 
 def _flog(msg: str) -> None:
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
@@ -357,15 +361,13 @@ async def _call_harness(
 
     # Reference indexes to pre-seed for this stage (first call only)
     def _ref_indexes_for_stage() -> list[tuple[str, str]]:
+        job_type = (job or {}).get("type", "")
+        files = _JOB_TYPE_REFERENCES.get(job_type, [])
         out = []
-        for ref in (job or {}).get("references", []):
-            if not isinstance(ref, dict):
-                continue
-            if ref.get("stages") and stage not in ref["stages"]:
-                continue
-            idx = _get_reference_index(ref["file"])
+        for filename in files:
+            idx = _get_reference_index(filename)
             if idx:
-                out.append((ref["file"], idx))
+                out.append((filename, idx))
         return out
 
     # Build or extend conversation thread
@@ -955,10 +957,12 @@ async def _run_reviewer_3pass(
     entity_list = await _fetch_ha_entities(spec, yaml_input=yaml_input, token_budget=None)
     p1_fixed = (
         f"Spec: {spec}\n\nAvailable Home Assistant entities:\n{entity_list}\n\n"
-        "Replace ALL placeholder or incorrect entity IDs with real entity IDs from the list above. "
+        "Your input below is YAML code. Replace ALL placeholder or incorrect entity IDs with real entity IDs from the list above. "
         "Match by domain and purpose. If unsure, pick the closest available entity. "
-        "Do NOT change card structure, layout, or overall code structure. "
-        "Output corrected code only. No fences. No explanation.\n\nCode:\n"
+        "Do NOT change card structure, layout, field names, or any code outside of entity ID values. "
+        "Output the corrected YAML only — same structure as input. "
+        "NEVER output task lists, block breakdowns, planning text, or any non-YAML format. "
+        "No fences. No explanation.\n\nCode:\n"
     )
     items1 = _block_items(yaml_input)
     batches1 = chunk_to_fit(items1, harness, fixed_prefix=p1_fixed)
