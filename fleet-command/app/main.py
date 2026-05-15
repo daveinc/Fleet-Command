@@ -1131,6 +1131,13 @@ def _dashboard_html(root: str) -> str:  # noqa: C901
       background: #0f1117; border-radius: 5px; padding: 0.5rem;
       max-height: 100px; overflow-y: auto; margin-top: 0.5rem; line-height: 1.6;
     }}
+    .fstat-top-row {{
+      display: flex; gap: 0.3rem; margin-bottom: 0.5rem;
+    }}
+    .fstat-btn {{
+      flex: 1; background: #1e2330; border: 1px solid #2d3748; border-radius: 5px;
+      padding: 0.22rem 0.25rem; display: flex; flex-direction: column; align-items: center; gap: 0;
+    }}
     .fstat-grid {{
       display: grid; grid-template-columns: 1fr 1fr; gap: 0.4rem; margin-bottom: 0.75rem;
     }}
@@ -1138,8 +1145,8 @@ def _dashboard_html(root: str) -> str:  # noqa: C901
       background: #1e2330; border: 1px solid #2d3748; border-radius: 7px;
       padding: 0.45rem 0.55rem; display: flex; flex-direction: column; gap: 0.1rem;
     }}
-    .fstat-num {{ font-size: 1.1rem; font-weight: 700; color: #e2e8f0; line-height: 1; }}
-    .fstat-lbl {{ font-size: 0.6rem; color: #475569; }}
+    .fstat-num {{ font-size: 0.82rem; font-weight: 700; color: #e2e8f0; line-height: 1; }}
+    .fstat-lbl {{ font-size: 0.55rem; color: #475569; }}
 
     /* ── Mobile ── */
     @media (max-width: 700px) {{
@@ -1228,6 +1235,7 @@ def _dashboard_html(root: str) -> str:  # noqa: C901
 
     <!-- Left: job list -->
     <div class="fleet-left">
+      <div id="fleet-stats-top" class="fstat-top-row"></div>
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.5rem">
         <div class="section-title" style="margin:0">Projects</div>
         <button class="btn btn-primary btn-sm" onclick="openNewJob()">+ New</button>
@@ -2840,6 +2848,15 @@ function renderFleetStats() {{
   const total  = done + failed;
   const pass   = total > 0 ? Math.round(done / total * 100) : 0;
 
+  const topEl = document.getElementById("fleet-stats-top");
+  if (topEl) {{
+    topEl.innerHTML = `
+      <div class="fstat-btn"><div class="fstat-num">${{_fleetJobs.length}}</div><div class="fstat-lbl">Total</div></div>
+      <div class="fstat-btn"><div class="fstat-num" style="color:#f59e0b">${{running||0}}</div><div class="fstat-lbl">Active</div></div>
+      <div class="fstat-btn"><div class="fstat-num" style="color:#22c55e">${{done}}</div><div class="fstat-lbl">Done</div></div>
+      <div class="fstat-btn"><div class="fstat-num" style="color:#ef4444">${{failed}}</div><div class="fstat-lbl">Failed</div></div>`;
+  }}
+
   const rEl = document.getElementById("fleet-stats-right");
   if (!rEl) return;
 
@@ -2856,13 +2873,7 @@ function renderFleetStats() {{
   ).join("") || '<div style="font-size:0.72rem;color:#334155">No rejections.</div>';
 
   rEl.innerHTML = `
-    <div class="fstat-grid">
-      <div class="fstat-cube"><div class="fstat-num">${{_fleetJobs.length}}</div><div class="fstat-lbl">Total</div></div>
-      <div class="fstat-cube"><div class="fstat-num" style="color:#f59e0b">${{running || 0}}</div><div class="fstat-lbl">Running</div></div>
-      <div class="fstat-cube"><div class="fstat-num" style="color:#22c55e">${{done}}</div><div class="fstat-lbl">Done</div></div>
-      <div class="fstat-cube"><div class="fstat-num" style="color:#ef4444">${{failed}}</div><div class="fstat-lbl">Failed</div></div>
-    </div>
-    <div class="fstat-cube" style="margin-bottom:0.75rem;flex-direction:row;align-items:baseline;gap:0.4rem">
+    <div style="display:flex;align-items:baseline;gap:0.4rem;margin-bottom:0.75rem">
       <div class="fstat-num" style="color:#6366f1">${{total > 0 ? pass + "%" : "—"}}</div>
       <div class="fstat-lbl">pass rate (${{total}} ran)</div>
     </div>
@@ -2884,11 +2895,11 @@ function renderFleetPipeline() {{
   const LABEL = {{ project_manager:"PM", manager:"Manager", generator:"Generator", reviewer:"Reviewer", supervisor:"Supervisor", advisor:"Advisor" }};
   const EDGE_LABEL = {{ manager:"plan", generator:"brief", reviewer:"YAML", supervisor:"reviewed", advisor:"escalation" }};
 
-  const nodeW = 130, nodeH = 96, gapX = 70, padY = 12;
-  const totalW = pipeline.length * nodeW + (pipeline.length - 1) * gapX + 40;
+  const nodeW = 100, nodeH = 88, gapX = 36, padY = 10;
+  const totalW = pipeline.length * nodeW + (pipeline.length - 1) * gapX + 20;
   const totalH = nodeH + padY * 2 + 20;
 
-  let svg = `<svg width="${{totalW}}" height="${{totalH}}" style="display:block;min-width:100%;overflow:visible">`;
+  let svg = `<svg width="${{totalW}}" height="${{totalH}}" style="display:block;overflow:visible">`;
   pipeline.forEach((stage, i) => {{
     if (i === 0) return;
     const x1 = 20 + (i-1)*(nodeW+gapX) + nodeW, x2 = 20 + i*(nodeW+gapX);
