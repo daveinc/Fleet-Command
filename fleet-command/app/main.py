@@ -1784,7 +1784,7 @@ function roleCard(role, idx, list) {{
 
   const fmtOpts = REQUEST_FORMATS.map(f => `<option value="${{f}}" ${{f === h?.request_format ? "selected" : ""}}>${{f}}</option>`).join("");
   const authOpts = AUTH_TYPES.map(a => `<option value="${{a}}" ${{a === h?.auth_type ? "selected" : ""}}>${{a}}</option>`).join("");
-  const mfBtn = hid ? `<button class="btn btn-ghost btn-sm" onclick="openModelfileModal('${{hid}}')" title="Modelfile">📄</button>` : `<button class="btn btn-ghost btn-sm" style="opacity:0.3" disabled title="No model assigned">📄</button>`;
+  const mfBtn = hid ? `<button class="btn btn-ghost btn-sm" onclick="openModelfileModal('${{hid}}','${{role}}')" title="Modelfile">📄</button>` : `<button class="btn btn-ghost btn-sm" style="opacity:0.3" disabled title="No model assigned">📄</button>`;
 
   return `
   <div class="role-card ${{hasModel ? "has-model" : "empty"}}" id="card-${{role}}">
@@ -1995,13 +1995,18 @@ let _mfHarnessId = null;
 let _mfRole = null;
 let _mfAlreadyPushed = false;
 
-async function openModelfileModal(id) {{
+async function openModelfileModal(id, roleHint) {{
   _mfHarnessId = id;
-  // Detect which role this harness is assigned to (first match from role assignments)
-  _mfRole = null;
-  if (typeof roles !== "undefined") {{
-    for (const [r, cfg] of Object.entries(roles)) {{
-      if (cfg?.harness_id === id) {{ _mfRole = r; break; }}
+  // Use explicit role hint when called from a role card (avoids first-match ambiguity
+  // when the same harness is assigned to multiple roles)
+  if (roleHint) {{
+    _mfRole = roleHint;
+  }} else {{
+    _mfRole = null;
+    if (typeof roles !== "undefined") {{
+      for (const [r, cfg] of Object.entries(roles)) {{
+        if (cfg?.harness_id === id) {{ _mfRole = r; break; }}
+      }}
     }}
   }}
   const h = harnesses[id];
