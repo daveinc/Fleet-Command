@@ -809,9 +809,28 @@ def _parse_blocks_and_tasks(text: str) -> list[dict[str, str]]:
     return tasks
 
 
-def _assemble_yaml_fragments(fragments: list[dict[str, str]]) -> str:
+def _assemble_yaml_fragments(fragments: list[dict[str, str]], job: dict[str, Any] | None = None) -> str:
     """Concatenate card fragments into a single document separated by ---."""
-    cards = [f["yaml"].strip() for f in fragments if f.get("yaml", "").strip()]
+    try:
+        import yaml as _yaml
+    except ImportError:
+        _yaml = None  # type: ignore
+
+    cards = []
+    for f in fragments:
+        card = f.get("yaml", "").strip()
+        if not card:
+            continue
+        if _yaml:
+            try:
+                _yaml.safe_load(card)
+            except Exception as exc:
+                task = f.get("task", "?")
+                msg = f"Fragment parse warning [{task}]: {exc}"
+                _flog(f"  ASSEMBLER: {msg}")
+                if job is not None:
+                    append_log(job, "assembler", msg)
+        cards.append(card)
     return "\n---\n".join(cards)
 
 
@@ -843,23 +862,6 @@ def _split_yaml_views(yaml_text: str) -> list[tuple[str, str]]:
     return views
 
 
-def _split_by_blocks(text: str) -> list[tuple[str, str]]:
-    """Split assembler output (# Block: headers) into (block_name, content) pairs."""
-    blocks = []
-    current_name = "Main"
-    current_lines: list[str] = []
-    for line in text.splitlines():
-        m = re.match(r'^# Block:\s*(.+)', line)
-        if m:
-            if current_lines:
-                blocks.append((current_name, "\n".join(current_lines).strip()))
-            current_name = m.group(1).strip()
-            current_lines = []
-        else:
-            current_lines.append(line)
-    if current_lines:
-        blocks.append((current_name, "\n".join(current_lines).strip()))
-    return blocks
 
 
 def _combine_ha_view_chunks(chunks: list[str]) -> str:
@@ -917,7 +919,6 @@ async def _handle_escalation(
         return None
 
     target_persona = ROLE_META.get(target_stage, {}).get("persona", "You are a helpful AI assistant.")
-    target_persona = target_persona.split(".")[0] + "."
 
     escalation_prompt = (
         f"A {stage} worker is escalating to you — it cannot complete its task.\n\n"
@@ -944,36 +945,15 @@ async def _handle_escalation(
         return None
 
 
-def _parse_fragments_text(text: str) -> list[dict[str, str]]:
-    """Parse generator fragment text (# Block: name\\nyaml) back into fragment dicts."""
-    fragments: list[dict[str, str]] = []
-    current_block = "Main"
-    current_lines: list[str] = []
-    for line in text.splitlines():
-        m = re.match(r'^# Block:\s*(.+)', line)
-        if m:
-            if current_lines:
-                fragments.append({"block": current_block, "task": current_block,
-                                   "yaml": "\n".join(current_lines).strip()})
-                current_lines = []
-            current_block = m.group(1).strip()
-        else:
-            current_lines.append(line)
-    if current_lines:
-        fragments.append({"block": current_block, "task": current_block,
-                           "yaml": "\n".join(current_lines).strip()})
-    return fragments
-
-
 async def _run_python_assembler(job_id: str, job: dict[str, Any]) -> dict[str, Any]:
-    """Python-only assembly — parse generator fragments and combine into dashboard YAML."""
+    """Python-only assembly — join --- separated generator fragments into one document."""
     append_log(job, "assembler", "Python assembly...")
     job["stages"]["assembler"] = {"status": "running"}
     save_job(job)
     try:
         prev = read_stage_output(job_id, "generator") or ""
-        fragments = _parse_fragments_text(prev)
-        result = _assemble_yaml_fragments(fragments)
+        cards = [c.strip() for c in prev.split("---") if c.strip()]
+        result = "\n---\n".join(cards)
         write_stage_output(job_id, "assembler", result)
         job["stages"]["assembler"] = {"status": "done", "preview": result[:400], "handled_by": "python"}
         append_log(job, "assembler", f"Done — {len(result)} chars")
@@ -1183,6 +1163,10 @@ async def _run_generator_loop(job_id: str, roles: dict[str, Any], job: dict[str,
             save_job(job)
             return {"ok": False, "error": str(exc)}
 
+    # Warn if fragment count doesn't match task count
+    if len(fragments) != len(task_list):
+        append_log(job, "generator", f"WARNING: expected {len(task_list)} fragments, got {len(fragments)}")
+
     # Mark generator done, store raw fragments
     frags_raw = "\n---\n".join(f["yaml"].strip() for f in fragments)
     write_stage_output(job_id, "generator", frags_raw)
@@ -1194,7 +1178,7 @@ async def _run_generator_loop(job_id: str, roles: dict[str, Any], job: dict[str,
     append_log(job, "assembler", f"Python assembly: {len(fragments)} fragments")
     job["stages"]["assembler"] = {"status": "running"}
     save_job(job)
-    assembled = _assemble_yaml_fragments(fragments)
+    assembled = _assemble_yaml_fragments(fragments, job=job)
     write_stage_output(job_id, "assembler", assembled)
     job["stages"]["assembler"] = {"status": "done", "preview": assembled[:400], "handled_by": "python"}
     append_log(job, "assembler", f"Done — {len(assembled)} chars")
@@ -1231,7 +1215,6 @@ async def _run_manager_signoff(job_id: str, roles: dict[str, Any], job: dict[str
         return {"ok": False, "error": "No model assigned to role: manager"}
 
     persona = ROLE_META.get("manager", {}).get("persona", "You are a helpful AI assistant.")
-    persona = persona.split(".")[0] + "."
     job_type = job.get("type", "")
     task_list = job.get("manager_task_list", [])
 

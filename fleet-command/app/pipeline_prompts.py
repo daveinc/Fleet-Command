@@ -312,9 +312,9 @@ _ROLE_PARAMS: dict[str, dict[str, Any]] = {
 
 # Stop sequences — emitted as a single JSON array (Ollama 0.22.1+ rejects repeated PARAMETER stop lines)
 _ROLE_STOPS: dict[str, list[str]] = {
-    "generator": ["Here is", "Here's", "Sure,", "Certainly,"],
-    "reviewer":  ["```python", "Here is", "Explanation:"],
-    "manager":   ["Here is", "Explanation:"],
+    "generator": ["Sure,", "Certainly,", "Of course,"],
+    "reviewer":  ["```python", "Explanation:"],
+    "manager":   ["Explanation:"],
 }
 
 
