@@ -2795,7 +2795,6 @@ async function loadFleetTab() {{
   _fleetJobs = (res.jobs || []).slice().reverse(); // newest first
   renderFleetJobList();
   renderFleetStats();
-  renderFleetPipeline();
   if (_fleetSelectedId) {{
     const j = _fleetJobs.find(j => j.id === _fleetSelectedId);
     if (j) renderFleetDetail(j);
@@ -3009,7 +3008,7 @@ function renderFleetDetail(j) {{
   const center = document.getElementById("fleet-center");
   if (!center) return;
 
-  const pipeline = j.pipeline || ["generator"];
+  const pipeline = (j.pipeline && j.pipeline.length) ? j.pipeline : ["generator"];
   const STATUS_COLOR = {{ running:"#f59e0b", done:"#22c55e", error:"#ef4444", pending:"#475569", reviewing:"#818cf8", split:"#38bdf8", failed:"#f87171" }};
   const LABEL = {{ project_manager:"PM", manager:"Manager", generator:"Generator", assembler:"Assembler", reviewer:"Reviewer", supervisor:"Supervisor", advisor:"Advisor" }};
 
