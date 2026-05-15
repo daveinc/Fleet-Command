@@ -457,26 +457,39 @@ async def api_modelfile_generate(harness_id: str, payload: dict = {}) -> dict:
 
 @app.post("/api/modelfiles/push-all")
 async def api_modelfile_push_all(payload: dict) -> dict:
-    from app.pipeline_prompts import generate_modelfile, save_modelfile, push_modelfile_to_ollama
+    from app.pipeline_prompts import generate_modelfile, load_modelfiles, _save_modelfiles, _mf_key, push_modelfile_to_ollama
     from app.config import options
-    from app.roles import load_roles
+    from app.roles import load_roles, ROLE_META
+    from app.harnesses import get_harness
     ollama_host = str(options().get("ollama_host", "http://host.docker.internal:11434") or "").rstrip("/")
     output_type = payload.get("output_type", "yaml")
     roles = load_roles()
     results = []
-    # Iterate by role so same harness assigned to multiple roles gets separate modelfiles
     for role_name, cfg in roles.items():
         hid = cfg.get("harness_id")
+        role_label = ROLE_META.get(role_name, {}).get("label", role_name)
         if not hid:
-            results.append({"role": role_name, "skipped": True, "reason": "no harness assigned"})
+            results.append({"name": f"{role_label} (unassigned)", "role": role_name, "skipped": True, "reason": "no harness assigned"})
             continue
+        h = get_harness(hid)
+        harness_label = (h or {}).get("display_name", hid) if h else hid
+        name = f"{role_label} → {harness_label}"
         gen = await generate_modelfile(hid, ollama_host, output_type, role_override=role_name)
         if not gen.get("ok"):
-            results.append({"role": role_name, "harness_id": hid, "ok": False, "message": gen.get("error")})
+            results.append({"name": name, "role": role_name, "ok": False, "message": gen.get("error")})
             continue
-        save_modelfile(hid, gen["content"], role=role_name)
+        # Persist content + target_model + base_model together so push can find them
+        mf_data = load_modelfiles()
+        key = _mf_key(hid, role_name)
+        entry = mf_data.get(key, {})
+        entry["content"] = gen["content"]
+        entry["pushed"] = False
+        entry["target_model"] = gen["target_model"]
+        entry["base_model"] = gen["base_model"]
+        mf_data[key] = entry
+        _save_modelfiles(mf_data)
         ok, msg = await push_modelfile_to_ollama(hid, ollama_host, role=role_name)
-        results.append({"role": role_name, "harness_id": hid, "target": gen.get("target_model"), "ok": ok, "message": msg})
+        results.append({"name": name, "role": role_name, "target": gen.get("target_model"), "ok": ok, "message": msg})
     return {"ok": True, "output_type": output_type, "results": results}
 
 
@@ -2144,8 +2157,9 @@ async function pushAllModelfiles() {{
       body: JSON.stringify({{output_type: outputType}}),
     }}).then(r => r.json());
     const lines = (res.results || []).map(r => {{
-      if (r.skipped) return `— ${{r.name}}: skipped (${{r.reason}})`;
-      return `${{r.ok ? "✓" : "✗"}} ${{r.name}}: ${{r.message}}`;
+      if (r.skipped) return `<span style="color:#475569">— ${{r.name}}: skipped (${{r.reason}})</span>`;
+      const target = r.target ? ` <span style="color:#64748b;font-size:0.65rem">→ ${{r.target}}</span>` : "";
+      return `<span style="color:${{r.ok?"#22c55e":"#ef4444"}}">${{r.ok ? "✓" : "✗"}} ${{r.name}}: ${{r.message}}</span>${{target}}`;
     }});
     statusEl.innerHTML = lines.map(l => `<div>${{l}}</div>`).join("");
     renderHarnesses();
