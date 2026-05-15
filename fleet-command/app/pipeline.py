@@ -808,18 +808,9 @@ def _parse_blocks_and_tasks(text: str) -> list[dict[str, str]]:
 
 
 def _assemble_yaml_fragments(fragments: list[dict[str, str]]) -> str:
-    """Pure concatenation of card fragments grouped by block.
-    Outputs # Block: headers only — no structure wrapping. Structure is applied by the manager sign-off pass.
-    """
-    blocks: dict[str, list[str]] = {}
-    for f in fragments:
-        blocks.setdefault(f["block"], []).append(f["yaml"])
-
-    sections = []
-    for block_name, card_yamls in blocks.items():
-        cards = "\n---\n".join(c.strip() for c in card_yamls if c.strip())
-        sections.append(f"# Block: {block_name}\n{cards}")
-    return "\n\n".join(sections)
+    """Concatenate card fragments into a single document separated by ---."""
+    cards = [f["yaml"].strip() for f in fragments if f.get("yaml", "").strip()]
+    return "\n---\n".join(cards)
 
 
 _REVIEW_CHUNK_THRESHOLD = 1200  # chars — above this, review view-by-view
@@ -1035,14 +1026,6 @@ async def run_stage(job_id: str, stage: str) -> dict[str, Any]:
     }
     prev = read_stage_output(job_id, prev_stages.get(stage, "")) if stage in prev_stages else None
 
-    # Strip assembler-internal # Block: headers before passing to reviewer.
-    # They are pipeline markers, not code — model pattern-matches on "Block" and fires REVIEW_ABORT.
-    if stage == "reviewer" and prev:
-        prev = "\n".join(
-            line for line in prev.splitlines()
-            if not line.strip().startswith("# Block:")
-        )
-
     user = _user_prompt(stage, spec, prev, extra=extra)
     write_stage_input(job_id, stage, user)
 
@@ -1200,7 +1183,7 @@ async def _run_generator_loop(job_id: str, roles: dict[str, Any], job: dict[str,
             return {"ok": False, "error": str(exc)}
 
     # Mark generator done, store raw fragments
-    frags_raw = "\n\n".join(f"# Block: {f['block']}\n{f['yaml']}" for f in fragments)
+    frags_raw = "\n---\n".join(f["yaml"].strip() for f in fragments)
     write_stage_output(job_id, "generator", frags_raw)
     job["stages"]["generator"] = {"status": "done", "preview": frags_raw[:400], "handled_by": "generator", "tasks_completed": len(fragments)}
     append_log(job, "generator", f"Done — {len(fragments)} fragments collected")
@@ -1253,19 +1236,19 @@ async def _run_manager_signoff(job_id: str, roles: dict[str, Any], job: dict[str
 
     if job_type == "ha_dashboard":
         structure_instruction = (
-            "Apply the correct Home Assistant Lovelace dashboard structure:\n"
+            "Wrap all card fragments into a complete Home Assistant Lovelace dashboard.\n"
+            "Each fragment separated by --- is one card. Place them all under a single view:\n"
             "title: \"Fleet Output\"\n"
             "views:\n"
-            "  - title: [block name]\n"
+            "  - title: Main\n"
             "    cards:\n"
-            "      - [card yaml]\n\n"
-            "Each # Block becomes one view. Cards within a block go under that view's cards list.\n"
+            "      - [card yaml here]\n\n"
             "Output the final structured YAML only. No fences. No explanation."
         )
     else:
         structure_instruction = (
             f"Apply the correct output structure for job type '{job_type}' per the original spec.\n"
-            "Output the final structured result only. No fences. No explanation."
+            "Each fragment separated by --- is one unit. Output the final structured result only. No fences. No explanation."
         )
 
     task_context = ""
@@ -1273,13 +1256,13 @@ async def _run_manager_signoff(job_id: str, roles: dict[str, Any], job: dict[str
         task_lines = [f"  - [{t['block']}] {t['task']}" for t in task_list]
         task_context = (
             "\nExpected tasks from planning:\n" + "\n".join(task_lines) +
-            "\n\nVerify all tasks are present in the assembled output. "
+            "\n\nVerify all tasks are present. "
             "If any are missing, send [COMM] to:generator with task number, block name, and what to build. "
             "Once complete, apply structure.\n"
         )
 
     fixed_prefix = (
-        f"Generator has completed all tasks. Assembled fragments follow.\n"
+        f"Generator has completed all tasks. Card fragments follow.\n"
         f"{task_context}\n"
         f"{structure_instruction}\n\nFragments:\n"
     )
@@ -1289,9 +1272,8 @@ async def _run_manager_signoff(job_id: str, roles: dict[str, Any], job: dict[str
     save_job(job)
 
     from app.message_builder import chunk_to_fit
-    blocks = _split_by_blocks(assembled)
-    block_items = [f"# Block: {name}\n{content}" for name, content in blocks]
-    batches = chunk_to_fit(block_items, harness, fixed_prefix=fixed_prefix)
+    card_items = [c.strip() for c in assembled.split("---") if c.strip()]
+    batches = chunk_to_fit(card_items, harness, fixed_prefix=fixed_prefix)
     total = len(batches)
 
     try:
@@ -1307,9 +1289,9 @@ async def _run_manager_signoff(job_id: str, roles: dict[str, Any], job: dict[str
             for i, batch in enumerate(batches):
                 chunk_comm = (
                     f"[COMM] pipeline → chunk {i + 1}/{total} — "
-                    "structure only these blocks, output only this chunk's structured result\n\n"
+                    "structure only these fragments, output only this chunk's structured result\n\n"
                 )
-                prompt = chunk_comm + fixed_prefix + "\n\n".join(batch)
+                prompt = chunk_comm + fixed_prefix + "\n---\n".join(batch)
                 append_log(job, "manager", f"Sign-off chunk {i + 1}/{total}")
                 raw, handled_by, tok = await _call_with_fallback("manager", harness, persona, prompt, roles, job)
                 _accum_tokens(job, "manager", tok)
