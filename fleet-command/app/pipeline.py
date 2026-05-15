@@ -543,7 +543,6 @@ async def _call_harness(
                         _target_harness = _gh(_target_assign.get("harness_id", "")) if _target_assign.get("harness_id") else None
                         if _target_harness:
                             _tp = _RM.get(recipient, {}).get("persona", "You are a helpful AI assistant.")
-                            _tp = _tp.split(".")[0] + "."
                             is_question = _comm_is_question(comm_content)
                             if is_question:
                                 _route_prompt = (
@@ -1013,9 +1012,7 @@ async def run_stage(job_id: str, stage: str) -> dict[str, Any]:
         save_job(job)
         return {"ok": False, "error": msg}
 
-    full_persona = ROLE_META.get(stage, {}).get("persona", "You are a helpful AI assistant.")
-    # Trim persona for small models — keep first sentence only
-    persona = full_persona.split(".")[0] + "." if full_persona else "You are a helpful AI assistant."
+    persona = ROLE_META.get(stage, {}).get("persona", "You are a helpful AI assistant.")
     spec = job.get("spec", "")
     extra = job.get("stage_instructions", {}).get(stage)
     rejection_feedback = job.get("rejection_feedback") if stage in ("project_manager", "manager", "generator") else None
