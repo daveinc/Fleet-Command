@@ -1039,11 +1039,11 @@ def _dashboard_html(root: str) -> str:  # noqa: C901
     .modal-actions {{ display: flex; gap: 0.5rem; justify-content: flex-end; margin-top: 0.25rem; }}
 
     /* ── Fleet 3-column dashboard ── */
-    #tab-fleet {{
-      height: calc(100vh - 140px);
-      overflow: hidden;
+    #tab-fleet.active {{
       display: flex;
       flex-direction: column;
+      height: calc(100vh - 140px);
+      overflow: hidden;
     }}
     .fleet-4zone {{
       display: grid;
