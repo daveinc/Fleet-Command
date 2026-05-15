@@ -1797,6 +1797,32 @@ async def _run_pipeline_inner(job_id: str) -> None:
     if job.get("type") == "ha_dashboard" and prev_output and not prev_output.strip().upper().startswith("REJECTED"):
         await _push_dashboard(job, prev_output)
 
+    await _check_parent_completion(job)
+
+
+async def _check_parent_completion(child_job: dict[str, Any]) -> None:
+    """If this job is a child, check whether all siblings are done and mark parent done."""
+    parent_id = child_job.get("parent_job_id")
+    if not parent_id:
+        return
+    parent = load_job(parent_id)
+    if not parent or parent.get("status") != STATUS_SPLIT:
+        return
+    child_ids = parent.get("child_job_ids", [])
+    if not child_ids:
+        return
+    children = [load_job(cid) for cid in child_ids]
+    if not all(c and c.get("status") == STATUS_DONE for c in children):
+        done_count = sum(1 for c in children if c and c.get("status") == STATUS_DONE)
+        _flog(f"  parent {parent_id}: {done_count}/{len(child_ids)} children done — waiting")
+        return
+    parent["status"] = STATUS_DONE
+    append_log(parent, "pipeline", f"All {len(children)} sub-jobs complete — parent done")
+    save_job(parent)
+    _flog(f"  parent {parent_id} → done (all {len(children)} children complete)")
+    from app.sensor_push import push_pipeline_sensors
+    await push_pipeline_sensors()
+
 
 async def _push_dashboard(job: dict[str, Any], yaml_content: str) -> None:
     import os
