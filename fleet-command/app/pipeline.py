@@ -1014,14 +1014,11 @@ async def run_stage(job_id: str, stage: str) -> dict[str, Any]:
             f"Address all rejection remarks in your output."
         )
 
-    # Each stage reads from its predecessor.
-    # reviewer reads from manager when manager ran a sign-off (second pass), else from assembler.
-    reviewer_prev = "manager" if read_stage_output(job_id, "manager") else "assembler"
     prev_stages = {
         "manager":    "project_manager",
         "generator":  "manager",
         "assembler":  "generator",
-        "reviewer":   reviewer_prev,
+        "reviewer":   "assembler",
         "supervisor": "reviewer",
     }
     prev = read_stage_output(job_id, prev_stages.get(stage, "")) if stage in prev_stages else None
