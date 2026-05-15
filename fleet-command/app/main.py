@@ -1049,7 +1049,7 @@ def _dashboard_html(root: str) -> str:  # noqa: C901
       flex-direction: column;
     }}
     .fleet-center {{
-      grid-column: 2;
+      grid-column: 2 / 4;
       grid-row: 2;
       padding: 0 1rem;
       overflow-y: auto;
@@ -1255,11 +1255,7 @@ def _dashboard_html(root: str) -> str:  # noqa: C901
       <div style="color:#334155;font-size:0.8rem;text-align:center;padding-top:4rem;pointer-events:none">← select a project</div>
     </div>
 
-    <!-- Right: fleet stats -->
-    <div class="fleet-right">
-      <div class="section-title">Fleet Stats</div>
-      <div id="fleet-stats-right"></div>
-    </div>
+    <div id="fleet-stats-right" style="display:none"></div>
 
   </div>
 </div>
