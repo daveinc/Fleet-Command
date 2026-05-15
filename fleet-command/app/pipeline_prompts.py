@@ -20,7 +20,11 @@ DEFAULT_PROMPTS: dict[str, str] = {
     "project_manager": (
         "Job request: {spec}\n\n"
         "Max tasks per run: {max_tasks}\n\n"
-        "Describe the project fully — intent, domain, scope, and what a successful output looks like.\n"
+        "Describe exactly what will be built: name every specific deliverable with a count and type "
+        "(e.g. '8 Lovelace cards', '3 Python functions', '1 automation script'). "
+        "For any component that displays data, name the actual data it must show — not placeholders. "
+        "For example: 'card showing sensor.living_room_temperature' not 'temperature card'. "
+        "This description is the manager's blueprint — if it has gaps, the manager will fill them with wrong data.\n"
         "If total task count fits within {max_tasks}: list the major blocks and what each contains. Plain text only. No code. Under 150 words.\n"
         "If total task count exceeds {max_tasks}: split into self-contained sub-jobs, each under {max_tasks} tasks. Output only:\n"
         "SUB-JOB 1: [self-contained scope description]\n"
@@ -124,45 +128,58 @@ def _save_modelfiles(data: dict[str, Any]) -> None:
     _MODELFILES_FILE.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
-def save_modelfile(harness_id: str, content: str) -> None:
+def _mf_key(harness_id: str, role: str | None = None) -> str:
+    """Storage key: '{harness_id}:{role}' when role known, plain harness_id otherwise."""
+    return f"{harness_id}:{role}" if role else harness_id
+
+
+def save_modelfile(harness_id: str, content: str, role: str | None = None) -> None:
+    key = _mf_key(harness_id, role)
     data = load_modelfiles()
-    entry = data.get(harness_id, {})
+    entry = data.get(key, {})
     entry["content"] = content
     entry["pushed"] = False
-    data[harness_id] = entry
+    data[key] = entry
     _save_modelfiles(data)
 
 
-def is_modelfile_pushed(harness_id: str) -> bool:
-    return bool(load_modelfiles().get(harness_id, {}).get("pushed", False))
-
-
-def mark_modelfile_pushed(harness_id: str, target_model: str = "") -> None:
-    from datetime import datetime, timezone
+def is_modelfile_pushed(harness_id: str, role: str | None = None) -> bool:
+    key = _mf_key(harness_id, role)
     data = load_modelfiles()
-    entry = data.get(harness_id, {})
+    return bool(data.get(key, data.get(harness_id, {})).get("pushed", False))
+
+
+def mark_modelfile_pushed(harness_id: str, target_model: str = "", role: str | None = None) -> None:
+    from datetime import datetime, timezone
+    key = _mf_key(harness_id, role)
+    data = load_modelfiles()
+    entry = data.get(key, {})
     entry["pushed"] = True
     entry["pushed_at"] = datetime.now(timezone.utc).isoformat()
     if target_model:
         entry["target_model"] = target_model
-    data[harness_id] = entry
+    data[key] = entry
     _save_modelfiles(data)
 
 
-def get_pushed_model(harness_id: str) -> str | None:
-    """Return the pushed model name (role-suffixed) if the modelfile is active, else None."""
-    entry = load_modelfiles().get(harness_id, {})
+def get_pushed_model(harness_id: str, role: str | None = None) -> str | None:
+    """Return the pushed model name if the modelfile is active, else None.
+    Checks role-keyed entry first, falls back to plain harness_id entry."""
+    data = load_modelfiles()
+    key = _mf_key(harness_id, role)
+    entry = data.get(key) or data.get(harness_id, {})
     if not entry.get("pushed"):
         return None
     return entry.get("target_model") or None
 
 
-def reset_modelfile_pushed(harness_id: str) -> None:
+def reset_modelfile_pushed(harness_id: str, role: str | None = None) -> None:
     """Mark modelfile as not pushed — called when Ollama can't find the pushed model."""
+    key = _mf_key(harness_id, role)
     data = load_modelfiles()
-    entry = data.get(harness_id, {})
+    entry = data.get(key, data.get(harness_id, {}))
     entry["pushed"] = False
-    data[harness_id] = entry
+    data[key] = entry
     _save_modelfiles(data)
 
 
@@ -1041,12 +1058,11 @@ def _build_system_block(harness: dict[str, Any], role: str) -> str:
     )
 
 
-async def generate_modelfile(harness_id: str, ollama_host: str, output_type: str = "yaml", target_name: str = "") -> dict[str, Any]:
+async def generate_modelfile(harness_id: str, ollama_host: str, output_type: str = "yaml", target_name: str = "", role_override: str | None = None) -> dict[str, Any]:
     """Generate a Modelfile for a harness, merging into any existing Modelfile from Ollama.
 
-    target_name: optional user-defined model name (e.g. 'qwen-fleet-code'). Once set and pushed,
-    subsequent pushes reuse the same name so the model accumulates improvements without losing its name.
-    If not provided, uses the previously stored name or auto-derives from base:role.
+    target_name: optional user-defined model name. Once set and pushed, reused on subsequent pushes.
+    role_override: force a specific role instead of auto-detecting from role assignments.
     """
     from app.harnesses import get_harness
     from app.roles import load_roles
@@ -1059,11 +1075,16 @@ async def generate_modelfile(harness_id: str, ollama_host: str, output_type: str
     if not model:
         return {"ok": False, "error": "Harness has no model name"}
 
-    roles = load_roles()
-    role = next((r for r, a in roles.items() if a.get("harness_id") == harness_id), None)
+    if role_override:
+        role = role_override
+    else:
+        roles = load_roles()
+        role = next((r for r, a in roles.items() if a.get("harness_id") == harness_id), None)
 
     # Determine target model name — priority: explicit arg > stored frozen name > auto-derive
-    stored_entry = load_modelfiles().get(harness_id, {})
+    key = _mf_key(harness_id, role)
+    data = load_modelfiles()
+    stored_entry = data.get(key) or data.get(harness_id, {})
     stored_target = stored_entry.get("target_model", "")
     if target_name:
         target_model = target_name.strip()
@@ -1126,7 +1147,7 @@ async def generate_modelfile(harness_id: str, ollama_host: str, output_type: str
         else:
             content += "\n" + stop_block
 
-    already_pushed = is_modelfile_pushed(harness_id)
+    already_pushed = is_modelfile_pushed(harness_id, role)
 
     return {
         "ok": True,
@@ -1259,11 +1280,13 @@ def _modelfile_to_api_payload(model_name: str, content: str) -> dict:
     return payload
 
 
-async def push_modelfile_to_ollama(harness_id: str, ollama_host: str) -> tuple[bool, str]:
+async def push_modelfile_to_ollama(harness_id: str, ollama_host: str, role: str | None = None) -> tuple[bool, str]:
     import httpx
     from app.harnesses import get_harness
 
-    entry = load_modelfiles().get(harness_id, {})
+    key = _mf_key(harness_id, role)
+    data = load_modelfiles()
+    entry = data.get(key) or data.get(harness_id, {})
     content = entry.get("content", "")
     if not content:
         return False, f"No modelfile content saved for harness '{harness_id}'"
@@ -1283,7 +1306,7 @@ async def push_modelfile_to_ollama(harness_id: str, ollama_host: str) -> tuple[b
         async with httpx.AsyncClient(timeout=120) as client:
             resp = await client.post(f"{ollama_host}/api/create", json=payload)
             resp.raise_for_status()
-        mark_modelfile_pushed(harness_id, target_model)
+        mark_modelfile_pushed(harness_id, target_model, role=role)
         return True, f"Created {target_model}"
     except Exception as exc:
         return False, str(exc)

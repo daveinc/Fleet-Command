@@ -354,7 +354,7 @@ async def _call_harness(
     """
     from app.pipeline_prompts import get_pushed_model, reset_modelfile_pushed
     harness_id = harness.get("_id", "")
-    pushed_model = get_pushed_model(harness_id) if harness_id else None
+    pushed_model = get_pushed_model(harness_id, role=stage or None) if harness_id else None
     effective_system = "" if pushed_model else system
     model_override = pushed_model or ""
     ctx = harness.get("context_window", 0)
@@ -444,7 +444,7 @@ async def _call_harness(
                     _flog(f"  pushed model {pushed_model!r} not found — resetting, retrying with base model")
                     if job and stage:
                         append_log(job, stage, f"⚠ Pushed model {pushed_model!r} missing — resetting to base model {harness.get('model')!r}")
-                    reset_modelfile_pushed(harness_id)
+                    reset_modelfile_pushed(harness_id, role=stage or None)
                     base_msgs: list[dict] = []
                     if system:
                         base_msgs.append({"role": "system", "content": system})

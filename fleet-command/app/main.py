@@ -430,9 +430,11 @@ async def api_prompts_reset() -> dict:
 
 
 @app.get("/api/harnesses/{harness_id}/modelfile")
-async def api_modelfile_get(harness_id: str) -> dict:
-    from app.pipeline_prompts import load_modelfiles
-    entry = load_modelfiles().get(harness_id, {})
+async def api_modelfile_get(harness_id: str, role: str = "") -> dict:
+    from app.pipeline_prompts import load_modelfiles, _mf_key
+    data = load_modelfiles()
+    key = _mf_key(harness_id, role or None)
+    entry = data.get(key) or data.get(harness_id, {})
     return {"ok": True, "entry": entry}
 
 
@@ -449,64 +451,66 @@ async def api_modelfile_generate(harness_id: str, payload: dict = {}) -> dict:
     ollama_host = str(options().get("ollama_host", "http://host.docker.internal:11434") or "").rstrip("/")
     output_type = payload.get("output_type", "yaml") if payload else "yaml"
     target_name = (payload.get("target_name") or "").strip() if payload else ""
-    return await generate_modelfile(harness_id, ollama_host, output_type, target_name)
+    role_override = (payload.get("role") or "").strip() if payload else ""
+    return await generate_modelfile(harness_id, ollama_host, output_type, target_name, role_override or None)
 
 
 @app.post("/api/modelfiles/push-all")
 async def api_modelfile_push_all(payload: dict) -> dict:
     from app.pipeline_prompts import generate_modelfile, save_modelfile, push_modelfile_to_ollama
-    from app.harnesses import load_harnesses
-    from app.roles import load_roles
     from app.config import options
+    from app.roles import load_roles
     ollama_host = str(options().get("ollama_host", "http://host.docker.internal:11434") or "").rstrip("/")
     output_type = payload.get("output_type", "yaml")
     roles = load_roles()
-    assigned = {cfg.get("harness_id") for cfg in roles.values() if cfg.get("harness_id")}
-    harnesses = list(load_harnesses().values())
     results = []
-    for h in harnesses:
-        hid = h.get("_id")
-        if hid not in assigned:
-            results.append({"harness_id": hid, "name": h.get("display_name"), "skipped": True, "reason": "no role assigned"})
+    # Iterate by role so same harness assigned to multiple roles gets separate modelfiles
+    for role_name, cfg in roles.items():
+        hid = cfg.get("harness_id")
+        if not hid:
+            results.append({"role": role_name, "skipped": True, "reason": "no harness assigned"})
             continue
-        gen = await generate_modelfile(hid, ollama_host, output_type)
+        gen = await generate_modelfile(hid, ollama_host, output_type, role_override=role_name)
         if not gen.get("ok"):
-            results.append({"harness_id": hid, "name": h.get("display_name"), "ok": False, "message": gen.get("error")})
+            results.append({"role": role_name, "harness_id": hid, "ok": False, "message": gen.get("error")})
             continue
-        save_modelfile(hid, gen["content"])
-        ok, msg = await push_modelfile_to_ollama(hid, ollama_host)
-        results.append({"harness_id": hid, "name": h.get("display_name"), "ok": ok, "message": msg})
+        save_modelfile(hid, gen["content"], role=role_name)
+        ok, msg = await push_modelfile_to_ollama(hid, ollama_host, role=role_name)
+        results.append({"role": role_name, "harness_id": hid, "target": gen.get("target_model"), "ok": ok, "message": msg})
     return {"ok": True, "output_type": output_type, "results": results}
 
 
 @app.post("/api/harnesses/{harness_id}/modelfile/save")
 async def api_modelfile_save(harness_id: str, payload: dict) -> dict:
-    from app.pipeline_prompts import save_modelfile, load_modelfiles, _save_modelfiles
+    from app.pipeline_prompts import save_modelfile, load_modelfiles, _save_modelfiles, _mf_key
     content = payload.get("content", "")
     if not content:
         return JSONResponse({"ok": False, "error": "content required"}, status_code=400)
-    save_modelfile(harness_id, content)
+    role = (payload.get("role") or "").strip() or None
+    save_modelfile(harness_id, content, role=role)
     # Persist target_name and base_model if provided
     target_name = (payload.get("target_name") or "").strip()
     if target_name:
         from app.harnesses import get_harness
         data = load_modelfiles()
-        entry = data.get(harness_id, {})
+        key = _mf_key(harness_id, role)
+        entry = data.get(key, {})
         entry["target_model"] = target_name
         if not entry.get("base_model"):
             h = get_harness(harness_id)
             entry["base_model"] = (h or {}).get("model", "")
-        data[harness_id] = entry
+        data[key] = entry
         _save_modelfiles(data)
     return {"ok": True}
 
 
 @app.post("/api/harnesses/{harness_id}/modelfile/push")
-async def api_modelfile_push(harness_id: str) -> dict:
+async def api_modelfile_push(harness_id: str, payload: dict = {}) -> dict:
     from app.pipeline_prompts import push_modelfile_to_ollama
     from app.config import options
     ollama_host = str(options().get("ollama_host", "http://host.docker.internal:11434") or "").rstrip("/")
-    ok, msg = await push_modelfile_to_ollama(harness_id, ollama_host)
+    role = (payload.get("role") or "").strip() or None if payload else None
+    ok, msg = await push_modelfile_to_ollama(harness_id, ollama_host, role=role)
     return {"ok": ok, "message": msg}
 
 
@@ -2035,20 +2039,29 @@ function toggleHarnessEdit(id) {{
 // ── Modelfile ─────────────────────────────────────────────────────────────────
 
 let _mfHarnessId = null;
+let _mfRole = null;
 let _mfAlreadyPushed = false;
 
 async function openModelfileModal(id) {{
   _mfHarnessId = id;
+  // Detect which role this harness is assigned to (first match from role assignments)
+  _mfRole = null;
+  if (typeof roles !== "undefined") {{
+    for (const [r, cfg] of Object.entries(roles)) {{
+      if (cfg?.harness_id === id) {{ _mfRole = r; break; }}
+    }}
+  }}
   const h = harnesses[id];
   document.getElementById("mf-harness-name").textContent = h?.display_name || id;
-  document.getElementById("mf-role-badge").textContent = "";
+  document.getElementById("mf-role-badge").textContent = _mfRole ? `role: ${{_mfRole}}` : "";
   document.getElementById("mf-content").value = "";
   document.getElementById("mf-target-name").value = "";
   document.getElementById("mf-name-badge").textContent = "";
   _mfStatusClear();
 
   // Load saved draft if exists
-  const res = await fetch(api(`/api/harnesses/${{id}}/modelfile`)).then(r => r.json());
+  const roleParam = _mfRole ? `?role=${{encodeURIComponent(_mfRole)}}` : "";
+  const res = await fetch(api(`/api/harnesses/${{id}}/modelfile${{roleParam}}`)).then(r => r.json());
   if (res.entry?.content) {{
     document.getElementById("mf-content").value = res.entry.content;
     _mfAlreadyPushed = !!res.entry.pushed;
@@ -2075,7 +2088,7 @@ async function generateModelfile() {{
   const targetName = (document.getElementById("mf-target-name").value || "").trim();
   const res = await fetch(api(`/api/harnesses/${{_mfHarnessId}}/modelfile/generate`), {{
     method:"POST", headers:{{"Content-Type":"application/json"}},
-    body: JSON.stringify({{output_type: _mfOutputType(), target_name: targetName}}),
+    body: JSON.stringify({{output_type: _mfOutputType(), target_name: targetName, role: _mfRole || ""}}),
   }}).then(r => r.json());
   if (!res.ok) {{ _mfStatus(`✗ ${{res.error}}`, "#f87171"); return; }}
   document.getElementById("mf-content").value = res.content;
@@ -2095,7 +2108,7 @@ async function saveModelfile() {{
   const targetName = (document.getElementById("mf-target-name").value || "").trim();
   if (!content) {{ _mfStatus("Nothing to save.", "#f59e0b"); return; }}
   await fetch(api(`/api/harnesses/${{_mfHarnessId}}/modelfile/save`), {{
-    method:"POST", headers:{{"Content-Type":"application/json"}}, body: JSON.stringify({{content, target_name: targetName}}),
+    method:"POST", headers:{{"Content-Type":"application/json"}}, body: JSON.stringify({{content, target_name: targetName, role: _mfRole || ""}}),
   }});
   _mfStatus("Draft saved.", "#4ade80");
 }}
@@ -2111,10 +2124,12 @@ async function pushModelfile() {{
   }}
   // Save draft first (with target_name)
   await fetch(api(`/api/harnesses/${{_mfHarnessId}}/modelfile/save`), {{
-    method:"POST", headers:{{"Content-Type":"application/json"}}, body: JSON.stringify({{content, target_name: targetName}}),
+    method:"POST", headers:{{"Content-Type":"application/json"}}, body: JSON.stringify({{content, target_name: targetName, role: _mfRole || ""}}),
   }});
   _mfStatus("⏳ Pushing to Ollama...", "#94a3b8");
-  const res = await fetch(api(`/api/harnesses/${{_mfHarnessId}}/modelfile/push`), {{method:"POST"}}).then(r => r.json());
+  const res = await fetch(api(`/api/harnesses/${{_mfHarnessId}}/modelfile/push`), {{
+    method:"POST", headers:{{"Content-Type":"application/json"}}, body: JSON.stringify({{role: _mfRole || ""}}),
+  }}).then(r => r.json());
   if (res.ok) {{
     _mfAlreadyPushed = true;
     _mfStatus(`✓ ${{res.message || "Pushed successfully."}}`, "#4ade80");
