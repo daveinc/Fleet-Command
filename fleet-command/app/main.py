@@ -606,8 +606,7 @@ def _dashboard_html(root: str) -> str:  # noqa: C901
       font-family: system-ui, -apple-system, sans-serif;
       background: #111318;
       color: #e2e8f0;
-      height: 100vh;
-      overflow: hidden;
+      min-height: 100vh;
       padding: 1.25rem;
     }}
 
@@ -1040,12 +1039,19 @@ def _dashboard_html(root: str) -> str:  # noqa: C901
     .modal-actions {{ display: flex; gap: 0.5rem; justify-content: flex-end; margin-top: 0.25rem; }}
 
     /* ── Fleet 3-column dashboard ── */
+    #tab-fleet {{
+      height: calc(100vh - 140px);
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }}
     .fleet-4zone {{
       display: grid;
       grid-template-columns: 22% 78%;
       grid-template-rows: 1fr;
       gap: 0;
-      height: calc(100vh - 180px);
+      flex: 1;
+      min-height: 0;
       overflow: hidden;
     }}
     .fleet-left {{
