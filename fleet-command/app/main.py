@@ -1029,42 +1029,26 @@ def _dashboard_html(root: str) -> str:  # noqa: C901
     .fleet-4zone {{
       display: grid;
       grid-template-columns: 22% 78%;
-      grid-template-rows: auto 1fr;
+      grid-template-rows: 1fr;
       gap: 0;
       height: calc(100vh - 120px);
       overflow: hidden;
     }}
     .fleet-left {{
-      grid-row: 1 / 3;
+      grid-row: 1;
       display: flex;
       flex-direction: column;
       overflow: hidden;
       border-right: 1px solid #1e293b;
       padding-right: 1rem;
     }}
-    .fleet-pipeline {{
-      grid-column: 2 / 4;
-      grid-row: 1;
-      overflow-x: auto;
-      overflow-y: hidden;
-      border-bottom: 1px solid #1e293b;
-      padding: 0.4rem 0.75rem 0.3rem;
-      display: flex;
-      flex-direction: column;
-    }}
     .fleet-center {{
       grid-column: 2 / 4;
-      grid-row: 2;
+      grid-row: 1;
       padding: 0 1rem;
       overflow-y: auto;
     }}
-    .fleet-right {{
-      grid-column: 3;
-      grid-row: 2;
-      border-left: 1px solid #1e293b;
-      padding-left: 1rem;
-      overflow-y: auto;
-    }}
+    .fleet-right {{ display: none; }}
     .fleet-status-card {{
       background: #1e2330;
       border: 1px solid #2d3748;
@@ -1171,7 +1155,6 @@ def _dashboard_html(root: str) -> str:  # noqa: C901
         display: flex; flex-direction: column;
         height: auto; overflow: visible; gap: 0;
       }}
-      .fleet-pipeline {{ border-bottom: 1px solid #1e293b; padding: 0.5rem 0; overflow-x: auto; }}
       .fleet-left {{
         border-right: none;
         border-bottom: 1px solid #1e293b;
@@ -1180,7 +1163,6 @@ def _dashboard_html(root: str) -> str:  # noqa: C901
       }}
       .fleet-job-list {{ max-height: 35vh; overflow-y: auto; }}
       .fleet-center {{ padding: 0; overflow: visible; }}
-      .fleet-right {{ display: none; }} /* stats panel hidden on mobile — not worth the space */
 
       /* Fleet detail: full width, readable */
       .fstage-row {{ flex-wrap: wrap; gap: 0.3rem; }}
@@ -1253,12 +1235,7 @@ def _dashboard_html(root: str) -> str:  # noqa: C901
       </div>
     </div>
 
-    <!-- Pipeline: spans middle+right, top row -->
-    <div class="fleet-pipeline" id="fleet-pipeline">
-      <div style="color:#1e293b;font-size:0.75rem;text-align:center;padding-top:0.75rem;pointer-events:none">← select a project to view pipeline</div>
-    </div>
-
-    <!-- Center: selected job detail -->
+    <!-- Center: full middle+right — pipeline + job detail combined -->
     <div class="fleet-center" id="fleet-center" onclick="if(event.target===this)hideFleetDetail()">
       <div style="color:#334155;font-size:0.8rem;text-align:center;padding-top:4rem;pointer-events:none">← select a project</div>
     </div>
@@ -2985,7 +2962,6 @@ async function selectFleetJob(id) {{
   if (id !== _fleetSelectedId) _fleetDetailPanel = null;
   _fleetSelectedId = id;
   renderFleetJobList();
-  renderFleetPipeline();
   const res = await fetch(api("/api/jobs/" + id)).then(r => r.json());
   if (!res.ok) return;
   renderFleetDetail(res.job);
@@ -3094,9 +3070,48 @@ function renderFleetDetail(j) {{
   const isActive = j.status === "running" || j.status === "pending";
   const statusColor = STATUS_COLOR[j.status] || "#475569";
 
+  // ── Inline pipeline SVG ──────────────────────────────────────────────────
+  const EDGE_LABEL = {{ manager:"plan", generator:"brief", reviewer:"YAML", supervisor:"reviewed", advisor:"escalation" }};
+  const containerW = (center.clientWidth || 700) - 32;
+  const n = pipeline.length;
+  const padX = 8, gapX = Math.max(16, Math.min(40, Math.floor(containerW * 0.04)));
+  const nodeW = Math.floor((containerW - padX * 2 - (n - 1) * gapX) / n);
+  const nodeH = 72, padY = 6, totalH = nodeH + padY * 2 + 16;
+  let psvg = `<svg width="${{containerW}}" height="${{totalH}}" style="display:block;margin-bottom:0.5rem">`;
+  pipeline.forEach((stage, i) => {{
+    if (i === 0) return;
+    const x1 = padX + (i-1)*(nodeW+gapX) + nodeW, x2 = padX + i*(nodeW+gapX);
+    const y = padY + nodeH/2, cx = (x1+x2)/2;
+    psvg += `<path d="M${{x1}},${{y}} C${{cx}},${{y}} ${{cx}},${{y}} ${{x2}},${{y}}" stroke="#334155" stroke-width="2" fill="none"/>`;
+    psvg += `<text x="${{cx}}" y="${{y-5}}" text-anchor="middle" font-size="8" fill="#64748b">${{EDGE_LABEL[stage]||""}}</text>`;
+    psvg += `<circle cx="${{x1}}" cy="${{y}}" r="3" fill="#334155"/><circle cx="${{x2}}" cy="${{y}}" r="3" fill="#334155"/>`;
+  }});
+  pipeline.forEach((stage, i) => {{
+    const x = padX + i*(nodeW+gapX), y = padY, mid = x + nodeW/2;
+    const s = (j.stages || {{}})[stage] || {{}};
+    const color = STATUS_COLOR[s.status] || STATUS_COLOR.pending;
+    const lbl = LABEL[stage] || stage;
+    const model = (s.handled_by && s.handled_by !== stage) ? `↑ ${{s.handled_by}}` : (s.model || "");
+    const sTxt = s.progress || s.status || "pending";
+    const hasOut = s.status === "done" || s.status === "error";
+    const r1 = nodeH*0.24, r2 = nodeH*0.37, r3 = nodeH*0.50, r4 = nodeH*0.67, r5 = nodeH*0.83;
+    psvg += `<g>
+      <rect x="${{x}}" y="${{y}}" width="${{nodeW}}" height="${{nodeH}}" rx="7" fill="#1e293b" stroke="${{color}}" stroke-width="2"/>
+      <rect x="${{x}}" y="${{y}}" width="${{nodeW}}" height="${{nodeH*0.26}}" rx="7" fill="${{color}}22"/>
+      <rect x="${{x}}" y="${{y+nodeH*0.18}}" width="${{nodeW}}" height="${{nodeH*0.08}}" fill="${{color}}22"/>
+      <text x="${{mid}}" y="${{y+r1}}" text-anchor="middle" font-size="10" font-weight="bold" fill="${{color}}">${{lbl}}</text>
+      <text x="${{mid}}" y="${{y+r2}}" text-anchor="middle" font-size="8" fill="#94a3b8">${{sTxt}}</text>
+      <text x="${{mid}}" y="${{y+r3}}" text-anchor="middle" font-size="7" fill="#64748b">${{model}}</text>
+      ${{hasOut ? `<text x="${{mid}}" y="${{y+r4}}" text-anchor="middle" font-size="8" fill="${{color}}" style="cursor:pointer;text-decoration:underline" onclick="fleetShowNodeOutput('${{j.id}}','${{stage}}','${{lbl}}')">▶ output</text>` : ""}}
+      ${{hasOut ? `<text x="${{mid}}" y="${{y+r5}}" text-anchor="middle" font-size="7" fill="#f59e0b" style="cursor:pointer" onclick="fleetRerunFromStage('${{j.id}}','${{stage}}')">↺ rerun</text>` : ""}}
+    </g>`;
+  }});
+  psvg += `</svg>`;
+
   const _savedLogScroll = document.getElementById("flog-mini")?.scrollTop ?? null;
   center.innerHTML = `
     <div class="fleet-detail-card">
+      ${{psvg}}
       <div style="display:flex;align-items:center;gap:0.6rem;margin-bottom:0.2rem">
         <span style="font-size:0.75rem;font-weight:700;color:#94a3b8;font-family:monospace">#${{j.id}}</span>
         <span style="font-size:0.72rem;padding:0.15rem 0.5rem;border-radius:3px;font-weight:500;background:#0f1117;color:${{statusColor}};border:1px solid ${{statusColor}}">${{j.status}}</span>
