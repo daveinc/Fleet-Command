@@ -1105,7 +1105,6 @@ async def _run_generator_loop(job_id: str, roles: dict[str, Any], job: dict[str,
         if not harness:
             return {"ok": False, "error": "No model assigned to role: generator"}
         persona = ROLE_META.get("generator", {}).get("persona", "You are a helpful AI assistant.")
-        persona = persona.split(".")[0] + "."
         user = _user_prompt("generator", spec, None)
         append_log(job, "generator", "No task list — running single pass from spec")
         job["stages"]["generator"] = {"status": "running"}
@@ -1131,7 +1130,6 @@ async def _run_generator_loop(job_id: str, roles: dict[str, Any], job: dict[str,
         return {"ok": False, "error": "No model assigned to role: generator"}
 
     persona = ROLE_META.get("generator", {}).get("persona", "You are a helpful AI assistant.")
-    persona = persona.split(".")[0] + "."
     spec = job.get("spec", "")
 
     block_count = len(set(t['block'] for t in task_list))
@@ -1139,6 +1137,7 @@ async def _run_generator_loop(job_id: str, roles: dict[str, Any], job: dict[str,
     append_log(job, "generator", f"Starting loop: {len(task_list)} tasks, {block_count} blocks")
 
     fragments: list[dict[str, str]] = []
+    failed_tasks: list[dict] = []
 
     for i, item in enumerate(task_list):
         if is_cancelled(job_id):
@@ -1158,10 +1157,18 @@ async def _run_generator_loop(job_id: str, roles: dict[str, Any], job: dict[str,
             _flog(f"  task {i+1} done: {len(fragment)} chars")
         except Exception as exc:
             _flog(f"  task {i+1} failed: {exc}")
-            job["stages"]["generator"] = {"status": "error", "error": str(exc)}
-            append_log(job, "generator", f"ERROR on task {i+1}: {exc}")
-            save_job(job)
-            return {"ok": False, "error": str(exc)}
+            append_log(job, "generator", f"ERROR on task {i+1}: {exc} — skipping, continuing")
+            failed_tasks.append({"index": i + 1, "block": item["block"], "task": item["task"][:80], "error": str(exc)[:120]})
+
+    if failed_tasks:
+        failed_summary = ", ".join(f"task {t['index']}" for t in failed_tasks)
+        append_log(job, "generator", f"WARNING: {len(failed_tasks)}/{len(task_list)} tasks failed: {failed_summary}")
+        job["failed_tasks"] = failed_tasks
+
+    if not fragments:
+        job["stages"]["generator"] = {"status": "error", "error": f"All {len(task_list)} tasks failed"}
+        save_job(job)
+        return {"ok": False, "error": f"All {len(task_list)} generator tasks failed"}
 
     # Warn if fragment count doesn't match task count
     if len(fragments) != len(task_list):
@@ -1352,7 +1359,7 @@ async def _run_pipeline_inner(job_id: str) -> None:
             job = load_job(job_id)
             if job.get("stages", {}).get("assembler", {}).get("status") == "done":
                 assembler_out = read_stage_output(job_id, "assembler")
-                prev_output = assembler_out or prev_output
+                prev_output = assembler_out if assembler_out is not None else prev_output
                 continue
             result = await run_stage(job_id, stage)
         else:
@@ -1364,6 +1371,49 @@ async def _run_pipeline_inner(job_id: str) -> None:
             return
         prev_output = result.get("output")
         job = load_job(job_id)
+
+        # Reviewer REVIEW: failed → auto-retry generator with remarks before supervisor
+        if stage == "reviewer" and prev_output and re.match(r'\s*REVIEW:\s*failed', prev_output, re.IGNORECASE):
+            rerun_total = job.get("auto_rerun_count", 0)
+            if rerun_total < MAX_AUTO_RERUNS and "generator" in pipeline:
+                remarks = prev_output.split("---")[0].strip() if "---" in prev_output else prev_output[:500]
+                append_log(job, "reviewer", f"REVIEW: failed — auto-retrying generator (attempt {rerun_total + 1}/{MAX_AUTO_RERUNS})")
+                job["auto_rerun_count"] = rerun_total + 1
+                instr = job.get("stage_instructions", {})
+                instr["generator"] = (
+                    f"The reviewer rejected the previous output:\n{remarks}\n\n"
+                    "Produce corrected output addressing all issues."
+                )
+                job["stage_instructions"] = instr
+                save_job(job)
+                gen_idx = pipeline.index("generator")
+                rev_idx = pipeline.index("reviewer")
+                rerun_from_stage(job_id, "generator")
+                _rev_r: dict[str, Any] = {"ok": True, "output": prev_output}
+                for _rerun_stage in pipeline[gen_idx:rev_idx + 1]:
+                    if is_cancelled(job_id):
+                        job = load_job(job_id)
+                        job["status"] = "cancelled"
+                        save_job(job)
+                        return
+                    if _rerun_stage == "generator" and "manager" in pipeline:
+                        _rev_r = await _run_generator_loop(job_id, roles, load_job(job_id))
+                    elif _rerun_stage == "assembler" and "generator" in pipeline and "manager" in pipeline:
+                        _rjob = load_job(job_id)
+                        if _rjob.get("stages", {}).get("assembler", {}).get("status") == "done":
+                            continue
+                        _rev_r = await run_stage(job_id, _rerun_stage)
+                    else:
+                        _rev_r = await run_stage(job_id, _rerun_stage)
+                    if not _rev_r["ok"]:
+                        job = load_job(job_id)
+                        job["status"] = STATUS_FAILED
+                        save_job(job)
+                        return
+                    job = load_job(job_id)
+                prev_output = _rev_r.get("output")
+            else:
+                append_log(job, "reviewer", f"REVIEW: failed — max reruns ({MAX_AUTO_RERUNS}) reached, proceeding to supervisor")
 
         # PM sub-job split — spawn child jobs and mark parent done
         if stage == "project_manager" and prev_output and _is_subjob_split(prev_output):
@@ -1500,20 +1550,35 @@ async def _run_pipeline_inner(job_id: str) -> None:
         await push_pipeline_sensors()
         return
 
-    if prev_output:
-        write_stage_output(job_id, "final", prev_output)
+    # For HA dashboard jobs — run manager sign-off to structure approved cards into dashboard YAML
+    dashboard_yaml = prev_output
+    if job.get("type") == "ha_dashboard" and "manager" in pipeline:
+        _flog(f"  running manager sign-off pass")
+        signoff_result = await _run_manager_signoff(job_id, roles, load_job(job_id))
+        if signoff_result["ok"]:
+            dashboard_yaml = signoff_result["output"]
+            _flog(f"  sign-off done — {len(dashboard_yaml)} chars")
+        else:
+            append_log(job, "manager", "Sign-off failed — using raw assembler output for push")
+            job = load_job(job_id)
+            dashboard_yaml = read_stage_output(job_id, "assembler") or prev_output
+
+    final_yaml = dashboard_yaml or prev_output
+    if final_yaml:
+        write_stage_output(job_id, "final", final_yaml)
         job = load_job(job_id)
-        job["final_output"] = prev_output[:600]
+        job["final_output"] = final_yaml[:600]
 
     job["status"] = STATUS_DONE
+    job.pop("threads", None)  # clear accumulated thread history — not needed after completion
     append_log(job, "pipeline", "All stages complete")
     save_job(job)
 
     from app.sensor_push import push_pipeline_sensors
     await push_pipeline_sensors()
 
-    if job.get("type") == "ha_dashboard" and prev_output and not prev_output.strip().upper().startswith("REJECTED"):
-        await _push_dashboard(job, prev_output)
+    if job.get("type") == "ha_dashboard" and final_yaml and not final_yaml.strip().upper().startswith("REJECTED"):
+        await _push_dashboard(job, final_yaml)
 
     await _check_parent_completion(job)
 

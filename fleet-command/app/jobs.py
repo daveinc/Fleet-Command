@@ -182,11 +182,14 @@ def rerun_from_stage(job_id: str, stage: str) -> dict[str, Any] | None:
     if stage not in pipeline:
         return None
     idx = pipeline.index(stage)
+    threads = job.get("threads", {})
     for s in pipeline[idx:]:
         job["stages"].pop(s, None)
+        threads.pop(s, None)
         p = _run_dir(job_id) / f"stage_{s}.txt"
         if p.exists():
             p.unlink()
+    job["threads"] = threads
     final = _run_dir(job_id) / "stage_final.txt"
     if final.exists():
         final.unlink()

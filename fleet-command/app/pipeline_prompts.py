@@ -430,6 +430,27 @@ _ROLE_MESSAGES_MINIMAL_YAML: dict[str, list[tuple[str, str]]] = {
             "---\n"
             "type: sensor\nentity: sensor.PLACEHOLDER_TEMP\nname: Living Room",
         ),
+        # Content error — [COMM] rework → REVIEW: fixed
+        (
+            "user",
+            "Spec: Media dashboard\n\n"
+            "Build plan (reference):\nBLOCK 1: Media\n- Task 1: Media player controls\n\n"
+            "Code to review:\ntype: media_player_card\nentity: media_player.living_room",
+        ),
+        (
+            "assistant",
+            "[COMM] to:manager — task 1/1, block: Media: invalid card type (media_player_card). Use media-control instead.",
+        ),
+        (
+            "user",
+            "[COMM] pipeline → rework complete (task 1/1)\n\ntype: media-control\nentity: media_player.living_room",
+        ),
+        (
+            "assistant",
+            "REVIEW: fixed — task 1 corrected from media_player_card to media-control\n"
+            "---\n"
+            "type: media-control\nentity: media_player.living_room",
+        ),
     ],
     "supervisor": [
         (
@@ -902,7 +923,35 @@ _ROLE_MESSAGES_YAML: dict[str, list[tuple[str, str]]] = {
             "type: media-control\n"
             "entity: media_player.living_room",
         ),
-        # 4. Escalate — input too large
+        # 4. Content error — [COMM] to:manager for rework, integrate corrected fragment
+        (
+            "user",
+            "Spec: Media dashboard\n\n"
+            "Build plan (reference):\n"
+            "BLOCK 1: Media\n"
+            "- Task 1: Media player controls\n\n"
+            "Code to review:\n"
+            "type: media_player_card\n"
+            "entity: media_player.living_room",
+        ),
+        (
+            "assistant",
+            "[COMM] to:manager — task 1/1, block: Media: invalid card type (media_player_card). Use media-control instead.",
+        ),
+        (
+            "user",
+            "[COMM] pipeline → rework complete (task 1/1)\n\n"
+            "type: media-control\n"
+            "entity: media_player.living_room",
+        ),
+        (
+            "assistant",
+            "REVIEW: fixed — task 1 corrected from media_player_card to media-control\n"
+            "---\n"
+            "type: media-control\n"
+            "entity: media_player.living_room",
+        ),
+        # 5. Escalate — input too large
         (
             "user",
             "Spec: [job description]\n\n"
